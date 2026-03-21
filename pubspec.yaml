@@ -1,0 +1,60 @@
+name: shade
+description: Flutter application with secure storage and encryption.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management
+  flutter_riverpod: ^2.6.1
+
+  # Secure storage (Keystore/Keychain)
+  flutter_secure_storage: ^9.2.2
+
+  # Encrypted SQLite database
+  sqflite_sqlcipher: ^3.1.0+1
+
+  # AES and RSA encryption
+  encrypt: ^5.0.3
+
+  # Fast native RSA key operations
+  fast_rsa: ^3.8.6
+
+  # Device information
+  device_info_plus: ^11.2.0
+
+  # Permission handling
+  permission_handler: ^11.3.1
+
+  # Navigation
+  go_router: ^14.8.1
+
+  # Networking
+  http: ^1.2.2
+  socket_io_client: ^2.0.3+1
+
+  # Cupertino widgets for iOS
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+
+  fonts:
+    - family: Roboto
+      fonts:
+        - asset: fonts/Roboto/Roboto-Light.ttf
+          weight: 300
+        - asset: fonts/Roboto/Roboto-Regular.ttf
+          weight: 400
+        - asset: fonts/Roboto/Roboto-Bold.ttf
+          weight: 700
