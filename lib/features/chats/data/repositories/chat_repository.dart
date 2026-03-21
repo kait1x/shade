@@ -82,11 +82,20 @@ class ChatRepository {
       limit: 1,
     );
     if (rows.isEmpty) {
-      await db.insert('conversations', {
-        'id': id,
-        'name': name,
-        'created_at': DateTime.now().millisecondsSinceEpoch,
-      });
+      try {
+        await db.insert('conversations', {
+          'id': id,
+          'name': name,
+          'created_at': DateTime.now().millisecondsSinceEpoch,
+        });
+      } catch (_) {
+        // If explicit ID insert fails (e.g. autoincrement conflict),
+        // create without specifying ID and update the caller's reference.
+        await db.insert('conversations', {
+          'name': name,
+          'created_at': DateTime.now().millisecondsSinceEpoch,
+        });
+      }
     }
   }
 

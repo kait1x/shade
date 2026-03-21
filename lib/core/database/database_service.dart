@@ -1,28 +1,37 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'package:flutter/foundation.dart';
-import 'package:sqflite_sqlcipher/sqflite.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-/// Encrypted SQLite database service using SQLCipher.
+// Common sqflite API (shared types: Database, ConflictAlgorithm, getDatabasesPath, deleteDatabase)
+import 'package:sqflite_common/sqflite.dart' show Database, ConflictAlgorithm, getDatabasesPath, deleteDatabase;
+// Mobile: encrypted SQLite via SQLCipher
+import 'package:sqflite_sqlcipher/sqflite.dart' as sqlcipher;
+// Desktop: standard SQLite via FFI
+import 'package:sqflite_common_ffi/sqflite_ffi.dart' as sqflite_ffi;
+
+/// Returns true when running on a mobile platform that supports SQLCipher.
+bool get _isMobile => Platform.isAndroid || Platform.isIOS;
+
+/// Unified database service.
 ///
-/// The encryption key is a 32-byte random value generated once on first open
-/// and persisted in [FlutterSecureStorage] (Android Keystore / iOS Keychain).
-/// The key never leaves the device's secure enclave.
-///
-/// Schema:
-///   users         — local identity profile
-///   conversations — chat threads
-///   messages      — encrypted message payloads
+/// - **Mobile (Android/iOS):** Uses SQLCipher with a key stored in
+///   flutter_secure_storage.
+/// - **Desktop (Windows/Mac/Linux):** Uses sqflite_common_ffi (no encryption,
+///   but fully functional for development and testing).
 class DatabaseService {
-  static const String _dbName = 'shade_encrypted.db';
+  static const String _dbName = 'shade.db';
   static const int _dbVersion = 2;
   static const String _dbKeyStorageKey = 'sqlcipher_db_key';
 
   final FlutterSecureStorage _secureStorage;
 
+  /// Holds the database handle.
   Database? _db;
+
+  bool _ffiInitialised = false;
 
   DatabaseService({FlutterSecureStorage? secureStorage})
       : _secureStorage =
@@ -33,32 +42,54 @@ class DatabaseService {
 
   // ── Lifecycle ───────────────────────────────────────────────
 
-  /// Returns the open database, initialising it on first access.
   Future<Database> get database async {
     _db ??= await _open();
     return _db!;
   }
 
-  /// Opens (or creates) the SQLCipher-encrypted database.
   Future<Database> _open() async {
     final dir = await getDatabasesPath();
     final filePath = p.join(dir, _dbName);
-    final key = await _getOrCreateKey();
 
-    return openDatabase(
-      filePath,
-      version: _dbVersion,
-      password: key,
-      onConfigure: (db) async {
-        // Enforce foreign keys
-        await db.rawQuery('PRAGMA foreign_keys = ON');
-      },
-      onCreate: _onCreate,
-      onUpgrade: _onUpgrade,
-    );
+    if (_isMobile) {
+      // ── Mobile: SQLCipher ────────────────────────────────────
+      final key = await _getOrCreateKey();
+      return sqlcipher.openDatabase(
+        filePath,
+        version: _dbVersion,
+        password: key,
+        onConfigure: (db) async {
+          await db.rawQuery('PRAGMA foreign_keys = ON');
+        },
+        onCreate: _onCreate,
+        onUpgrade: _onUpgrade,
+      );
+    } else {
+      // ── Desktop: sqflite_common_ffi ──────────────────────────
+      await _initFfi();
+      return sqflite_ffi.openDatabase(
+        filePath,
+        version: _dbVersion,
+        onConfigure: (db) async {
+          await db.rawQuery('PRAGMA foreign_keys = ON');
+        },
+        onCreate: _onCreate,
+        onUpgrade: _onUpgrade,
+      );
+    }
   }
 
-  /// Retrieves the DB key from secure storage, generating a new one on first run.
+  /// One-time initialisation of the FFI database factory (desktop only).
+  Future<void> _initFfi() async {
+    if (_ffiInitialised) return;
+    sqflite_ffi.sqfliteFfiInit();
+    sqflite_ffi.databaseFactory = sqflite_ffi.databaseFactoryFfi;
+    _ffiInitialised = true;
+    debugPrint('[DatabaseService] sqflite FFI initialised (desktop mode)');
+  }
+
+  // ── Key management (mobile only) ────────────────────────────
+
   Future<String> _getOrCreateKey() async {
     try {
       final existing = await _secureStorage.read(key: _dbKeyStorageKey);
@@ -114,7 +145,6 @@ class DatabaseService {
       )
     ''');
 
-    // Seed default self-chat conversation so the FK never fails.
     final now = DateTime.now().millisecondsSinceEpoch;
     await db.insert('conversations', {
       'id': 1,
@@ -131,8 +161,6 @@ class DatabaseService {
       'CREATE INDEX idx_messages_timestamp ON messages (timestamp)',
     );
   }
-
-  // ── Schema migration ────────────────────────────────────────
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
@@ -256,19 +284,19 @@ class DatabaseService {
 
   Future<void> close() async {
     final db = _db;
-    if (db != null && db.isOpen) {
+    if (db != null) {
       await db.close();
     }
     _db = null;
   }
 
-  /// Wipes the database and removes the encryption key.
-  /// Use with caution — this is irreversible.
   Future<void> nuke() async {
     await close();
     final dir = await getDatabasesPath();
     await deleteDatabase(p.join(dir, _dbName));
-    await _secureStorage.delete(key: _dbKeyStorageKey);
+    if (_isMobile) {
+      await _secureStorage.delete(key: _dbKeyStorageKey);
+    }
     debugPrint('[DatabaseService] Database destroyed');
   }
 }
