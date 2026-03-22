@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:shade/core/services/crypto_service.dart';
 import 'package:shade/core/services/connection_service.dart';
+import 'package:shade/core/services/fcm_service.dart';
 import 'package:shade/core/database/database_service.dart';
 
 /// Authentication state
@@ -78,6 +79,13 @@ class AuthNotifier extends StateNotifier<AuthState> {
         await _connectionService.register(nickname);
         _connectionService.connect(nickname);
         debugPrint('Registered and connected to server as: $nickname');
+
+        // Initialize FCM and register token
+        await FcmService.init();
+        await FcmService.registerToken(
+          'http://45.81.255.81:3000', // TODO: make configurable
+          nickname,
+        );
       } catch (e) {
         final errorStr = e.toString();
         if (errorStr.contains('Username already taken') ||
@@ -124,6 +132,8 @@ class AuthNotifier extends StateNotifier<AuthState> {
         try {
           _connectionService.register(nickname).then((_) {
             _connectionService.connect(nickname);
+            FcmService.init();
+            FcmService.registerToken('http://45.81.255.81:3000', nickname);
             debugPrint('Reconnected to server as: $nickname');
           }).catchError((e) {
             debugPrint('Server reconnect skipped: $e');
