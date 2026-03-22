@@ -16,6 +16,9 @@ dependencies:
   # Secure storage (Keystore/Keychain)
   flutter_secure_storage: ^9.2.2
 
+  # File paths
+  path_provider: ^2.1.5
+
   # Encrypted SQLite database (mobile)
   sqflite_sqlcipher: ^3.1.0+1
 

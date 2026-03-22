@@ -1,10 +1,12 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:fast_rsa/fast_rsa.dart';
 import 'package:encrypt/encrypt.dart' as enc;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:path_provider/path_provider.dart';
 
 /// Hybrid RSA-4096 + AES-256-CBC encryption service.
 ///
@@ -39,8 +41,8 @@ class CryptoService {
     final kp = await RSA.generate(4096);
 
     await Future.wait([
-      _secureStorage.write(key: _privKeyAlias, value: kp.privateKey),
-      _secureStorage.write(key: _pubKeyAlias, value: kp.publicKey),
+      _writeKey(_privKeyAlias, kp.privateKey),
+      _writeKey(_pubKeyAlias, kp.publicKey),
     ]);
 
     debugPrint('[CryptoService] Identity keys generated');
@@ -91,27 +93,34 @@ class CryptoService {
     final encryptedKey = map['k'] as String;
     final encryptedDataB64 = map['d'] as String;
 
-    // RSA-OAEP-SHA256 decrypt the envelope
-    final envelopeB64 = await RSA.decryptOAEP(
-      encryptedKey,
-      '',            // label (empty)
-      Hash.SHA256,
-      privateKey,
-    );
-    final envelope = base64.decode(envelopeB64);
+    debugPrint('[CryptoService] decryptData: keyLen=${privateKey.length}, keyStart=${privateKey.substring(0, 30)}...');
 
-    final aesKey = enc.Key(
-      Uint8List.fromList(envelope.sublist(0, _aesKeyLen)),
-    );
-    final iv = enc.IV(
-      Uint8List.fromList(envelope.sublist(_aesKeyLen)),
-    );
+    try {
+      // RSA-OAEP-SHA256 decrypt the envelope
+      final envelopeB64 = await RSA.decryptOAEP(
+        encryptedKey,
+        '',
+        Hash.SHA256,
+        privateKey,
+      );
+      final envelope = base64.decode(envelopeB64);
 
-    // AES-256-CBC decrypt the data
-    final encrypter = enc.Encrypter(
-      enc.AES(aesKey, mode: enc.AESMode.cbc),
-    );
-    return encrypter.decrypt64(encryptedDataB64, iv: iv);
+      final aesKey = enc.Key(
+        Uint8List.fromList(envelope.sublist(0, _aesKeyLen)),
+      );
+      final iv = enc.IV(
+        Uint8List.fromList(envelope.sublist(_aesKeyLen)),
+      );
+
+      // AES-256-CBC decrypt the data
+      final encrypter = enc.Encrypter(
+        enc.AES(aesKey, mode: enc.AESMode.cbc),
+      );
+      return encrypter.decrypt64(encryptedDataB64, iv: iv);
+    } catch (e) {
+      debugPrint('[CryptoService] decryptData FAILED: $e');
+      rethrow;
+    }
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -208,10 +217,23 @@ class CryptoService {
   }
 
   Future<void> clearKeys() async {
-    await Future.wait([
-      _secureStorage.delete(key: _privKeyAlias),
-      _secureStorage.delete(key: _pubKeyAlias),
-    ]);
+    try {
+      await Future.wait([
+        _secureStorage.delete(key: _privKeyAlias),
+        _secureStorage.delete(key: _pubKeyAlias),
+      ]);
+    } catch (_) {}
+
+    // Also delete file fallback on desktop
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      try {
+        final dir = await getApplicationSupportDirectory();
+        for (final alias in [_privKeyAlias, _pubKeyAlias]) {
+          final file = File('${dir.path}/shade_$alias.pem');
+          if (await file.exists()) await file.delete();
+        }
+      } catch (_) {}
+    }
     debugPrint('[CryptoService] Keys cleared');
   }
 
@@ -219,8 +241,91 @@ class CryptoService {
   //  INTERNALS
   // ══════════════════════════════════════════════════════════════
 
-  Future<String?> _readKey(String alias) =>
-      _secureStorage.read(key: alias);
+  /// Reads a key. Tries secure storage first, falls back to file on desktop.
+  /// Normalizes the PEM string to fix Windows line-ending issues.
+  Future<String?> _readKey(String alias) async {
+    String? raw;
+
+    // 1) Try secure storage
+    try {
+      raw = await _secureStorage.read(key: alias);
+      if (raw != null && raw.isNotEmpty) {
+        debugPrint('[CryptoService] readKey $alias from secure storage');
+      }
+    } catch (e) {
+      debugPrint('[CryptoService] secure storage read failed: $e');
+    }
+
+    // 2) Fallback to file on desktop
+    if ((raw == null || raw.isEmpty) &&
+        !Platform.isAndroid && !Platform.isIOS) {
+      try {
+        final dir = await getApplicationSupportDirectory();
+        final file = File('${dir.path}/shade_$alias.pem');
+        if (await file.exists()) {
+          raw = await file.readAsString();
+          debugPrint('[CryptoService] readKey $alias from file: ${file.path}');
+        } else {
+          debugPrint('[CryptoService] file not found: ${file.path}');
+        }
+      } catch (e) {
+        debugPrint('[CryptoService] file read failed: $e');
+      }
+    }
+
+    if (raw == null || raw.isEmpty) return null;
+
+    // 3) Normalize PEM: fix line endings, strip extra whitespace
+    return _normalizePem(raw);
+  }
+
+  /// Fixes common PEM corruption from secure storage on Windows:
+  /// - Strips BOM, trailing whitespace
+  /// - Normalizes \r\n → \n
+  /// - Ensures PEM headers are present
+  String _normalizePem(String raw) {
+    var pem = raw.trim();
+
+    // Strip BOM if present
+    if (pem.startsWith('\uFEFF')) {
+      pem = pem.substring(1);
+    }
+
+    // Normalize line endings
+    pem = pem.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+
+    // Strip trailing whitespace from each line
+    pem = pem.split('\n').map((l) => l.trimRight()).join('\n');
+
+    // Ensure there's exactly one trailing newline
+    pem = '${pem.trimRight()}\n';
+
+    return pem;
+  }
+
+  /// Writes a key to secure storage and file fallback.
+  Future<void> _writeKey(String alias, String value) async {
+    // Normalize before writing
+    final normalized = _normalizePem(value);
+
+    try {
+      await _secureStorage.write(key: alias, value: normalized);
+      debugPrint('[CryptoService] writeKey $alias to secure storage');
+    } catch (e) {
+      debugPrint('[CryptoService] secure storage write failed: $e');
+    }
+
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      try {
+        final dir = await getApplicationSupportDirectory();
+        final file = File('${dir.path}/shade_$alias.pem');
+        await file.writeAsString(normalized, flush: true);
+        debugPrint('[CryptoService] writeKey $alias to file: ${file.path}');
+      } catch (e) {
+        debugPrint('[CryptoService] file write failed: $e');
+      }
+    }
+  }
 
   static Uint8List _randomBytes(int length) {
     final rng = Random.secure();

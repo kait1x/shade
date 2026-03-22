@@ -14,7 +14,7 @@ class MessageInput extends StatefulWidget {
 class _MessageInputState extends State<MessageInput>
     with SingleTickerProviderStateMixin {
   final _controller = TextEditingController();
-  final _focusNode = FocusNode();
+  final     _focusNode = FocusNode();
   bool _hasText = false;
   late AnimationController _glowController;
   late Animation<double> _glowAnimation;
@@ -95,6 +95,7 @@ class _MessageInputState extends State<MessageInput>
                     maxLines: 4,
                     minLines: 1,
                     textCapitalization: TextCapitalization.sentences,
+                    textInputAction: TextInputAction.send,
                     style: const TextStyle(
                       color: ShadeColors.textPrimary,
                       fontSize: 15,

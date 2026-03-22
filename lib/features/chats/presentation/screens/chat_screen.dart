@@ -146,7 +146,8 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
           timestamp: msg.timestamp,
           isMine: msg.senderId == currentSenderId,
         ));
-      } catch (_) {
+      } catch (e) {
+        debugPrint('[ChatMessages] decrypt error: $e');
         result.add(DisplayMessage(
           id: msg.id,
           text: '[Не удалось расшифровать]',
@@ -167,7 +168,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         recipientPublicKey,
       );
 
-      // Save locally
+      // Save locally first — always succeeds
       await _chatRepository.sendMessage(
         conversationId: conversationId,
         senderId: currentSenderId,
@@ -175,8 +176,14 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         conversationName: recipientUsername,
       );
 
-      // Send over the network
-      _connectionService.sendMessage(recipientUsername, encryptedContent);
+      // Send over the network — non-fatal if not connected
+      try {
+        if (_connectionService.isConnected) {
+          _connectionService.sendMessage(recipientUsername, encryptedContent);
+        }
+      } catch (_) {
+        debugPrint('[ChatMessages] WS send failed, message saved locally');
+      }
 
       await _loadMessages();
     } catch (e) {

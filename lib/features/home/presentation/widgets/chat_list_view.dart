@@ -30,7 +30,8 @@ final conversationsProvider =
           encryptedContent: plain,
           timestamp: conv.lastMessage!.timestamp,
         );
-      } catch (_) {
+      } catch (e) {
+        debugPrint('[ChatList] decrypt error: $e');
         preview = conv.lastMessage;
       }
     }

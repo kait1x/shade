@@ -158,14 +158,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           const SizedBox(height: 12),
           // New chat
           _MiniFAB(
-            icon: Icons.add_rounded,
+            icon: Icons.search_rounded,
             isLoading: false,
             onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Новый чат — в разработке'),
-                ),
-              );
+              context.push('/search');
             },
           ),
         ],

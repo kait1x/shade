@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 import 'package:shade/features/auth/presentation/screens/welcome_screen.dart';
 import 'package:shade/features/home/presentation/screens/home_screen.dart';
+import 'package:shade/features/home/presentation/screens/user_search_screen.dart';
 import 'package:shade/features/chats/presentation/screens/chat_screen.dart';
 
 /// Top-level router provider that listens to [AuthState].
@@ -42,6 +43,10 @@ final goRouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/home',
         builder: (context, state) => const HomeScreen(),
+      ),
+      GoRoute(
+        path: '/search',
+        builder: (context, state) => const UserSearchScreen(),
       ),
       GoRoute(
         path: '/chat/:id',

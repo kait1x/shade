@@ -69,11 +69,11 @@ class ChatRepository {
 
   // ── Conversations ───────────────────────────────────────────
 
-  Future<int> createConversation(String name) =>
-      _db.createConversation(name);
+  Future<int> createConversation(String name, {String? publicKey}) =>
+      _db.createConversation(name, publicKey: publicKey);
 
   /// Ensures a conversation with [id] exists. Creates it if missing.
-  Future<void> ensureConversation(int id, String name) async {
+  Future<void> ensureConversation(int id, String name, {String? publicKey}) async {
     final db = await _db.database;
     final rows = await db.query(
       'conversations',

@@ -5,8 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-// Common sqflite API (shared types: Database, ConflictAlgorithm, getDatabasesPath, deleteDatabase)
-import 'package:sqflite_common/sqflite.dart' show Database, ConflictAlgorithm, getDatabasesPath, deleteDatabase;
+// Common sqflite API (shared types: Database, ConflictAlgorithm, getDatabasesPath, deleteDatabase, databaseFactory)
+import 'package:sqflite_common/sqflite.dart' show Database, ConflictAlgorithm, getDatabasesPath, deleteDatabase, databaseFactory;
 // Mobile: encrypted SQLite via SQLCipher
 import 'package:sqflite_sqlcipher/sqflite.dart' as sqlcipher;
 // Desktop: standard SQLite via FFI
@@ -48,6 +48,11 @@ class DatabaseService {
   }
 
   Future<Database> _open() async {
+    // Desktop must init FFI before any database call
+    if (!_isMobile) {
+      await _initFfi();
+    }
+
     final dir = await getDatabasesPath();
     final filePath = p.join(dir, _dbName);
 
@@ -59,19 +64,18 @@ class DatabaseService {
         version: _dbVersion,
         password: key,
         onConfigure: (db) async {
-          await db.rawQuery('PRAGMA foreign_keys = ON');
+          // Foreign keys managed in application code
         },
         onCreate: _onCreate,
         onUpgrade: _onUpgrade,
       );
     } else {
       // ── Desktop: sqflite_common_ffi ──────────────────────────
-      await _initFfi();
       return sqflite_ffi.openDatabase(
         filePath,
         version: _dbVersion,
         onConfigure: (db) async {
-          await db.rawQuery('PRAGMA foreign_keys = ON');
+          // Foreign keys managed in application code
         },
         onCreate: _onCreate,
         onUpgrade: _onUpgrade,
@@ -83,7 +87,7 @@ class DatabaseService {
   Future<void> _initFfi() async {
     if (_ffiInitialised) return;
     sqflite_ffi.sqfliteFfiInit();
-    sqflite_ffi.databaseFactory = sqflite_ffi.databaseFactoryFfi;
+    databaseFactory = sqflite_ffi.databaseFactoryFfi;
     _ffiInitialised = true;
     debugPrint('[DatabaseService] sqflite FFI initialised (desktop mode)');
   }
@@ -129,6 +133,17 @@ class DatabaseService {
       CREATE TABLE conversations (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         name        TEXT    NOT NULL,
+        public_key  TEXT,
+        created_at  INTEGER NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE contacts (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        nickname    TEXT    NOT NULL UNIQUE,
+        public_key  TEXT    NOT NULL,
+        signature   TEXT,
         created_at  INTEGER NOT NULL
       )
     ''');
@@ -139,9 +154,7 @@ class DatabaseService {
         conversation_id   INTEGER NOT NULL,
         sender_id         INTEGER NOT NULL,
         encrypted_content TEXT    NOT NULL,
-        timestamp         INTEGER NOT NULL,
-        FOREIGN KEY (conversation_id) REFERENCES conversations (id) ON DELETE CASCADE,
-        FOREIGN KEY (sender_id)       REFERENCES users (id)
+        timestamp         INTEGER NOT NULL
       )
     ''');
 
@@ -206,12 +219,55 @@ class DatabaseService {
     return (result.first['cnt'] as int) > 0;
   }
 
+  // ── Contacts ────────────────────────────────────────────────
+
+  Future<void> saveContact({
+    required String nickname,
+    required String publicKey,
+    String? signature,
+  }) async {
+    final db = await database;
+    await db.insert(
+      'contacts',
+      {
+        'nickname': nickname,
+        'public_key': publicKey,
+        'signature': signature,
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<Map<String, dynamic>?> getContact(String nickname) async {
+    final db = await database;
+    final rows = await db.query(
+      'contacts',
+      where: 'nickname = ?',
+      whereArgs: [nickname],
+      limit: 1,
+    );
+    return rows.isNotEmpty ? rows.first : null;
+  }
+
+  Future<List<Map<String, dynamic>>> searchContacts(String query) async {
+    final db = await database;
+    return db.query(
+      'contacts',
+      where: 'nickname LIKE ?',
+      whereArgs: ['%$query%'],
+      orderBy: 'created_at DESC',
+      limit: 20,
+    );
+  }
+
   // ── Conversations ───────────────────────────────────────────
 
-  Future<int> createConversation(String name) async {
+  Future<int> createConversation(String name, {String? publicKey}) async {
     final db = await database;
     return db.insert('conversations', {
       'name': name,
+      'public_key': publicKey,
       'created_at': DateTime.now().millisecondsSinceEpoch,
     });
   }
