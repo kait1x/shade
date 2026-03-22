@@ -163,23 +163,33 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   /// Encrypts [plainText], persists locally, and sends via WebSocket.
   Future<void> sendAndEncrypt(String plainText) async {
     try {
-      final encryptedContent = await _cryptoService.encryptData(
+      final myPublicKey = await _cryptoService.getPublicKey();
+      if (myPublicKey == null) throw StateError('No public key');
+
+      // Encrypt for recipient (for network transmission)
+      final encryptedForRecipient = await _cryptoService.encryptData(
         plainText,
         recipientPublicKey,
       );
 
-      // Save locally first — always succeeds
+      // Encrypt for self (for local display)
+      final encryptedForSelf = await _cryptoService.encryptData(
+        plainText,
+        myPublicKey,
+      );
+
+      // Save locally — use self-encrypted version so sender can read
       await _chatRepository.sendMessage(
         conversationId: conversationId,
         senderId: currentSenderId,
-        encryptedContent: encryptedContent,
+        encryptedContent: encryptedForSelf,
         conversationName: recipientUsername,
       );
 
-      // Send over the network — non-fatal if not connected
+      // Send recipient-encrypted version over the network
       try {
         if (_connectionService.isConnected) {
-          _connectionService.sendMessage(recipientUsername, encryptedContent);
+          _connectionService.sendMessage(recipientUsername, encryptedForRecipient);
         }
       } catch (_) {
         debugPrint('[ChatMessages] WS send failed, message saved locally');

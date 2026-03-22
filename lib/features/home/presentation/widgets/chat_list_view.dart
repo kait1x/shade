@@ -3,14 +3,31 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import 'package:shade/core/services/crypto_service.dart';
+import 'package:shade/core/services/connection_service.dart';
 import 'package:shade/features/chats/data/repositories/chat_repository.dart';
 import 'package:shade/features/chats/presentation/screens/chat_screen.dart';
 import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 import 'package:shade/main.dart';
 
+/// Refresh trigger for conversations list.
+final conversationsRefreshProvider = Provider<int>((ref) => 0);
+
 /// Loads all conversations and decrypts the last message preview.
 final conversationsProvider =
     FutureProvider.autoDispose<List<Conversation>>((ref) async {
+  // Watch the refresh trigger to rebuild when invalidated
+  ref.watch(conversationsRefreshProvider);
+
+  // Listen for incoming messages to refresh automatically
+  final conn = ref.watch(connectionServiceProvider);
+  final sub = conn.messages.listen((_) {
+    // Invalidate self when a new message arrives
+    Future.delayed(const Duration(milliseconds: 500), () {
+      ref.invalidateSelf();
+    });
+  });
+  ref.onDispose(sub.cancel);
+
   final repo = ref.watch(chatRepositoryProvider);
   final crypto = ref.watch(cryptoServiceProvider);
   final conversations = await repo.getConversations();

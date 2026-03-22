@@ -22,6 +22,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget build(BuildContext context) {
     final authState = ref.watch(authNotifierProvider);
 
+    // Refresh conversations every time this screen is built
+    ref.invalidate(conversationsProvider);
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('SHADE'),
