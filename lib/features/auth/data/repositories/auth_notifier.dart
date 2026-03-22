@@ -80,8 +80,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
         _connectionService.connect(nickname);
         debugPrint('Registered and connected to server as: $nickname');
 
-        // Initialize notifications
+        // Initialize notifications (local + FCM)
         await NotificationService.init();
+        await NotificationService.registerToken(
+          'http://45.81.255.81:3000',
+          nickname,
+        );
       } catch (e) {
         final errorStr = e.toString();
         if (errorStr.contains('Username already taken') ||
@@ -128,7 +132,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
         try {
           _connectionService.register(nickname).then((_) {
             _connectionService.connect(nickname);
-            NotificationService.init();
+            NotificationService.init().then((_) {
+              NotificationService.registerToken('http://45.81.255.81:3000', nickname);
+            });
             debugPrint('Reconnected to server as: $nickname');
           }).catchError((e) {
             debugPrint('Server reconnect skipped: $e');
