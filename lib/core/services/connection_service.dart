@@ -7,6 +7,7 @@ import 'package:http/http.dart' as http;
 import 'package:socket_io_client/socket_io_client.dart' as io;
 
 import 'package:shade/core/services/crypto_service.dart';
+import 'package:shade/core/services/notification_service.dart';
 import 'package:shade/core/database/database_service.dart';
 import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 
@@ -260,6 +261,12 @@ class ConnectionService {
       if (!_notificationCtrl.isClosed) {
         _notificationCtrl.add(msg);
       }
+
+      // Show system notification
+      await NotificationService.showMessageNotification(
+        from: msg.from,
+        conversationId: convId.toString(),
+      );
     } catch (e) {
       debugPrint('[ConnectionService] Bad incoming message: $e');
     }
