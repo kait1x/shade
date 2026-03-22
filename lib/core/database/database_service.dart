@@ -5,12 +5,12 @@ import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-// Common sqflite API (shared types: Database, ConflictAlgorithm, getDatabasesPath, deleteDatabase, databaseFactory)
-import 'package:sqflite_common/sqflite.dart' show Database, ConflictAlgorithm, getDatabasesPath, deleteDatabase, databaseFactory;
 // Mobile: encrypted SQLite via SQLCipher
 import 'package:sqflite_sqlcipher/sqflite.dart' as sqlcipher;
 // Desktop: standard SQLite via FFI
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' as sqflite_ffi;
+// Common types (Database, ConflictAlgorithm)
+import 'package:sqflite_common/sqflite.dart' show Database, ConflictAlgorithm;
 
 /// Returns true when running on a mobile platform that supports SQLCipher.
 bool get _isMobile => Platform.isAndroid || Platform.isIOS;
@@ -48,12 +48,17 @@ class DatabaseService {
   }
 
   Future<Database> _open() async {
-    // Desktop must init FFI before any database call
-    if (!_isMobile) {
+    String dir;
+
+    if (_isMobile) {
+      // ── Mobile: use sqflite_sqlcipher path ──────────────────
+      dir = await sqlcipher.getDatabasesPath();
+    } else {
+      // ── Desktop: init FFI first, then get path ─────────────
       await _initFfi();
+      dir = await sqflite_ffi.getDatabasesPath();
     }
 
-    final dir = await getDatabasesPath();
     final filePath = p.join(dir, _dbName);
 
     if (_isMobile) {
@@ -87,7 +92,7 @@ class DatabaseService {
   Future<void> _initFfi() async {
     if (_ffiInitialised) return;
     sqflite_ffi.sqfliteFfiInit();
-    databaseFactory = sqflite_ffi.databaseFactoryFfi;
+    sqflite_ffi.databaseFactory = sqflite_ffi.databaseFactoryFfi;
     _ffiInitialised = true;
     debugPrint('[DatabaseService] sqflite FFI initialised (desktop mode)');
   }
@@ -348,8 +353,16 @@ class DatabaseService {
 
   Future<void> nuke() async {
     await close();
-    final dir = await getDatabasesPath();
-    await deleteDatabase(p.join(dir, _dbName));
+
+    String dir;
+    if (_isMobile) {
+      dir = await sqlcipher.getDatabasesPath();
+      await sqlcipher.deleteDatabase(p.join(dir, _dbName));
+    } else {
+      dir = await sqflite_ffi.getDatabasesPath();
+      await sqflite_ffi.deleteDatabase(p.join(dir, _dbName));
+    }
+
     if (_isMobile) {
       await _secureStorage.delete(key: _dbKeyStorageKey);
     }
