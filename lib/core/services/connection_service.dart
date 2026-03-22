@@ -153,20 +153,22 @@ class ConnectionService {
 
   /// Opens the WebSocket and auto-reconnects on failure.
   void connect(String username) {
-    if (_socket != null && _isConnected) return;
+    // Always disconnect old socket first
+    if (_socket != null) {
+      _socket!.disconnect();
+      _socket!.dispose();
+      _socket = null;
+      _isConnected = false;
+    }
 
     _username = username;
-
-    // Determine transports based on URL scheme
-    final uri = Uri.parse(serverUrl);
-    final useWebSocketOnly = uri.scheme == 'https' || uri.scheme == 'http';
 
     _socket = io.io(
       serverUrl,
       io.OptionBuilder()
-          .setTransports(['websocket']) // WebSocket only — stable through CF
+          .setTransports(['websocket'])
           .disableAutoConnect()
-          .setReconnectionAttempts(-1) // infinite
+          .setReconnectionAttempts(-1)
           .setReconnectionDelay(2000)
           .setReconnectionDelayMax(15000)
           .setTimeout(20000)
