@@ -73,6 +73,7 @@ class ConnectionService {
 
   final _messageCtrl = StreamController<IncomingMessage>.broadcast();
   final _onlineCtrl = StreamController<List<String>>.broadcast();
+  final _notificationCtrl = StreamController<IncomingMessage>.broadcast();
   final Set<String> _onlineUsers = {};
 
   bool _isConnected = false;
@@ -87,6 +88,7 @@ class ConnectionService {
   // ── Public API ──────────────────────────────────────────────
 
   Stream<IncomingMessage> get messages => _messageCtrl.stream;
+  Stream<IncomingMessage> get notifications => _notificationCtrl.stream;
   Stream<List<String>> get onlineUsers => _onlineCtrl.stream;
   bool get isConnected => _isConnected;
   String? get currentUsername => _username;
@@ -228,6 +230,7 @@ class ConnectionService {
     disconnect();
     _messageCtrl.close();
     _onlineCtrl.close();
+    _notificationCtrl.close();
   }
 
   // ── Incoming message handler ────────────────────────────────
@@ -251,6 +254,11 @@ class ConnectionService {
       // Notify UI
       if (!_messageCtrl.isClosed) {
         _messageCtrl.add(msg);
+      }
+      
+      // Emit notification for incoming messages
+      if (!_notificationCtrl.isClosed) {
+        _notificationCtrl.add(msg);
       }
     } catch (e) {
       debugPrint('[ConnectionService] Bad incoming message: $e');

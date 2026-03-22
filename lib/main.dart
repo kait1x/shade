@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:shade/core/routing/app_router.dart';
+import 'package:shade/core/widgets/notification_overlay.dart';
 
 /// Shade brand colors.
 class ShadeColors {
@@ -40,11 +41,13 @@ class ShadeApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(goRouterProvider);
 
-    return MaterialApp.router(
-      title: 'Shade',
-      debugShowCheckedModeBanner: false,
-      routerConfig: router,
-      theme: _buildDarkTheme(),
+    return NotificationOverlay(
+      child: MaterialApp.router(
+        title: 'Shade',
+        debugShowCheckedModeBanner: false,
+        routerConfig: router,
+        theme: _buildDarkTheme(),
+      ),
     );
   }
 
