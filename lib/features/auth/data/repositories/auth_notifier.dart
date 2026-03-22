@@ -79,6 +79,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
         _connectionService.connect(nickname);
         debugPrint('Registered and connected to server as: $nickname');
       } catch (e) {
+        final errorStr = e.toString();
+        if (errorStr.contains('Username already taken') ||
+            errorStr.contains('409')) {
+          state = state.copyWith(
+            status: AuthStatus.error,
+            error: 'Этот никнейм уже занят. Выберите другой.',
+          );
+          return false;
+        }
         // Server registration is non-fatal — local E2EE still works
         debugPrint('Server registration skipped: $e');
       }
@@ -132,11 +141,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     return false;
   }
 
-  /// Clears authentication state and disconnects from server.
-  void logout() {
-    _connectionService.disconnect();
-    state = const AuthState();
-  }
+  /// Account is permanently bound to device — logout is disabled.
 }
 
 /// Provider for CryptoService
