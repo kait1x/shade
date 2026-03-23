@@ -230,10 +230,19 @@ class ConnectionService {
       // The UI will handle the timeout
     });
 
-    _socket!.on('authError', (data) {
-      debugPrint('[ConnectionService] WS auth error');
+    _socket!.on('authError', (data) async {
+      debugPrint('[ConnectionService] WS auth error — re-registering');
       _sessionToken = null;
       disconnect();
+      // Re-register to get new session token, then reconnect
+      if (_username != null) {
+        try {
+          await register(_username!);
+          connect(_username!);
+        } catch (e) {
+          debugPrint('[ConnectionService] Re-register failed: $e');
+        }
+      }
     });
 
     _socket!.onDisconnect((reason) {
