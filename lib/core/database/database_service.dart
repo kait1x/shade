@@ -289,35 +289,20 @@ class DatabaseService {
 
   // ── Messages ────────────────────────────────────────────────
 
-  /// Inserts a message. Skips if duplicate exists within 5 seconds.
+  /// Inserts a message into the database.
   Future<int> insertMessage({
     required int conversationId,
     required int senderId,
     required String encryptedContent,
   }) async {
     final db = await database;
-
-    // Check for duplicates within 5 seconds
-    final now = DateTime.now().millisecondsSinceEpoch;
-    final existing = await db.query(
-      'messages',
-      where:
-          'conversation_id = ? AND sender_id = ? AND encrypted_content = ? AND timestamp > ?',
-      whereArgs: [conversationId, senderId, encryptedContent, now - 5000],
-      limit: 1,
-    );
-
-    if (existing.isNotEmpty) {
-      debugPrint('[DatabaseService] Duplicate message skipped');
-      return existing.first['id'] as int;
-    }
-
     return db.insert('messages', {
       'conversation_id': conversationId,
       'sender_id': senderId,
       'encrypted_content': encryptedContent,
-      'timestamp': now,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
     });
+  }
   }
 
   Future<List<Map<String, dynamic>>> getMessages(
