@@ -340,11 +340,26 @@ class ConnectionService {
       if (c['name'] == withUser) return c['id'] as int;
     }
     // Look up public key from contacts
+    String? publicKey;
     final contact = await _db.getContact(withUser);
-    return _db.createConversation(
-      withUser,
-      publicKey: contact?['public_key'] as String?,
-    );
+    if (contact != null) {
+      publicKey = contact['public_key'] as String?;
+    }
+    // If not in contacts, fetch from server
+    if (publicKey == null) {
+      try {
+        final bundle = await getPublicKey(withUser);
+        if (bundle != null) {
+          publicKey = bundle.publicKey;
+          await _db.saveContact(
+            nickname: withUser,
+            publicKey: bundle.publicKey,
+            signature: bundle.signature,
+          );
+        }
+      } catch (_) {}
+    }
+    return _db.createConversation(withUser, publicKey: publicKey);
   }
 
   // ── Reconnection ────────────────────────────────────────────
