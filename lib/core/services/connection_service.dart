@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show Platform;
+import 'dart:io' show HttpClient, Platform, SecurityContext, X509Certificate;
+import 'package:crypto/crypto.dart' show sha256;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart' as http_io;
 import 'package:socket_io_client/socket_io_client.dart' as io;
 
 import 'package:shade/core/services/crypto_service.dart';
@@ -62,21 +64,47 @@ class IncomingMessage {
 ///   3. getPublicKey(username) — fetch + verify recipient key
 ///   4. sendMessage(to, data) — emit encrypted payload
 ///   5. messages stream — incoming encrypted messages (auto-saved to DB)
+// ── HTTP Client with certificate pinning ───────────────────
+
+/// SHA-256 fingerprint of the server's TLS certificate (DER format, base64).
+/// Pass via: --dart-define=SHADED_PIN_SHA256=<base64>
+/// If empty, self-signed certs are allowed (development only).
+const _pinSha256 =
+    String.fromEnvironment('SHADED_PIN_SHA256', defaultValue: '');
+
+/// Creates an HTTP client with optional certificate pinning.
+http.Client _createHttpClient() {
+  final client = HttpClient();
+
+  if (_pinSha256.isNotEmpty) {
+    // Production: pin to specific certificate
+    client.badCertificateCallback = (X509Certificate cert, _, __) {
+      final fingerprint = sha256.convert(cert.der).toString();
+      return fingerprint == _pinSha256;
+    };
+  } else {
+    // Development: allow any certificate (self-signed)
+    client.badCertificateCallback = (_, __, ___) => true;
+  }
+
+  return http_io.IOClient(client);
+}
+
 class ConnectionService {
   final String serverUrl;
   final CryptoService _crypto;
   final DatabaseService _db;
+  final http.Client _httpClient;
 
   io.Socket? _socket;
   String? _username;
+  String? _sessionToken;
   Timer? _reconnectTimer;
   bool _isDisposed = false;
 
   final _messageCtrl = StreamController<IncomingMessage>.broadcast();
-  final _onlineCtrl = StreamController<List<String>>.broadcast();
   final _notificationCtrl = StreamController<IncomingMessage>.broadcast();
   final _typingCtrl = StreamController<String>.broadcast();
-  final Set<String> _onlineUsers = {};
 
   bool _isConnected = false;
 
@@ -85,13 +113,13 @@ class ConnectionService {
     required CryptoService cryptoService,
     required DatabaseService databaseService,
   })  : _crypto = cryptoService,
-        _db = databaseService;
+        _db = databaseService,
+        _httpClient = _createHttpClient();
 
   // ── Public API ──────────────────────────────────────────────
 
   Stream<IncomingMessage> get messages => _messageCtrl.stream;
   Stream<IncomingMessage> get notifications => _notificationCtrl.stream;
-  Stream<List<String>> get onlineUsers => _onlineCtrl.stream;
   Stream<String> get typing => _typingCtrl.stream;
   bool get isConnected => _isConnected;
   String? get currentUsername => _username;
@@ -122,8 +150,10 @@ class ConnectionService {
           body['error'] ?? 'Registration failed (${response.statusCode})');
     }
 
+    final body = jsonDecode(response.body);
     _username = username;
-    debugPrint('[ConnectionService] Registered as $username');
+    _sessionToken = body['token'];
+    debugPrint('[ConnectionService] Registered');
   }
 
   /// Fetches the public key bundle for [username] and verifies the signature.
@@ -142,7 +172,7 @@ class ConnectionService {
         bundle.signature,
       );
       if (!valid) {
-        debugPrint('[ConnectionService] ⚠ Invalid signature for $username');
+        debugPrint('[ConnectionService] Invalid signature');
         return null;
       }
       return bundle;
@@ -181,21 +211,14 @@ class ConnectionService {
     _socket!.onConnect((_) {
       _isConnected = true;
       _cancelReconnect();
-      _socket!.emit('register', username);
-      debugPrint('[ConnectionService] WS connected as $username');
+      _socket!.emit('register', {
+        'username': username,
+        'token': _sessionToken ?? '',
+      });
+      debugPrint('[ConnectionService] WS connected');
     });
 
     _socket!.on('message', _handleIncomingMessage);
-
-    _socket!.on('userOnline', (name) {
-      _onlineUsers.add(name as String);
-      if (!_onlineCtrl.isClosed) _onlineCtrl.add(_onlineUsers.toList());
-    });
-
-    _socket!.on('userOffline', (name) {
-      _onlineUsers.remove(name as String);
-      if (!_onlineCtrl.isClosed) _onlineCtrl.add(_onlineUsers.toList());
-    });
 
     // Typing indicator events
     _socket!.on('typing', (data) {
@@ -204,8 +227,13 @@ class ConnectionService {
     });
 
     _socket!.on('stopTyping', (data) {
-      // We don't need to do anything special for stopTyping
       // The UI will handle the timeout
+    });
+
+    _socket!.on('authError', (data) {
+      debugPrint('[ConnectionService] WS auth error');
+      _sessionToken = null;
+      disconnect();
     });
 
     _socket!.onDisconnect((reason) {
@@ -258,8 +286,8 @@ class ConnectionService {
     _isDisposed = true;
     disconnect();
     _messageCtrl.close();
-    _onlineCtrl.close();
     _notificationCtrl.close();
+    _typingCtrl.close();
   }
 
   // ── Incoming message handler ────────────────────────────────
@@ -270,7 +298,7 @@ class ConnectionService {
       final msg = IncomingMessage.fromJson(
         Map<String, dynamic>.from(raw as Map),
       );
-      debugPrint('[ConnectionService] Incoming from ${msg.from}');
+      debugPrint('[ConnectionService] Incoming message');
 
       // Skip messages from self (prevents duplicates)
       if (msg.from == _username) {
@@ -282,7 +310,7 @@ class ConnectionService {
       final convId = await _ensureConversation(msg.from);
       await _db.insertMessage(
         conversationId: convId,
-        senderId: msg.from.hashCode,
+        senderId: msg.from.hashCode.abs(),
         encryptedContent: msg.data,
       );
 
@@ -311,7 +339,12 @@ class ConnectionService {
     for (final c in convs) {
       if (c['name'] == withUser) return c['id'] as int;
     }
-    return _db.createConversation(withUser);
+    // Look up public key from contacts
+    final contact = await _db.getContact(withUser);
+    return _db.createConversation(
+      withUser,
+      publicKey: contact?['public_key'] as String?,
+    );
   }
 
   // ── Reconnection ────────────────────────────────────────────
@@ -341,13 +374,13 @@ class ConnectionService {
   Future<http.Response> _retryPost(Uri uri, {required String body}) async {
     for (var i = 0; i < _maxRetries; i++) {
       try {
-        return await http
+        return await _httpClient
             .post(uri,
                 headers: {'Content-Type': 'application/json'}, body: body)
             .timeout(const Duration(seconds: 15));
       } catch (e) {
         if (i == _maxRetries - 1) rethrow;
-        debugPrint('[ConnectionService] POST retry ${i + 1}/$_maxRetries: $e');
+        debugPrint('[ConnectionService] POST retry ${i + 1}/$_maxRetries');
         await Future.delayed(_retryDelay);
       }
     }
@@ -357,10 +390,10 @@ class ConnectionService {
   Future<http.Response> _retryGet(Uri uri) async {
     for (var i = 0; i < _maxRetries; i++) {
       try {
-        return await http.get(uri).timeout(const Duration(seconds: 15));
+        return await _httpClient.get(uri).timeout(const Duration(seconds: 15));
       } catch (e) {
         if (i == _maxRetries - 1) rethrow;
-        debugPrint('[ConnectionService] GET retry ${i + 1}/$_maxRetries: $e');
+        debugPrint('[ConnectionService] GET retry ${i + 1}/$_maxRetries');
         await Future.delayed(_retryDelay);
       }
     }
@@ -370,18 +403,18 @@ class ConnectionService {
 
 // ── Riverpod providers ────────────────────────────────────────
 
-/// Server URL — choose the right one for your setup:
+/// Server URL — configure via --dart-define=SHADE_SERVER_URL=<url>
 ///
 /// ┌─────────────────────────────┬───────────────────────────────────────┐
 /// │ Setup                       │ URL                                   │
 /// ├─────────────────────────────┼───────────────────────────────────────┤
 /// │ Android emulator (local)    │ http://10.0.2.2:3000                  │
 /// │ iOS simulator               │ http://localhost:3000                  │
-/// │ Physical device (LAN)       │ http://192.168.1.XXX:3000              │
+/// │ Production (HTTPS required) │ https://your-domain.com               │
 /// │ Cloudflare Tunnel           │ https://your-name.trycloudflare.com   │
 /// └─────────────────────────────┴───────────────────────────────────────┘
 ///
-/// For Samsung A25 over USB/WiFi with Cloudflare, use your tunnel URL.
+/// WARNING: HTTP exposes metadata. Always use HTTPS in production.
 const _serverUrl = String.fromEnvironment(
   'SHADE_SERVER_URL',
   defaultValue: 'http://10.0.2.2:3000',

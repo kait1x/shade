@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -18,6 +20,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _isOpeningSelfChat = false;
+  StreamSubscription? _messageSub;
 
   @override
   void initState() {
@@ -25,12 +28,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // Listen for incoming messages and refresh conversation list
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final conn = ref.read(connectionServiceProvider);
-      conn.messages.listen((_) {
+      _messageSub = conn.messages.listen((_) {
         if (mounted) {
           ref.invalidate(conversationsProvider);
         }
       });
     });
+  }
+
+  @override
+  void dispose() {
+    _messageSub?.cancel();
+    super.dispose();
   }
 
   @override

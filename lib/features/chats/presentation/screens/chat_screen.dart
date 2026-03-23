@@ -109,7 +109,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         // Persist encrypted message locally
         await _chatRepository.sendMessage(
           conversationId: conversationId,
-          senderId: recipientUsername.hashCode,
+          senderId: recipientUsername.hashCode.abs(), // stable per-conversation
           encryptedContent: incoming.data,
           conversationName: recipientUsername,
         );
@@ -148,9 +148,23 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
       state = state.copyWith(isLoading: true, error: null);
 
       final rawMessages = await _chatRepository.getMessages(conversationId);
-      final decrypted = await _decryptMessages(rawMessages);
+      final decrypted = await _chatRepository.decryptMessages(
+        rawMessages,
+        mySenderId: currentSenderId,
+      );
 
-      state = state.copyWith(messages: decrypted, isLoading: false);
+      state = state.copyWith(
+        messages: decrypted
+            .map((d) => DisplayMessage(
+                  id: d.id,
+                  text: d.text,
+                  timestamp: d.timestamp,
+                  isMine: d.isMine,
+                  decryptSuccess: d.decryptSuccess,
+                ))
+            .toList(),
+        isLoading: false,
+      );
     } catch (e) {
       state = state.copyWith(
         isLoading: false,
@@ -159,40 +173,13 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
     }
   }
 
-  Future<List<DisplayMessage>> _decryptMessages(
-    List<Message> rawMessages,
-  ) async {
-    final result = <DisplayMessage>[];
-    for (final msg in rawMessages) {
-      try {
-        final plainText = await _cryptoService.decryptMessage(
-          msg.encryptedContent,
-        );
-        result.add(DisplayMessage(
-          id: msg.id,
-          text: plainText,
-          timestamp: msg.timestamp,
-          isMine: msg.senderId == currentSenderId,
-        ));
-      } catch (e) {
-        debugPrint('[ChatMessages] decrypt error: $e');
-        result.add(DisplayMessage(
-          id: msg.id,
-          text: '[Не удалось расшифровать]',
-          timestamp: msg.timestamp,
-          isMine: msg.senderId == currentSenderId,
-          decryptSuccess: false,
-        ));
-      }
-    }
-    return result;
-  }
-
   /// Encrypts [plainText], persists locally, and sends via WebSocket.
   Future<void> sendAndEncrypt(String plainText) async {
     try {
       final myPublicKey = await _cryptoService.getPublicKey();
       if (myPublicKey == null) throw StateError('No public key');
+
+      final isSelfChat = recipientPublicKey == myPublicKey;
 
       // Encrypt for recipient (for network transmission)
       final encryptedForRecipient = await _cryptoService.encryptData(
@@ -201,12 +188,11 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
       );
 
       // Encrypt for self (for local display)
-      final encryptedForSelf = await _cryptoService.encryptData(
-        plainText,
-        myPublicKey,
-      );
+      final encryptedForSelf = isSelfChat
+          ? encryptedForRecipient // same key — reuse
+          : await _cryptoService.encryptData(plainText, myPublicKey);
 
-      // Save locally — use self-encrypted version so sender can read
+      // Save locally
       await _chatRepository.sendMessage(
         conversationId: conversationId,
         senderId: currentSenderId,
@@ -214,14 +200,16 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         conversationName: recipientUsername,
       );
 
-      // Send recipient-encrypted version over the network
-      try {
-        if (_connectionService.isConnected) {
-          _connectionService.sendMessage(
-              recipientUsername, encryptedForRecipient);
+      // Send recipient-encrypted version over the network (skip for self-chat)
+      if (!isSelfChat) {
+        try {
+          if (_connectionService.isConnected) {
+            _connectionService.sendMessage(
+                recipientUsername, encryptedForRecipient);
+          }
+        } catch (_) {
+          debugPrint('[ChatMessages] WS send failed, message saved locally');
         }
-      } catch (_) {
-        debugPrint('[ChatMessages] WS send failed, message saved locally');
       }
 
       await _loadMessages();
@@ -300,7 +288,7 @@ class ChatScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final authState = ref.watch(authNotifierProvider);
-    final senderId = authState.nickname?.hashCode ?? 1;
+    final senderId = authState.userId ?? 0;
     final currentUsername = authState.nickname ?? '';
 
     final params = ChatMessagesParams(

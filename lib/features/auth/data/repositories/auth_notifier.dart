@@ -19,12 +19,14 @@ class AuthState {
   final AuthStatus status;
   final String? nickname;
   final String? publicKey;
+  final int? userId;
   final String? error;
 
   const AuthState({
     this.status = AuthStatus.initial,
     this.nickname,
     this.publicKey,
+    this.userId,
     this.error,
   });
 
@@ -32,12 +34,14 @@ class AuthState {
     AuthStatus? status,
     String? nickname,
     String? publicKey,
+    int? userId,
     String? error,
   }) {
     return AuthState(
       status: status ?? this.status,
       nickname: nickname ?? this.nickname,
       publicKey: publicKey ?? this.publicKey,
+      userId: userId ?? this.userId,
       error: error ?? this.error,
     );
   }
@@ -72,18 +76,19 @@ class AuthNotifier extends StateNotifier<AuthState> {
       final publicKey = keys['publicKey']!;
 
       // Save profile to encrypted database
-      await _databaseService.saveUserProfile(nickname, publicKey);
+      final userId =
+          await _databaseService.saveUserProfile(nickname, publicKey);
 
       // Register on relay server (signs the key automatically)
       try {
         await _connectionService.register(nickname);
         _connectionService.connect(nickname);
-        debugPrint('Registered and connected to server as: $nickname');
+        debugPrint('Registered and connected to server');
 
         // Initialize notifications (local + FCM)
         await NotificationService.init();
         await NotificationService.registerToken(
-          'http://45.81.255.81:3000',
+          _connectionService.serverUrl,
           nickname,
         );
       } catch (e) {
@@ -104,9 +109,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
         status: AuthStatus.authenticated,
         nickname: nickname,
         publicKey: publicKey,
+        userId: userId,
       );
 
-      debugPrint('Secure profile created for: $nickname');
+      debugPrint('Secure profile created');
       return true;
     } catch (e) {
       state = state.copyWith(
@@ -127,6 +133,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
       if (profile != null && publicKey != null) {
         final nickname = profile['nickname'] as String;
+        final userId = profile['id'] as int;
 
         // Reconnect to server in background
         // Always connect even if register fails (user already exists)
@@ -139,15 +146,16 @@ class AuthNotifier extends StateNotifier<AuthState> {
         _connectionService.connect(nickname);
         await NotificationService.init();
         await NotificationService.registerToken(
-          'http://45.81.255.81:3000',
+          _connectionService.serverUrl,
           nickname,
         );
-        debugPrint('Reconnected to server as: $nickname');
+        debugPrint('Reconnected to server');
 
         state = state.copyWith(
           status: AuthStatus.authenticated,
           nickname: nickname,
           publicKey: publicKey,
+          userId: userId,
         );
         return true;
       }

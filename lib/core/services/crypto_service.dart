@@ -26,8 +26,7 @@ class CryptoService {
   static const int _aesIvLen = 16;
 
   CryptoService({FlutterSecureStorage? storage})
-      : _secureStorage =
-            storage ??
+      : _secureStorage = storage ??
             const FlutterSecureStorage(
               aOptions: AndroidOptions(encryptedSharedPreferences: true),
             );
@@ -77,7 +76,7 @@ class CryptoService {
     // RSA-OAEP-SHA256 encrypt the envelope
     final encryptedKey = await RSA.encryptOAEP(
       base64.encode(envelope),
-      '',            // label (empty)
+      '', // label (empty)
       Hash.SHA256,
       publicKey,
     );
@@ -92,8 +91,6 @@ class CryptoService {
     final map = jsonDecode(encryptedPayload) as Map<String, dynamic>;
     final encryptedKey = map['k'] as String;
     final encryptedDataB64 = map['d'] as String;
-
-    debugPrint('[CryptoService] decryptData: keyLen=${privateKey.length}, keyStart=${privateKey.substring(0, 30)}...');
 
     try {
       // RSA-OAEP-SHA256 decrypt the envelope
@@ -258,13 +255,14 @@ class CryptoService {
 
     // 2) Fallback to file on desktop
     if ((raw == null || raw.isEmpty) &&
-        !Platform.isAndroid && !Platform.isIOS) {
+        !Platform.isAndroid &&
+        !Platform.isIOS) {
       try {
         final dir = await getApplicationSupportDirectory();
         final file = File('${dir.path}/shade_$alias.pem');
         if (await file.exists()) {
           raw = await file.readAsString();
-          debugPrint('[CryptoService] readKey $alias from file: ${file.path}');
+          debugPrint('[CryptoService] readKey $alias from file');
         } else {
           debugPrint('[CryptoService] file not found: ${file.path}');
         }

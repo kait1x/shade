@@ -23,7 +23,7 @@ bool get _isMobile => Platform.isAndroid || Platform.isIOS;
 ///   but fully functional for development and testing).
 class DatabaseService {
   static const String _dbName = 'shade.db';
-  static const int _dbVersion = 3;
+  static const int _dbVersion = 4;
   static const String _dbKeyStorageKey = 'sqlcipher_db_key';
 
   final FlutterSecureStorage _secureStorage;
@@ -158,7 +158,8 @@ class DatabaseService {
         conversation_id   INTEGER NOT NULL,
         sender_id         INTEGER NOT NULL,
         encrypted_content TEXT    NOT NULL,
-        timestamp         INTEGER NOT NULL
+        timestamp         INTEGER NOT NULL,
+        is_read           INTEGER NOT NULL DEFAULT 0
       )
     ''');
 
@@ -224,13 +225,19 @@ class DatabaseService {
     if (oldVersion < 3) {
       await _createSchemaV3(db);
     }
+    if (oldVersion < 4) {
+      // Add is_read column to messages
+      await db.execute(
+        'ALTER TABLE messages ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0',
+      );
+    }
   }
 
   // ── Users ───────────────────────────────────────────────────
 
-  Future<void> saveUserProfile(String nickname, String publicKey) async {
+  Future<int> saveUserProfile(String nickname, String publicKey) async {
     final db = await database;
-    await db.insert(
+    return db.insert(
       'users',
       {
         'nickname': nickname,
@@ -342,8 +349,29 @@ class DatabaseService {
       'sender_id': senderId,
       'encrypted_content': encryptedContent,
       'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'is_read': 0,
     });
   }
+
+  /// Marks all messages in a conversation as read (for received messages).
+  Future<void> markMessagesAsRead(int conversationId) async {
+    final db = await database;
+    await db.update(
+      'messages',
+      {'is_read': 1},
+      where: 'conversation_id = ? AND is_read = 0',
+      whereArgs: [conversationId],
+    );
+  }
+
+  /// Returns count of unread messages in a conversation.
+  Future<int> getUnreadCount(int conversationId) async {
+    final db = await database;
+    final result = await db.rawQuery(
+      'SELECT COUNT(*) AS cnt FROM messages WHERE conversation_id = ? AND is_read = 0',
+      [conversationId],
+    );
+    return result.first['cnt'] as int;
   }
 
   Future<List<Map<String, dynamic>>> getMessages(

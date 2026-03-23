@@ -2,47 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import 'package:shade/core/services/crypto_service.dart';
-import 'package:shade/core/services/connection_service.dart';
 import 'package:shade/features/chats/data/repositories/chat_repository.dart';
 import 'package:shade/features/chats/presentation/screens/chat_screen.dart';
 import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 import 'package:shade/main.dart';
 
-/// Loads all conversations and decrypts the last message preview.
+/// Loads all conversations with decrypted last message preview.
 final conversationsProvider = FutureProvider<List<Conversation>>((ref) async {
   final repo = ref.watch(chatRepositoryProvider);
-  final crypto = ref.watch(cryptoServiceProvider);
-  final conversations = await repo.getConversations();
-
-  final decrypted = <Conversation>[];
-  for (final conv in conversations) {
-    Message? preview;
-    if (conv.lastMessage != null) {
-      try {
-        final plain = await crypto.decryptMessage(
-          conv.lastMessage!.encryptedContent,
-        );
-        preview = Message(
-          id: conv.lastMessage!.id,
-          conversationId: conv.lastMessage!.conversationId,
-          senderId: conv.lastMessage!.senderId,
-          encryptedContent: plain,
-          timestamp: conv.lastMessage!.timestamp,
-        );
-      } catch (e) {
-        debugPrint('[ChatList] decrypt error: $e');
-        preview = conv.lastMessage;
-      }
-    }
-    decrypted.add(Conversation(
-      id: conv.id,
-      name: conv.name,
-      createdAt: conv.createdAt,
-      lastMessage: preview,
-    ));
-  }
-  return decrypted;
+  return repo.getDecryptedConversations();
 });
 
 /// Widget that displays the list of conversations.
@@ -97,7 +65,17 @@ class _ChatTile extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final publicKey = ref.watch(authNotifierProvider).publicKey;
+    final authState = ref.watch(authNotifierProvider);
+    final myPublicKey = authState.publicKey;
+    final myNickname = authState.nickname;
+
+    // Determine recipient key: from conversation, or self-key for self-chat
+    String? recipientKey = conversation.publicKey;
+    final isSelfChat =
+        conversation.name == myNickname || conversation.name == 'Избранное';
+    if (isSelfChat) {
+      recipientKey = myPublicKey;
+    }
 
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -162,12 +140,12 @@ class _ChatTile extends ConsumerWidget {
             )
           : null,
       onTap: () {
-        if (publicKey != null) {
+        if (recipientKey != null) {
           context.push(
             '/chat/${conversation.id}',
             extra: ChatScreenArgs(
               conversationName: conversation.name,
-              recipientPublicKey: publicKey,
+              recipientPublicKey: recipientKey,
               recipientUsername: conversation.name,
             ),
           );
