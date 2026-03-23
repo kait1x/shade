@@ -246,6 +246,12 @@ class ConnectionService {
       );
       debugPrint('[ConnectionService] Incoming from ${msg.from}');
 
+      // Skip messages from self (prevents duplicates)
+      if (msg.from == _username) {
+        debugPrint('[ConnectionService] Skipping own message');
+        return;
+      }
+
       // Persist into encrypted DB
       final convId = await _ensureConversation(msg.from);
       await _db.insertMessage(
