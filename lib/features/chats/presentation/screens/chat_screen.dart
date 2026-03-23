@@ -105,19 +105,9 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
       // Only handle messages from our conversation partner
       if (incoming.from != recipientUsername) return;
 
-      try {
-        // Persist encrypted message locally
-        await _chatRepository.sendMessage(
-          conversationId: conversationId,
-          senderId: recipientUsername.hashCode.abs(), // stable per-conversation
-          encryptedContent: incoming.data,
-          conversationName: recipientUsername,
-        );
-        // Reload and decrypt
-        await _loadMessages();
-      } catch (e) {
-        debugPrint('[ChatMessages] incoming error: $e');
-      }
+      // Message already saved to DB by ConnectionService._handleIncomingMessage
+      // Just reload and decrypt
+      await _loadMessages();
     });
 
     // Listen for typing indicators
