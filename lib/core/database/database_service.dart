@@ -23,7 +23,7 @@ bool get _isMobile => Platform.isAndroid || Platform.isIOS;
 ///   but fully functional for development and testing).
 class DatabaseService {
   static const String _dbName = 'shade.db';
-  static const int _dbVersion = 2;
+  static const int _dbVersion = 3;
   static const String _dbKeyStorageKey = 'sqlcipher_db_key';
 
   final FlutterSecureStorage _secureStorage;
@@ -179,9 +179,50 @@ class DatabaseService {
     );
   }
 
+  Future<void> _createSchemaV3(Database db) async {
+    await db.execute('''
+      CREATE TABLE groups (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        name        TEXT    NOT NULL,
+        created_by  TEXT    NOT NULL,
+        created_at  INTEGER NOT NULL
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE group_members (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id    INTEGER NOT NULL,
+        nickname    TEXT    NOT NULL,
+        public_key  TEXT    NOT NULL,
+        joined_at   INTEGER NOT NULL,
+        FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE,
+        UNIQUE(group_id, nickname)
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE group_messages (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        group_id          INTEGER NOT NULL,
+        sender_nickname   TEXT    NOT NULL,
+        encrypted_content TEXT    NOT NULL,
+        timestamp         INTEGER NOT NULL,
+        FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE
+      )
+    ''');
+
+    await db.execute(
+      'CREATE INDEX idx_group_messages_group ON group_messages (group_id)',
+    );
+  }
+
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 2) {
       await _createSchemaV2(db);
+    }
+    if (oldVersion < 3) {
+      await _createSchemaV3(db);
     }
   }
 
@@ -350,6 +391,100 @@ class DatabaseService {
       await db.close();
     }
     _db = null;
+  }
+
+  // ── Groups ──────────────────────────────────────────────────
+
+  Future<int> createGroup({
+    required String name,
+    required String createdBy,
+    required List<Map<String, String>> members, // [{nickname, publicKey}]
+  }) async {
+    final db = await database;
+    final groupId = await db.insert('groups', {
+      'name': name,
+      'created_by': createdBy,
+      'created_at': DateTime.now().millisecondsSinceEpoch,
+    });
+
+    // Add members
+    for (final member in members) {
+      await db.insert('group_members', {
+        'group_id': groupId,
+        'nickname': member['nickname'],
+        'public_key': member['publicKey'],
+        'joined_at': DateTime.now().millisecondsSinceEpoch,
+      });
+    }
+
+    return groupId;
+  }
+
+  Future<List<Map<String, dynamic>>> getGroups() async {
+    final db = await database;
+    return db.query('groups', orderBy: 'created_at DESC');
+  }
+
+  Future<List<Map<String, dynamic>>> getGroupMembers(int groupId) async {
+    final db = await database;
+    return db.query(
+      'group_members',
+      where: 'group_id = ?',
+      whereArgs: [groupId],
+    );
+  }
+
+  Future<void> addGroupMember({
+    required int groupId,
+    required String nickname,
+    required String publicKey,
+  }) async {
+    final db = await database;
+    await db.insert('group_members', {
+      'group_id': groupId,
+      'nickname': nickname,
+      'public_key': publicKey,
+      'joined_at': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  Future<void> deleteGroup(int groupId) async {
+    final db = await database;
+    await db.delete(
+      'group_messages',
+      where: 'group_id = ?',
+      whereArgs: [groupId],
+    );
+    await db.delete(
+      'group_members',
+      where: 'group_id = ?',
+      whereArgs: [groupId],
+    );
+    await db.delete('groups', where: 'id = ?', whereArgs: [groupId]);
+  }
+
+  Future<int> insertGroupMessage({
+    required int groupId,
+    required String senderNickname,
+    required String encryptedContent,
+  }) async {
+    final db = await database;
+    return db.insert('group_messages', {
+      'group_id': groupId,
+      'sender_nickname': senderNickname,
+      'encrypted_content': encryptedContent,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    });
+  }
+
+  Future<List<Map<String, dynamic>>> getGroupMessages(int groupId) async {
+    final db = await database;
+    return db.query(
+      'group_messages',
+      where: 'group_id = ?',
+      whereArgs: [groupId],
+      orderBy: 'timestamp ASC',
+    );
   }
 
   Future<void> nuke() async {
