@@ -75,6 +75,7 @@ class ConnectionService {
   final _messageCtrl = StreamController<IncomingMessage>.broadcast();
   final _onlineCtrl = StreamController<List<String>>.broadcast();
   final _notificationCtrl = StreamController<IncomingMessage>.broadcast();
+  final _typingCtrl = StreamController<String>.broadcast();
   final Set<String> _onlineUsers = {};
 
   bool _isConnected = false;
@@ -91,6 +92,7 @@ class ConnectionService {
   Stream<IncomingMessage> get messages => _messageCtrl.stream;
   Stream<IncomingMessage> get notifications => _notificationCtrl.stream;
   Stream<List<String>> get onlineUsers => _onlineCtrl.stream;
+  Stream<String> get typing => _typingCtrl.stream;
   bool get isConnected => _isConnected;
   String? get currentUsername => _username;
 
@@ -116,7 +118,8 @@ class ConnectionService {
 
     if (response.statusCode != 200) {
       final body = jsonDecode(response.body);
-      throw Exception(body['error'] ?? 'Registration failed (${response.statusCode})');
+      throw Exception(
+          body['error'] ?? 'Registration failed (${response.statusCode})');
     }
 
     _username = username;
@@ -194,6 +197,17 @@ class ConnectionService {
       if (!_onlineCtrl.isClosed) _onlineCtrl.add(_onlineUsers.toList());
     });
 
+    // Typing indicator events
+    _socket!.on('typing', (data) {
+      final from = (data as Map)['from'] as String;
+      if (!_typingCtrl.isClosed) _typingCtrl.add(from);
+    });
+
+    _socket!.on('stopTyping', (data) {
+      // We don't need to do anything special for stopTyping
+      // The UI will handle the timeout
+    });
+
     _socket!.onDisconnect((reason) {
       _isConnected = false;
       debugPrint('[ConnectionService] WS disconnected: $reason');
@@ -218,6 +232,18 @@ class ConnectionService {
       throw StateError('Not connected');
     }
     _socket!.emit('message', {'to': to, 'data': encryptedPayload});
+  }
+
+  /// Sends typing indicator to [to].
+  void sendTyping(String to) {
+    if (_socket == null || !_isConnected) return;
+    _socket!.emit('typing', {'to': to});
+  }
+
+  /// Sends stop-typing indicator to [to].
+  void sendStopTyping(String to) {
+    if (_socket == null || !_isConnected) return;
+    _socket!.emit('stopTyping', {'to': to});
   }
 
   void disconnect() {
@@ -264,7 +290,7 @@ class ConnectionService {
       if (!_messageCtrl.isClosed) {
         _messageCtrl.add(msg);
       }
-      
+
       // Emit notification for incoming messages
       if (!_notificationCtrl.isClosed) {
         _notificationCtrl.add(msg);
@@ -316,7 +342,8 @@ class ConnectionService {
     for (var i = 0; i < _maxRetries; i++) {
       try {
         return await http
-            .post(uri, headers: {'Content-Type': 'application/json'}, body: body)
+            .post(uri,
+                headers: {'Content-Type': 'application/json'}, body: body)
             .timeout(const Duration(seconds: 15));
       } catch (e) {
         if (i == _maxRetries - 1) rethrow;

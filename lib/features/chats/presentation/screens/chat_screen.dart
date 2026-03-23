@@ -45,22 +45,26 @@ class ChatMessagesState {
   final List<DisplayMessage> messages;
   final bool isLoading;
   final String? error;
+  final bool isRecipientTyping;
 
   const ChatMessagesState({
     this.messages = const [],
     this.isLoading = true,
     this.error,
+    this.isRecipientTyping = false,
   });
 
   ChatMessagesState copyWith({
     List<DisplayMessage>? messages,
     bool? isLoading,
     String? error,
+    bool? isRecipientTyping,
   }) {
     return ChatMessagesState(
       messages: messages ?? this.messages,
       isLoading: isLoading ?? this.isLoading,
       error: error,
+      isRecipientTyping: isRecipientTyping ?? this.isRecipientTyping,
     );
   }
 }
@@ -76,6 +80,8 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   final CryptoService _cryptoService;
   final ConnectionService _connectionService;
   StreamSubscription<IncomingMessage>? _wsSub;
+  StreamSubscription<String>? _typingSub;
+  Timer? _typingTimeout;
 
   ChatMessagesNotifier({
     required this.conversationId,
@@ -113,6 +119,28 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         debugPrint('[ChatMessages] incoming error: $e');
       }
     });
+
+    // Listen for typing indicators
+    _typingSub = _connectionService.typing.listen((from) {
+      if (from == recipientUsername) {
+        state = state.copyWith(isRecipientTyping: true);
+        // Auto-hide after 3 seconds
+        _typingTimeout?.cancel();
+        _typingTimeout = Timer(const Duration(seconds: 3), () {
+          state = state.copyWith(isRecipientTyping: false);
+        });
+      }
+    });
+  }
+
+  /// Call when user starts typing
+  void notifyTyping() {
+    _connectionService.sendTyping(recipientUsername);
+  }
+
+  /// Call when user stops typing
+  void notifyStopTyping() {
+    _connectionService.sendStopTyping(recipientUsername);
   }
 
   Future<void> _loadMessages() async {
@@ -189,7 +217,8 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
       // Send recipient-encrypted version over the network
       try {
         if (_connectionService.isConnected) {
-          _connectionService.sendMessage(recipientUsername, encryptedForRecipient);
+          _connectionService.sendMessage(
+              recipientUsername, encryptedForRecipient);
         }
       } catch (_) {
         debugPrint('[ChatMessages] WS send failed, message saved locally');
@@ -205,15 +234,18 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   Future<void> refresh() => _loadMessages();
 
   @override
+  @override
   void dispose() {
     _wsSub?.cancel();
+    _typingSub?.cancel();
+    _typingTimeout?.cancel();
     super.dispose();
   }
 }
 
 /// Family provider for the chat messages state.
-final chatMessagesProvider = StateNotifierProvider.family<
-    ChatMessagesNotifier, ChatMessagesState, ChatMessagesParams>(
+final chatMessagesProvider = StateNotifierProvider.family<ChatMessagesNotifier,
+    ChatMessagesState, ChatMessagesParams>(
   (ref, params) {
     return ChatMessagesNotifier(
       conversationId: params.conversationId,
@@ -322,9 +354,37 @@ class ChatScreen extends ConsumerWidget {
               onRefresh: () => notifier.refresh(),
             ),
           ),
+          // Typing indicator
+          if (messagesState.isRecipientTyping)
+            Padding(
+              padding: const EdgeInsets.only(left: 16, bottom: 4),
+              child: Row(
+                children: [
+                  Text(
+                    '${args.conversationName} печатает',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: ShadeColors.textMuted,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.5,
+                      color: ShadeColors.violet.withOpacity(0.5),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           // Input area
           MessageInput(
             onSend: (text) => notifier.sendAndEncrypt(text),
+            onTyping: () => notifier.notifyTyping(),
+            onStopTyping: () => notifier.notifyStopTyping(),
           ),
         ],
       ),

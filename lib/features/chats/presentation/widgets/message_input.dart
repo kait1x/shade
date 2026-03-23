@@ -4,8 +4,15 @@ import 'package:shade/main.dart';
 /// Floating message input with neon glow border.
 class MessageInput extends StatefulWidget {
   final ValueChanged<String> onSend;
+  final VoidCallback? onTyping;
+  final VoidCallback? onStopTyping;
 
-  const MessageInput({super.key, required this.onSend});
+  const MessageInput({
+    super.key,
+    required this.onSend,
+    this.onTyping,
+    this.onStopTyping,
+  });
 
   @override
   State<MessageInput> createState() => _MessageInputState();
@@ -14,7 +21,7 @@ class MessageInput extends StatefulWidget {
 class _MessageInputState extends State<MessageInput>
     with SingleTickerProviderStateMixin {
   final _controller = TextEditingController();
-  final     _focusNode = FocusNode();
+  final _focusNode = FocusNode();
   bool _hasText = false;
   late AnimationController _glowController;
   late Animation<double> _glowAnimation;
@@ -26,6 +33,12 @@ class _MessageInputState extends State<MessageInput>
       final hasText = _controller.text.trim().isNotEmpty;
       if (hasText != _hasText) {
         setState(() => _hasText = hasText);
+        // Send typing indicator
+        if (hasText) {
+          widget.onTyping?.call();
+        } else {
+          widget.onStopTyping?.call();
+        }
       }
     });
 
