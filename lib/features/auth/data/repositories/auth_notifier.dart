@@ -129,17 +129,20 @@ class AuthNotifier extends StateNotifier<AuthState> {
         final nickname = profile['nickname'] as String;
 
         // Reconnect to server in background
+        // Always connect even if register fails (user already exists)
         try {
-          _connectionService.register(nickname).then((_) {
-            _connectionService.connect(nickname);
-            NotificationService.init().then((_) {
-              NotificationService.registerToken('http://45.81.255.81:3000', nickname);
-            });
-            debugPrint('Reconnected to server as: $nickname');
-          }).catchError((e) {
-            debugPrint('Server reconnect skipped: $e');
+          await _connectionService.register(nickname).catchError((e) {
+            debugPrint('Register skipped (already exists): $e');
           });
         } catch (_) {}
+
+        _connectionService.connect(nickname);
+        await NotificationService.init();
+        await NotificationService.registerToken(
+          'http://45.81.255.81:3000',
+          nickname,
+        );
+        debugPrint('Reconnected to server as: $nickname');
 
         state = state.copyWith(
           status: AuthStatus.authenticated,
@@ -166,7 +169,8 @@ final databaseServiceProvider = Provider<DatabaseService>((ref) {
 });
 
 /// Provider for AuthNotifier
-final authNotifierProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
+final authNotifierProvider =
+    StateNotifierProvider<AuthNotifier, AuthState>((ref) {
   final cryptoService = ref.watch(cryptoServiceProvider);
   final databaseService = ref.watch(databaseServiceProvider);
   final connectionService = ref.watch(connectionServiceProvider);
