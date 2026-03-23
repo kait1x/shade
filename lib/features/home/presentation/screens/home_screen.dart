@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:shade/core/services/connection_service.dart';
 import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 import 'package:shade/features/chats/data/repositories/chat_repository.dart';
 import 'package:shade/features/chats/presentation/screens/chat_screen.dart';
@@ -17,6 +18,20 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   bool _isOpeningSelfChat = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Listen for incoming messages and refresh conversation list
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final conn = ref.read(connectionServiceProvider);
+      conn.messages.listen((_) {
+        if (mounted) {
+          ref.invalidate(conversationsProvider);
+        }
+      });
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -215,7 +230,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       if (mounted) setState(() => _isOpeningSelfChat = false);
     }
   }
-
 }
 
 class _MiniFAB extends StatelessWidget {
