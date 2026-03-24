@@ -278,8 +278,8 @@ class ChatScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final authState = ref.watch(authNotifierProvider);
-    final senderId = authState.userId ?? 0;
     final currentUsername = authState.nickname ?? '';
+    final senderId = currentUsername.hashCode.abs();
 
     final params = ChatMessagesParams(
       conversationId: conversationId,
