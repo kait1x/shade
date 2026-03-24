@@ -35,24 +35,23 @@ class UserStatus {
 
   const UserStatus({required this.online, required this.lastSeen});
 
-  /// Returns a human-readable string like Telegram's "last seen recently".
+  /// Returns a human-readable string like Telegram.
   String get displayText {
     if (online) return 'в сети';
 
-    if (lastSeen == 0) return 'неизвестно';
+    if (lastSeen == 0) return 'был(а) давно';
 
     final diff = DateTime.now().millisecondsSinceEpoch - lastSeen;
     final minutes = diff ~/ 60000;
     final hours = diff ~/ 3600000;
     final days = diff ~/ 86400000;
 
-    if (minutes < 1) return 'только что';
-    if (minutes < 60) return 'был(а) $minutes мин. назад';
-    if (hours < 24) return 'был(а) ${hours}ч назад';
-    if (days == 1) return 'был(а) вчера';
-    if (days < 7) return 'был(а) $days дн. назад';
-    if (days < 30) return 'был(а) давно';
-    return 'был(а) очень давно';
+    if (minutes < 5) return 'был(а) недавно';
+    if (hours < 24) return 'сегодня';
+    if (hours < 48) return 'вчера';
+    if (days < 7) return 'был(а) на этой неделе';
+    if (days < 30) return 'был(а) месяц назад';
+    return 'был(а) давно';
   }
 }
 
