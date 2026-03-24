@@ -299,15 +299,67 @@ class ChatScreen extends ConsumerWidget {
     return Scaffold(
       resizeToAvoidBottomInset: true,
       appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        leadingWidth: 56,
+        title: Row(
           children: [
-            Text(args.conversationName),
-            Text(
-              'E2EE · RSA 4096',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: ShadeColors.greenAccent,
+            // Avatar
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    ShadeColors.violet.withOpacity(0.7),
+                    ShadeColors.cyan.withOpacity(0.4),
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Center(
+                child: Text(
+                  args.conversationName.isNotEmpty
+                      ? args.conversationName[0].toUpperCase()
+                      : '?',
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
                   ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            // Name + status
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    args.conversationName,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  if (messagesState.isRecipientTyping)
+                    Text(
+                      'печатает...',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: ShadeColors.cyan,
+                            fontStyle: FontStyle.italic,
+                          ),
+                    )
+                  else
+                    Text(
+                      'E2EE · RSA 4096',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: ShadeColors.greenAccent,
+                          ),
+                    ),
+                ],
+              ),
             ),
           ],
         ),
@@ -336,32 +388,6 @@ class ChatScreen extends ConsumerWidget {
               onRefresh: () => notifier.refresh(),
             ),
           ),
-          // Typing indicator
-          if (messagesState.isRecipientTyping)
-            Padding(
-              padding: const EdgeInsets.only(left: 16, bottom: 4),
-              child: Row(
-                children: [
-                  Text(
-                    '${args.conversationName} печатает',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: ShadeColors.textMuted,
-                      fontStyle: FontStyle.italic,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 1.5,
-                      color: ShadeColors.violet.withOpacity(0.5),
-                    ),
-                  ),
-                ],
-              ),
-            ),
           // Input area
           MessageInput(
             onSend: (text) => notifier.sendAndEncrypt(text),

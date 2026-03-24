@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:shade/main.dart';
 
@@ -23,6 +25,7 @@ class _MessageInputState extends State<MessageInput>
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
   bool _hasText = false;
+  Timer? _stopTypingTimer;
   late AnimationController _glowController;
   late Animation<double> _glowAnimation;
 
@@ -33,12 +36,18 @@ class _MessageInputState extends State<MessageInput>
       final hasText = _controller.text.trim().isNotEmpty;
       if (hasText != _hasText) {
         setState(() => _hasText = hasText);
-        // Send typing indicator
-        if (hasText) {
-          widget.onTyping?.call();
-        } else {
+      }
+      if (hasText) {
+        // Send typing indicator on every keystroke
+        widget.onTyping?.call();
+        // Reset stop typing timer
+        _stopTypingTimer?.cancel();
+        _stopTypingTimer = Timer(const Duration(seconds: 2), () {
           widget.onStopTyping?.call();
-        }
+        });
+      } else {
+        _stopTypingTimer?.cancel();
+        widget.onStopTyping?.call();
       }
     });
 
@@ -59,6 +68,7 @@ class _MessageInputState extends State<MessageInput>
     _controller.dispose();
     _focusNode.dispose();
     _glowController.dispose();
+    _stopTypingTimer?.cancel();
     super.dispose();
   }
 
