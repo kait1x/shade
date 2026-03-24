@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:shade/core/widgets/shade_logo.dart';
 import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 import 'package:shade/main.dart';
 
@@ -80,37 +81,8 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
                   children: [
                     const Spacer(flex: 2),
 
-                    // Glow logo
-                    Container(
-                      padding: const EdgeInsets.all(28),
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: LinearGradient(
-                          colors: [
-                            ShadeColors.violet.withOpacity(0.15),
-                            ShadeColors.cyan.withOpacity(0.08),
-                          ],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                        ),
-                        border: Border.all(
-                          color: ShadeColors.violet.withOpacity(0.3),
-                          width: 1.5,
-                        ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: ShadeColors.violet.withOpacity(0.2),
-                            blurRadius: 40,
-                            spreadRadius: 4,
-                          ),
-                        ],
-                      ),
-                      child: const Icon(
-                        Icons.shield_outlined,
-                        size: 64,
-                        color: ShadeColors.violet,
-                      ),
-                    ),
+                    // Ghost logo
+                    const ShadeLogo(size: 120),
 
                     const SizedBox(height: 36),
 

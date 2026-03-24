@@ -7,6 +7,7 @@ import 'package:shade/features/auth/presentation/screens/welcome_screen.dart';
 import 'package:shade/features/home/presentation/screens/home_screen.dart';
 import 'package:shade/features/home/presentation/screens/user_search_screen.dart';
 import 'package:shade/features/chats/presentation/screens/chat_screen.dart';
+import 'package:shade/core/widgets/shade_logo.dart';
 import 'package:shade/main.dart';
 
 /// Top-level router provider that listens to [AuthState].
@@ -90,30 +91,7 @@ class _SplashScreen extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 80,
-              height: 80,
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [ShadeColors.violet, ShadeColors.cyan],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(24),
-                boxShadow: [
-                  BoxShadow(
-                    color: ShadeColors.violet.withOpacity(0.4),
-                    blurRadius: 20,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-              ),
-              child: const Icon(
-                Icons.shield_outlined,
-                size: 40,
-                color: Colors.white,
-              ),
-            ),
+            const ShadeLogo(size: 100),
             const SizedBox(height: 24),
             const Text(
               'SHADE',
