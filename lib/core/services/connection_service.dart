@@ -29,6 +29,33 @@ class PublicKeyBundle {
   }
 }
 
+class UserStatus {
+  final bool online;
+  final int lastSeen; // milliseconds since epoch
+
+  const UserStatus({required this.online, required this.lastSeen});
+
+  /// Returns a human-readable string like Telegram's "last seen recently".
+  String get displayText {
+    if (online) return 'в сети';
+
+    if (lastSeen == 0) return 'неизвестно';
+
+    final diff = DateTime.now().millisecondsSinceEpoch - lastSeen;
+    final minutes = diff ~/ 60000;
+    final hours = diff ~/ 3600000;
+    final days = diff ~/ 86400000;
+
+    if (minutes < 1) return 'только что';
+    if (minutes < 60) return 'был(а) $minutes мин. назад';
+    if (hours < 24) return 'был(а) ${hours}ч назад';
+    if (days == 1) return 'был(а) вчера';
+    if (days < 7) return 'был(а) $days дн. назад';
+    if (days < 30) return 'был(а) давно';
+    return 'был(а) очень давно';
+  }
+}
+
 class IncomingMessage {
   final String from;
   final String data; // encrypted payload JSON
@@ -178,6 +205,24 @@ class ConnectionService {
       return bundle;
     } catch (e) {
       debugPrint('[ConnectionService] getPublicKey error: $e');
+      return null;
+    }
+  }
+
+  /// Fetches online status and last seen for a user.
+  Future<UserStatus?> getUserStatus(String username) async {
+    try {
+      final response = await _retryGet(
+        Uri.parse('$serverUrl/user/$username'),
+      );
+      if (response.statusCode != 200) return null;
+
+      final json = jsonDecode(response.body) as Map<String, dynamic>;
+      return UserStatus(
+        online: json['online'] as bool? ?? false,
+        lastSeen: json['lastSeen'] as int? ?? 0,
+      );
+    } catch (_) {
       return null;
     }
   }

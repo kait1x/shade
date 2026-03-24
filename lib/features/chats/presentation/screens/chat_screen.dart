@@ -53,12 +53,14 @@ class ChatMessagesState {
   final bool isLoading;
   final String? error;
   final bool isRecipientTyping;
+  final UserStatus? userStatus;
 
   const ChatMessagesState({
     this.messages = const [],
     this.isLoading = true,
     this.error,
     this.isRecipientTyping = false,
+    this.userStatus,
   });
 
   ChatMessagesState copyWith({
@@ -66,12 +68,14 @@ class ChatMessagesState {
     bool? isLoading,
     String? error,
     bool? isRecipientTyping,
+    UserStatus? userStatus,
   }) {
     return ChatMessagesState(
       messages: messages ?? this.messages,
       isLoading: isLoading ?? this.isLoading,
       error: error,
       isRecipientTyping: isRecipientTyping ?? this.isRecipientTyping,
+      userStatus: userStatus ?? this.userStatus,
     );
   }
 }
@@ -104,7 +108,17 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         _connectionService = connectionService,
         super(const ChatMessagesState()) {
     _loadMessages();
+    _loadUserStatus();
     _listenForIncoming();
+  }
+
+  Future<void> _loadUserStatus() async {
+    // Don't show status for self-chat
+    if (recipientUsername == currentUsername) return;
+    final status = await _connectionService.getUserStatus(recipientUsername);
+    if (status != null) {
+      state = state.copyWith(userStatus: status);
+    }
   }
 
   void _listenForIncoming() {
@@ -418,12 +432,22 @@ class ChatScreen extends ConsumerWidget {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  Text(
-                    'E2EE · RSA 4096',
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                          color: ShadeColors.greenAccent,
-                        ),
-                  ),
+                  if (messagesState.userStatus != null)
+                    Text(
+                      messagesState.userStatus!.displayText,
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: messagesState.userStatus!.online
+                                ? ShadeColors.greenAccent
+                                : ShadeColors.textMuted,
+                          ),
+                    )
+                  else
+                    Text(
+                      'E2EE · RSA 4096',
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: ShadeColors.greenAccent,
+                          ),
+                    ),
                 ],
               ),
             ),
