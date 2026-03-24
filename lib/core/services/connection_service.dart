@@ -46,6 +46,7 @@ class UserStatus {
     final hours = diff ~/ 3600000;
     final days = diff ~/ 86400000;
 
+    if (minutes < 1) return 'только что';
     if (minutes < 5) return 'был(а) недавно';
     if (hours < 24) return 'сегодня';
     if (hours < 48) return 'вчера';
