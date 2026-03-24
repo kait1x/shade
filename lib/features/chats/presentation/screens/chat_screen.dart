@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shade/core/services/connection_service.dart';
 import 'package:shade/core/services/crypto_service.dart';
+import 'package:shade/core/services/notification_service.dart';
 import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 import 'package:shade/features/chats/data/repositories/chat_repository.dart';
 import 'package:shade/features/chats/presentation/widgets/message_bubble.dart';
@@ -277,6 +278,9 @@ class ChatScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Clear notifications for this conversation
+    NotificationService.cancelForConversation(conversationId.toString());
+
     final authState = ref.watch(authNotifierProvider);
     final currentUsername = authState.nickname ?? '';
     final senderId = currentUsername.hashCode.abs();

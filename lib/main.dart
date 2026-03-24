@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:shade/core/routing/app_router.dart';
+import 'package:shade/core/services/notification_service.dart';
 import 'package:shade/core/widgets/notification_overlay.dart';
 
 /// Shade brand colors.
@@ -40,6 +41,12 @@ class ShadeApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(goRouterProvider);
+
+    // Set up notification tap handler
+    NotificationService.setTapHandler((conversationId) {
+      router.go('/home');
+      router.push('/chat/$conversationId');
+    });
 
     return NotificationOverlay(
       child: MaterialApp.router(

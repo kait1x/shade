@@ -5,6 +5,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 
+/// Callback when user taps a notification. Payload = conversationId.
+typedef NotificationTapCallback = void Function(String conversationId);
+
 /// Combined notification service: Firebase FCM + local notifications.
 ///
 /// - FCM: works when app is fully closed (requires Firebase)
@@ -17,8 +20,14 @@ class NotificationService {
 
   static String? _fcmToken;
   static bool _initialized = false;
+  static NotificationTapCallback? _onTap;
 
   static String? get fcmToken => _fcmToken;
+
+  /// Set callback for notification taps.
+  static void setTapHandler(NotificationTapCallback callback) {
+    _onTap = callback;
+  }
 
   /// Initialize both local notifications and Firebase FCM.
   /// Call once at app startup (after user authentication).
@@ -38,7 +47,15 @@ class NotificationService {
       iOS: iosSettings,
     );
 
-    await _localPlugin.initialize(settings);
+    await _localPlugin.initialize(
+      settings,
+      onDidReceiveNotificationResponse: (response) {
+        final payload = response.payload;
+        if (payload != null && payload.isNotEmpty && _onTap != null) {
+          _onTap!(payload);
+        }
+      },
+    );
     debugPrint('[NotificationService] Local notifications initialized');
 
     // ── Firebase FCM ────────────────────────────────────────
@@ -57,8 +74,7 @@ class NotificationService {
         debugPrint('[NotificationService] FCM permission denied');
       } else {
         _fcmToken = await messaging.getToken();
-        debugPrint(
-            '[NotificationService] FCM token: ${_fcmToken?.substring(0, 20)}...');
+        debugPrint('[NotificationService] FCM token registered');
 
         messaging.onTokenRefresh.listen((token) {
           _fcmToken = token;
@@ -67,12 +83,29 @@ class NotificationService {
 
         // Show local notification for foreground FCM messages
         FirebaseMessaging.onMessage.listen((message) {
-          final from = message.data['from'] ?? 'Unknown';
           _showLocalNotification(
             title: 'Shade',
-            body: 'Новое сообщение от $from',
-            payload: message.data['conversationId'],
+            body: 'Новое сообщение',
+            payload: message.data['conversationId']?.toString(),
           );
+        });
+
+        // Handle notification tap when app was terminated
+        messaging.getInitialMessage().then((message) {
+          if (message != null) {
+            final convId = message.data['conversationId']?.toString();
+            if (convId != null && _onTap != null) {
+              _onTap!(convId);
+            }
+          }
+        });
+
+        // Handle notification tap when app is in background
+        FirebaseMessaging.onMessageOpenedApp.listen((message) {
+          final convId = message.data['conversationId']?.toString();
+          if (convId != null && _onTap != null) {
+            _onTap!(convId);
+          }
         });
 
         debugPrint('[NotificationService] FCM initialized');
@@ -149,6 +182,11 @@ class NotificationService {
     );
   }
 
+  /// Cancel notifications for a specific conversation.
+  static Future<void> cancelForConversation(String conversationId) async {
+    await _localPlugin.cancel(conversationId.hashCode);
+  }
+
   /// Cancel all notifications.
   static Future<void> cancelAll() async {
     await _localPlugin.cancelAll();
@@ -159,5 +197,4 @@ class NotificationService {
 @pragma('vm:entry-point')
 Future<void> handleBackgroundMessage(RemoteMessage message) async {
   await Firebase.initializeApp();
-  debugPrint('[NotificationService] Background message: ${message.data}');
 }
