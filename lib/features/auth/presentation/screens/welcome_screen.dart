@@ -26,7 +26,7 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
   Future<void> _createProfile() async {
     if (!_formKey.currentState!.validate()) return;
 
-    final nickname = _nicknameController.text.trim();
+    final nickname = _nicknameController.text.trim().toLowerCase();
     final authNotifier = ref.read(authNotifierProvider.notifier);
 
     final success = await authNotifier.createSecureProfile(nickname);
@@ -69,9 +69,9 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
             child: ConstrainedBox(
               constraints: BoxConstraints(
                 minHeight: (MediaQuery.of(context).size.height -
-                    MediaQuery.of(context).padding.top -
-                    MediaQuery.of(context).padding.bottom -
-                    48)
+                        MediaQuery.of(context).padding.top -
+                        MediaQuery.of(context).padding.bottom -
+                        48)
                     .clamp(0.0, double.infinity),
               ),
               child: IntrinsicHeight(
@@ -288,21 +288,18 @@ class _ProfileFormState extends State<_ProfileForm> {
                 ),
                 prefixIcon: Icon(
                   Icons.alternate_email_rounded,
-                  color: _isFocused
-                      ? ShadeColors.violet
-                      : ShadeColors.textMuted,
+                  color:
+                      _isFocused ? ShadeColors.violet : ShadeColors.textMuted,
                 ),
                 filled: true,
                 fillColor: ShadeColors.surfaceCard,
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(16),
-                  borderSide:
-                      const BorderSide(color: ShadeColors.greyBorder),
+                  borderSide: const BorderSide(color: ShadeColors.greyBorder),
                 ),
                 enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(16),
-                  borderSide:
-                      const BorderSide(color: ShadeColors.greyBorder),
+                  borderSide: const BorderSide(color: ShadeColors.greyBorder),
                 ),
                 focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(16),
@@ -313,11 +310,15 @@ class _ProfileFormState extends State<_ProfileForm> {
                 ),
               ),
               validator: (value) {
-                if (value == null || value.trim().isEmpty) {
-                  return 'Enter a nickname';
+                final nick = (value ?? '').trim().toLowerCase();
+                if (nick.isEmpty) {
+                  return 'Введите никнейм';
                 }
-                if (value.trim().length < 3) {
-                  return 'At least 3 characters';
+                if (nick.length < 3 || nick.length > 32) {
+                  return 'От 3 до 32 символов';
+                }
+                if (!RegExp(r'^[a-z0-9_]+$').hasMatch(nick)) {
+                  return 'Только a-z, 0-9, _';
                 }
                 return null;
               },
