@@ -203,7 +203,17 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         }
       }
 
-      await _loadMessages();
+      // Add sent message to UI immediately (no full reload)
+      final newMsg = DisplayMessage(
+        id: DateTime.now().millisecondsSinceEpoch,
+        text: plainText,
+        timestamp: DateTime.now(),
+        isMine: true,
+        decryptSuccess: true,
+      );
+      state = state.copyWith(
+        messages: [...state.messages, newMsg],
+      );
     } catch (e) {
       state = state.copyWith(error: e.toString());
     }
