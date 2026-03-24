@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -31,6 +33,8 @@ class DisplayMessage {
   final DateTime timestamp;
   final bool isMine;
   final bool decryptSuccess;
+  final bool isImage;
+  final Uint8List? imageData;
 
   const DisplayMessage({
     required this.id,
@@ -38,6 +42,8 @@ class DisplayMessage {
     required this.timestamp,
     required this.isMine,
     this.decryptSuccess = true,
+    this.isImage = false,
+    this.imageData,
   });
 }
 
@@ -152,6 +158,8 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
                   timestamp: d.timestamp,
                   isMine: d.isMine,
                   decryptSuccess: d.decryptSuccess,
+                  isImage: d.isImage,
+                  imageData: d.imageData,
                 ))
             .toList(),
         isLoading: false,
@@ -221,6 +229,63 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
 
   /// Reloads messages from the database.
   Future<void> refresh() => _loadMessages();
+
+  /// Encrypts and sends an image.
+  Future<void> sendImage(List<int> imageBytes) async {
+    try {
+      final myPublicKey = await _cryptoService.getPublicKey();
+      if (myPublicKey == null) throw StateError('No public key');
+
+      final isSelfChat = recipientPublicKey == myPublicKey;
+      final b64 = base64.encode(imageBytes);
+      final payload = 'IMG:$b64';
+
+      // Encrypt for recipient
+      final encryptedForRecipient = await _cryptoService.encryptData(
+        payload,
+        recipientPublicKey,
+      );
+
+      // Encrypt for self
+      final encryptedForSelf = isSelfChat
+          ? encryptedForRecipient
+          : await _cryptoService.encryptData(payload, myPublicKey);
+
+      // Save locally
+      await _chatRepository.sendMessage(
+        conversationId: conversationId,
+        senderId: currentSenderId,
+        encryptedContent: encryptedForSelf,
+        conversationName: recipientUsername,
+      );
+
+      // Send via WebSocket
+      if (!isSelfChat) {
+        try {
+          if (_connectionService.isConnected) {
+            _connectionService.sendMessage(
+                recipientUsername, encryptedForRecipient);
+          }
+        } catch (_) {}
+      }
+
+      // Add to UI
+      final newMsg = DisplayMessage(
+        id: DateTime.now().millisecondsSinceEpoch,
+        text: '',
+        timestamp: DateTime.now(),
+        isMine: true,
+        decryptSuccess: true,
+        isImage: true,
+        imageData: Uint8List.fromList(imageBytes),
+      );
+      state = state.copyWith(
+        messages: [...state.messages, newMsg],
+      );
+    } catch (e) {
+      state = state.copyWith(error: e.toString());
+    }
+  }
 
   @override
   @override
@@ -392,6 +457,7 @@ class ChatScreen extends ConsumerWidget {
           // Input area
           MessageInput(
             onSend: (text) => notifier.sendAndEncrypt(text),
+            onImageSelected: (bytes) => notifier.sendImage(bytes),
             onTyping: () => notifier.notifyTyping(),
             onStopTyping: () => notifier.notifyStopTyping(),
           ),
@@ -520,6 +586,8 @@ class _MessagesArea extends StatelessWidget {
           timestamp: msg.timestamp,
           isMine: msg.isMine,
           isEncrypted: msg.decryptSuccess,
+          isImage: msg.isImage,
+          imageData: msg.imageData,
         );
       },
     );

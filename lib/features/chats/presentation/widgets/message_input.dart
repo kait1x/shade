@@ -1,17 +1,20 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:shade/main.dart';
 
 /// Floating message input with neon glow border.
 class MessageInput extends StatefulWidget {
   final ValueChanged<String> onSend;
+  final ValueChanged<List<int>>? onImageSelected;
   final VoidCallback? onTyping;
   final VoidCallback? onStopTyping;
 
   const MessageInput({
     super.key,
     required this.onSend,
+    this.onImageSelected,
     this.onTyping,
     this.onStopTyping,
   });
@@ -80,6 +83,57 @@ class _MessageInputState extends State<MessageInput>
     _controller.clear();
   }
 
+  Future<void> _pickImage() async {
+    final picker = ImagePicker();
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: ShadeColors.surfaceCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt_rounded,
+                  color: ShadeColors.violet),
+              title: const Text('Камера',
+                  style: TextStyle(color: ShadeColors.textPrimary)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _getImage(ImageSource.camera);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_rounded,
+                  color: ShadeColors.cyan),
+              title: const Text('Галерея',
+                  style: TextStyle(color: ShadeColors.textPrimary)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _getImage(ImageSource.gallery);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _getImage(ImageSource source) async {
+    final picker = ImagePicker();
+    final file = await picker.pickImage(
+      source: source,
+      maxWidth: 800,
+      maxHeight: 800,
+      imageQuality: 70,
+    );
+    if (file == null || widget.onImageSelected == null) return;
+    final bytes = await file.readAsBytes();
+    widget.onImageSelected!(bytes);
+  }
+
   @override
   Widget build(BuildContext context) {
     final isFocused = _focusNode.hasFocus;
@@ -137,6 +191,16 @@ class _MessageInputState extends State<MessageInput>
                   ),
                 ),
                 const SizedBox(width: 4),
+                // Camera button
+                IconButton(
+                  icon: const Icon(
+                    Icons.camera_alt_rounded,
+                    color: ShadeColors.textMuted,
+                    size: 22,
+                  ),
+                  onPressed: _pickImage,
+                ),
+                const SizedBox(width: 2),
                 _SendButton(
                   isActive: _hasText,
                   onPressed: _handleSend,

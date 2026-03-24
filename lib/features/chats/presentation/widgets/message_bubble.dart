@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:shade/main.dart';
 
@@ -7,6 +9,8 @@ class MessageBubble extends StatelessWidget {
   final DateTime timestamp;
   final bool isMine;
   final bool isEncrypted;
+  final bool isImage;
+  final Uint8List? imageData;
 
   const MessageBubble({
     super.key,
@@ -14,6 +18,8 @@ class MessageBubble extends StatelessWidget {
     required this.timestamp,
     required this.isMine,
     this.isEncrypted = false,
+    this.isImage = false,
+    this.imageData,
   });
 
   @override
@@ -27,7 +33,9 @@ class MessageBubble extends StatelessWidget {
           maxWidth: MediaQuery.of(context).size.width * 0.75,
         ),
         margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        padding: isImage
+            ? const EdgeInsets.all(4)
+            : const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         decoration: BoxDecoration(
           gradient: isMine
               ? const LinearGradient(
@@ -51,41 +59,54 @@ class MessageBubble extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
-            if (isEncrypted)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.lock_rounded,
-                      size: 10,
-                      color: (isMine ? Colors.white : ShadeColors.textSecondary)
-                          .withOpacity(0.5),
-                    ),
-                    const SizedBox(width: 3),
-                    Text(
-                      'E2EE',
-                      style: TextStyle(
-                        fontSize: 9,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.8,
+            if (isImage && imageData != null)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: Image.memory(
+                  imageData!,
+                  fit: BoxFit.cover,
+                  width: MediaQuery.of(context).size.width * 0.6,
+                ),
+              )
+            else ...[
+              if (isEncrypted)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.lock_rounded,
+                        size: 10,
                         color:
                             (isMine ? Colors.white : ShadeColors.textSecondary)
                                 .withOpacity(0.5),
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 3),
+                      Text(
+                        'E2EE',
+                        style: TextStyle(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 0.8,
+                          color: (isMine
+                                  ? Colors.white
+                                  : ShadeColors.textSecondary)
+                              .withOpacity(0.5),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              Text(
+                text,
+                style: TextStyle(
+                  color: isMine ? Colors.white : ShadeColors.textPrimary,
+                  fontSize: 15,
+                  height: 1.35,
                 ),
               ),
-            Text(
-              text,
-              style: TextStyle(
-                color: isMine ? Colors.white : ShadeColors.textPrimary,
-                fontSize: 15,
-                height: 1.35,
-              ),
-            ),
+            ],
             const SizedBox(height: 6),
             Row(
               mainAxisSize: MainAxisSize.min,
@@ -94,9 +115,8 @@ class MessageBubble extends StatelessWidget {
                   _formatTimestamp(timestamp),
                   style: TextStyle(
                     fontSize: 11,
-                    color:
-                        (isMine ? Colors.white : ShadeColors.textSecondary)
-                            .withOpacity(0.5),
+                    color: (isMine ? Colors.white : ShadeColors.textSecondary)
+                        .withOpacity(0.5),
                   ),
                 ),
                 if (isMine) ...[

@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -69,6 +72,8 @@ class DecryptedMessage {
   final DateTime timestamp;
   final bool isMine;
   final bool decryptSuccess;
+  final bool isImage;
+  final Uint8List? imageData;
 
   const DecryptedMessage({
     required this.id,
@@ -76,6 +81,8 @@ class DecryptedMessage {
     required this.timestamp,
     required this.isMine,
     this.decryptSuccess = true,
+    this.isImage = false,
+    this.imageData,
   });
 }
 
@@ -208,13 +215,28 @@ class ChatRepository {
     for (final msg in messages) {
       try {
         final plain = await _crypto.decryptMessage(msg.encryptedContent);
-        result.add(DecryptedMessage(
-          id: msg.id,
-          text: plain,
-          timestamp: msg.timestamp,
-          isMine: msg.senderId == mySenderId,
-          decryptSuccess: true,
-        ));
+
+        // Detect image messages: "IMG:<base64>"
+        if (plain.startsWith('IMG:')) {
+          final b64 = plain.substring(4);
+          result.add(DecryptedMessage(
+            id: msg.id,
+            text: '',
+            timestamp: msg.timestamp,
+            isMine: msg.senderId == mySenderId,
+            decryptSuccess: true,
+            isImage: true,
+            imageData: base64Decode(b64),
+          ));
+        } else {
+          result.add(DecryptedMessage(
+            id: msg.id,
+            text: plain,
+            timestamp: msg.timestamp,
+            isMine: msg.senderId == mySenderId,
+            decryptSuccess: true,
+          ));
+        }
       } catch (e) {
         debugPrint('[ChatRepository] decrypt error');
         result.add(DecryptedMessage(

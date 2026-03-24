@@ -51,6 +51,9 @@ dependencies:
   # Cupertino widgets for iOS
   cupertino_icons: ^1.0.8
 
+  # Image picker (camera + gallery)
+  image_picker: ^1.0.7
+
   # Local notifications
   flutter_local_notifications: ^18.0.1
 
