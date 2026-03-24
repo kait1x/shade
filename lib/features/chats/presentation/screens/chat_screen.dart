@@ -353,21 +353,12 @@ class ChatScreen extends ConsumerWidget {
                       fontWeight: FontWeight.w600,
                     ),
                   ),
-                  if (messagesState.isRecipientTyping)
-                    Text(
-                      'печатает...',
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: ShadeColors.cyan,
-                            fontStyle: FontStyle.italic,
-                          ),
-                    )
-                  else
-                    Text(
-                      'E2EE · RSA 4096',
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: ShadeColors.greenAccent,
-                          ),
-                    ),
+                  Text(
+                    'E2EE · RSA 4096',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: ShadeColors.greenAccent,
+                        ),
+                  ),
                 ],
               ),
             ),
@@ -525,12 +516,20 @@ class _MessagesArea extends StatelessWidget {
       );
     }
 
+    final hasTyping = messagesState.isRecipientTyping;
+    final msgCount = messagesState.messages.length;
+
     return ListView.builder(
       reverse: true,
       padding: const EdgeInsets.only(top: 8, bottom: 8),
-      itemCount: messagesState.messages.length,
+      itemCount: msgCount + (hasTyping ? 1 : 0),
       itemBuilder: (context, index) {
-        final reversedIndex = messagesState.messages.length - 1 - index;
+        // Typing bubble at the bottom (index 0 in reversed list)
+        if (hasTyping && index == 0) {
+          return const _TypingBubble();
+        }
+        final msgIndex = hasTyping ? index - 1 : index;
+        final reversedIndex = msgCount - 1 - msgIndex;
         final msg = messagesState.messages[reversedIndex];
         return MessageBubble(
           key: ValueKey(msg.id),
@@ -540,6 +539,86 @@ class _MessagesArea extends StatelessWidget {
           isEncrypted: msg.decryptSuccess,
         );
       },
+    );
+  }
+}
+
+/// Animated typing bubble with three bouncing dots.
+class _TypingBubble extends StatefulWidget {
+  const _TypingBubble();
+
+  @override
+  State<_TypingBubble> createState() => _TypingBubbleState();
+}
+
+class _TypingBubbleState extends State<_TypingBubble>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+        decoration: BoxDecoration(
+          color: ShadeColors.surfaceElevated,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.3),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: AnimatedBuilder(
+          animation: _controller,
+          builder: (context, _) {
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: List.generate(3, (i) {
+                final delay = i * 0.2;
+                final value = (_controller.value - delay) % 1.0;
+                final bounce = (value < 0.5)
+                    ? Curves.easeOut.transform(value * 2)
+                    : Curves.easeIn.transform(2 - value * 2);
+                return Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 3),
+                  child: Transform.translate(
+                    offset: Offset(0, -bounce * 6),
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color:
+                            ShadeColors.violet.withOpacity(0.6 + bounce * 0.4),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            );
+          },
+        ),
+      ),
     );
   }
 }
