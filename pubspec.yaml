@@ -27,6 +27,7 @@ dependencies:
 
   # AES and RSA encryption
   encrypt: ^5.0.3
+  pointycastle: ^3.7.3
 
   # Fast native RSA key operations
   fast_rsa: ^3.8.6

@@ -5,10 +5,11 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:fast_rsa/fast_rsa.dart';
 import 'package:encrypt/encrypt.dart' as enc;
+import 'package:pointycastle/export.dart' as pc;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 
-/// Hybrid RSA-4096 + AES-256-CBC encryption service.
+/// Hybrid RSA-4096 + AES-256-GCM encryption service.
 ///
 /// Conforms to fast_rsa 3.8.6 API:
 ///   RSA.generate(bits) → KeyPair
@@ -23,7 +24,8 @@ class CryptoService {
   static const String _pubKeyAlias = 'rsa_public_key';
 
   static const int _aesKeyLen = 32;
-  static const int _aesIvLen = 16;
+  static const int _aesNonceLen = 12; // GCM nonce
+  static const int _aesGcmTagBits = 128; // 16-byte auth tag
 
   CryptoService({FlutterSecureStorage? storage})
       : _secureStorage = storage ??
@@ -54,39 +56,45 @@ class CryptoService {
 
   /// Encrypts [plainText] for the owner of [publicKey].
   ///
-  /// 1. Generates a random AES-256 key (32 bytes) + IV (16 bytes).
-  /// 2. Encrypts the plaintext with AES-256-CBC.
-  /// 3. Encrypts the key+IV envelope with RSA-OAEP-SHA256.
-  /// 4. Returns `{"k":"<encrypted key>","d":"<encrypted data>"}`.
+  /// 1. Generates a random AES-256 key (32 bytes) + nonce (12 bytes).
+  /// 2. Encrypts the plaintext with AES-256-GCM (authenticated).
+  /// 3. Encrypts the key+nonce envelope with RSA-OAEP-SHA256.
+  /// 4. Returns `{"k":"<encrypted key>","d":"<encrypted data+tag>"}`.
   Future<String> encryptData(String plainText, String publicKey) async {
     final aesKey = _randomBytes(_aesKeyLen);
-    final iv = _randomBytes(_aesIvLen);
+    final nonce = _randomBytes(_aesNonceLen);
 
-    // AES-256-CBC encrypt the plaintext
-    final encrypter = enc.Encrypter(
-      enc.AES(enc.Key(aesKey), mode: enc.AESMode.cbc),
-    );
-    final encryptedData = encrypter.encrypt(plainText, iv: enc.IV(iv));
+    // AES-256-GCM encrypt (includes 16-byte auth tag)
+    final plainBytes = Uint8List.fromList(utf8.encode(plainText));
+    final cipher = pc.GCMBlockCipher(pc.AESFastEngine())
+      ..init(
+        true,
+        pc.AEADParameters(
+            pc.KeyParameter(aesKey), _aesGcmTagBits, nonce, Uint8List(0)),
+      );
+    final encryptedWithTag = cipher.process(plainBytes);
 
-    // Pack key + iv into a single 48-byte envelope
-    final envelope = Uint8List(_aesKeyLen + _aesIvLen)
-      ..setRange(0, _aesKeyLen, aesKey)
-      ..setRange(_aesKeyLen, _aesKeyLen + _aesIvLen, iv);
+    // Pack envelope: version(2) + key(32) + nonce(12) = 45 bytes
+    final envelope = Uint8List(1 + _aesKeyLen + _aesNonceLen)
+      ..[0] = 2
+      ..setRange(1, 1 + _aesKeyLen, aesKey)
+      ..setRange(1 + _aesKeyLen, 1 + _aesKeyLen + _aesNonceLen, nonce);
 
     // RSA-OAEP-SHA256 encrypt the envelope
     final encryptedKey = await RSA.encryptOAEP(
       base64.encode(envelope),
-      '', // label (empty)
+      '',
       Hash.SHA256,
       publicKey,
     );
 
-    return jsonEncode({'k': encryptedKey, 'd': encryptedData.base64});
+    return jsonEncode(
+        {'k': encryptedKey, 'd': base64.encode(encryptedWithTag)});
   }
 
   /// Decrypts a payload produced by [encryptData].
   ///
-  /// [privateKey] — the recipient's RSA private key in PEM format.
+  /// Supports both AES-256-GCM (v2) and legacy AES-256-CBC (v1).
   Future<String> decryptData(String encryptedPayload, String privateKey) async {
     final map = jsonDecode(encryptedPayload) as Map<String, dynamic>;
     final encryptedKey = map['k'] as String;
@@ -102,20 +110,32 @@ class CryptoService {
       );
       final envelope = base64.decode(envelopeB64);
 
-      final aesKey = enc.Key(
-        Uint8List.fromList(envelope.sublist(0, _aesKeyLen)),
-      );
-      final iv = enc.IV(
-        Uint8List.fromList(envelope.sublist(_aesKeyLen)),
-      );
+      // Detect version by envelope size
+      if (envelope.length == 45 && envelope[0] == 2) {
+        // GCM mode (v2): version(1) + key(32) + nonce(12)
+        final aesKey = Uint8List.fromList(envelope.sublist(1, 1 + _aesKeyLen));
+        final nonce = Uint8List.fromList(envelope.sublist(1 + _aesKeyLen));
+        final ciphertextWithTag = base64.decode(encryptedDataB64);
 
-      // AES-256-CBC decrypt the data
-      final encrypter = enc.Encrypter(
-        enc.AES(aesKey, mode: enc.AESMode.cbc),
-      );
-      return encrypter.decrypt64(encryptedDataB64, iv: iv);
+        final cipher = pc.GCMBlockCipher(pc.AESFastEngine())
+          ..init(
+            false,
+            pc.AEADParameters(
+                pc.KeyParameter(aesKey), _aesGcmTagBits, nonce, Uint8List(0)),
+          );
+        return utf8.decode(cipher.process(ciphertextWithTag));
+      } else if (envelope.length == 48) {
+        // CBC mode (v1, legacy): key(32) + iv(16)
+        final aesKey =
+            enc.Key(Uint8List.fromList(envelope.sublist(0, _aesKeyLen)));
+        final iv = enc.IV(Uint8List.fromList(envelope.sublist(_aesKeyLen)));
+        final encrypter = enc.Encrypter(enc.AES(aesKey, mode: enc.AESMode.cbc));
+        return encrypter.decrypt64(encryptedDataB64, iv: iv);
+      } else {
+        throw Exception('Unknown envelope format');
+      }
     } catch (e) {
-      debugPrint('[CryptoService] decryptData FAILED: $e');
+      debugPrint('[CryptoService] decryptData FAILED');
       rethrow;
     }
   }
