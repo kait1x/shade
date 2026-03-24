@@ -412,25 +412,8 @@ class _MessagesArea extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (messagesState.isLoading) {
-      return const Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              width: 32,
-              height: 32,
-              child: CircularProgressIndicator(strokeWidth: 2.5),
-            ),
-            SizedBox(height: 16),
-            Text(
-              'Decrypting messages...',
-              style: TextStyle(color: ShadeColors.textSecondary),
-            ),
-          ],
-        ),
-      );
-    }
+    // Show messages immediately, even while decrypting new ones
+    final msgs = messagesState.messages;
 
     if (messagesState.error != null) {
       return Center(
@@ -474,7 +457,7 @@ class _MessagesArea extends StatelessWidget {
       );
     }
 
-    if (messagesState.messages.isEmpty) {
+    if (msgs.isEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -517,7 +500,7 @@ class _MessagesArea extends StatelessWidget {
     }
 
     final hasTyping = messagesState.isRecipientTyping;
-    final msgCount = messagesState.messages.length;
+    final msgCount = msgs.length;
 
     return ListView.builder(
       reverse: true,
@@ -530,7 +513,7 @@ class _MessagesArea extends StatelessWidget {
         }
         final msgIndex = hasTyping ? index - 1 : index;
         final reversedIndex = msgCount - 1 - msgIndex;
-        final msg = messagesState.messages[reversedIndex];
+        final msg = msgs[reversedIndex];
         return MessageBubble(
           key: ValueKey(msg.id),
           text: msg.text,
