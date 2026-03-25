@@ -19,13 +19,15 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
+class _HomeScreenState extends ConsumerState<HomeScreen>
+    with WidgetsBindingObserver {
   bool _isOpeningSelfChat = false;
   StreamSubscription? _messageSub;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // Listen for incoming messages and refresh conversation list
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final conn = ref.read(connectionServiceProvider);
@@ -38,7 +40,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final conn = ref.read(connectionServiceProvider);
+    final authState = ref.read(authNotifierProvider);
+
+    if (state == AppLifecycleState.paused) {
+      // App goes to background — disconnect
+      conn.disconnect();
+    } else if (state == AppLifecycleState.resumed &&
+        authState.status == AuthStatus.authenticated &&
+        authState.nickname != null) {
+      // App comes to foreground — reconnect
+      conn.connect(authState.nickname!);
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _messageSub?.cancel();
     super.dispose();
   }

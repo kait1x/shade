@@ -109,6 +109,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         super(const ChatMessagesState()) {
     _loadMessages();
     _loadUserStatus();
+    _startStatusPolling();
     _listenForIncoming();
   }
 
@@ -120,6 +121,15 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
       state = state.copyWith(userStatus: status);
     }
   }
+
+  void _startStatusPolling() {
+    // Refresh status every 15 seconds
+    Timer.periodic(const Duration(seconds: 15), (_) async {
+      if (!_isDisposed) await _loadUserStatus();
+    });
+  }
+
+  bool _isDisposed = false;
 
   void _listenForIncoming() {
     _wsSub = _connectionService.messages.listen((incoming) async {
@@ -304,6 +314,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   @override
   @override
   void dispose() {
+    _isDisposed = true;
     _wsSub?.cancel();
     _typingSub?.cancel();
     _typingTimeout?.cancel();
