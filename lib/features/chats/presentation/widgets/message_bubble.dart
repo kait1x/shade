@@ -1,6 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:image_gallery_saver/image_gallery_saver.dart';
 import 'package:shade/main.dart';
 
 /// Styled message bubble with gradient and shadow.
@@ -161,6 +163,12 @@ class _FullScreenImage extends StatelessWidget {
       appBar: AppBar(
         backgroundColor: Colors.black,
         iconTheme: const IconThemeData(color: Colors.white),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.download_rounded, color: Colors.white),
+            onPressed: () => _saveImage(context),
+          ),
+        ],
       ),
       body: Center(
         child: InteractiveViewer(
@@ -168,5 +176,38 @@ class _FullScreenImage extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  Future<void> _saveImage(BuildContext context) async {
+    try {
+      final result = await ImageGallerySaver.saveImage(
+        imageData,
+        quality: 100,
+        name: 'shade_${DateTime.now().millisecondsSinceEpoch}',
+      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              result['isSuccess'] == true
+                  ? 'Фото сохранено'
+                  : 'Ошибка сохранения',
+            ),
+            backgroundColor: result['isSuccess'] == true
+                ? ShadeColors.greenAccent
+                : const Color(0xFFEF4444),
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Ошибка сохранения'),
+            backgroundColor: Color(0xFFEF4444),
+          ),
+        );
+      }
+    }
   }
 }
