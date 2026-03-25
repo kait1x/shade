@@ -171,9 +171,16 @@ class _FullScreenImage extends StatelessWidget {
           ),
         ],
       ),
-      body: Center(
-        child: InteractiveViewer(
-          child: Image.memory(imageData),
+      body: InteractiveViewer(
+        minScale: 0.5,
+        maxScale: 4.0,
+        child: SizedBox(
+          width: MediaQuery.of(context).size.width,
+          height: MediaQuery.of(context).size.height,
+          child: Image.memory(
+            imageData,
+            fit: BoxFit.contain,
+          ),
         ),
       ),
     );
