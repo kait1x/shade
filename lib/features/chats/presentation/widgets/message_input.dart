@@ -125,6 +125,8 @@ class _MessageInputState extends State<MessageInput>
     final picker = ImagePicker();
     final file = await picker.pickImage(
       source: source,
+      maxWidth: 1280,
+      maxHeight: 1280,
       imageQuality: 80,
     );
     if (file == null || widget.onImageSelected == null) return;
