@@ -80,7 +80,7 @@ class MessageBubble extends StatelessWidget {
                   ),
                 ),
               ),
-            else ...[
+            if (!isImage) ...[
               if (isEncrypted)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 6),
@@ -183,7 +183,8 @@ class _FullScreenImage extends StatelessWidget {
     try {
       // Save to temp file first, then to gallery
       final dir = await getTemporaryDirectory();
-      final file = File('${dir.path}/shade_${DateTime.now().millisecondsSinceEpoch}.jpg');
+      final file = File(
+          '${dir.path}/shade_${DateTime.now().millisecondsSinceEpoch}.jpg');
       await file.writeAsBytes(imageData);
 
       await Gal.putImage(file.path);
