@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:image/image.dart' as img;
 import 'package:shade/main.dart';
 
 /// Floating message input with neon glow border.
@@ -130,8 +132,15 @@ class _MessageInputState extends State<MessageInput>
       imageQuality: 80,
     );
     if (file == null || widget.onImageSelected == null) return;
-    final bytes = await file.readAsBytes();
-    widget.onImageSelected!(bytes);
+
+    // Read and re-encode to strip ALL metadata (EXIF, GPS, camera, etc.)
+    final rawBytes = await file.readAsBytes();
+    final decoded = img.decodeImage(rawBytes);
+    if (decoded == null) return;
+
+    // Re-encode as clean JPEG — no metadata preserved
+    final cleanJpeg = img.encodeJpg(decoded, quality: 80);
+    widget.onImageSelected!(Uint8List.fromList(cleanJpeg));
   }
 
   @override

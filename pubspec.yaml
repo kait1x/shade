@@ -57,6 +57,9 @@ dependencies:
   # Save images to gallery
   image_gallery_saver: ^2.0.3
 
+  # Image processing (strip metadata)
+  image: ^4.1.3
+
   # Local notifications
   flutter_local_notifications: ^18.0.1
 
