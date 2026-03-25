@@ -66,28 +66,20 @@ class MessageBubble extends StatelessWidget {
               GestureDetector(
                 onTap: () {
                   Navigator.of(context).push(
-                    PageRouteBuilder(
-                      transitionDuration: const Duration(milliseconds: 300),
-                      reverseTransitionDuration:
-                          const Duration(milliseconds: 300),
-                      pageBuilder: (context, animation, secondaryAnimation) =>
-                          _FullScreenImage(imageData: imageData!),
-                      transitionsBuilder:
-                          (context, animation, secondaryAnimation, child) {
-                        return FadeTransition(
-                          opacity: animation,
-                          child: child,
-                        );
-                      },
+                    MaterialPageRoute(
+                      builder: (_) => _FullScreenImage(imageData: imageData!),
                     ),
                   );
                 },
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(16),
-                  child: Image.memory(
-                    imageData!,
-                    fit: BoxFit.cover,
-                    width: MediaQuery.of(context).size.width * 0.6,
+                child: Hero(
+                  tag: imageData.hashCode,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: Image.memory(
+                      imageData!,
+                      fit: BoxFit.cover,
+                      width: MediaQuery.of(context).size.width * 0.6,
+                    ),
                   ),
                 ),
               ),
@@ -183,12 +175,15 @@ class _FullScreenImage extends StatelessWidget {
                 child: InteractiveViewer(
                   minScale: 0.5,
                   maxScale: 4.0,
-                  child: SizedBox(
-                    width: MediaQuery.of(context).size.width,
-                    height: MediaQuery.of(context).size.height,
-                    child: Image.memory(
-                      imageData,
-                      fit: BoxFit.contain,
+                  child: Hero(
+                    tag: imageData.hashCode,
+                    child: SizedBox(
+                      width: MediaQuery.of(context).size.width,
+                      height: MediaQuery.of(context).size.height,
+                      child: Image.memory(
+                        imageData,
+                        fit: BoxFit.contain,
+                      ),
                     ),
                   ),
                 ),
