@@ -60,14 +60,23 @@ class MessageBubble extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.end,
           children: [
             if (isImage && imageData != null)
-              ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: Image.memory(
-                  imageData!,
-                  fit: BoxFit.cover,
-                  width: MediaQuery.of(context).size.width * 0.6,
+              GestureDetector(
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => _FullScreenImage(imageData: imageData!),
+                    ),
+                  );
+                },
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(16),
+                  child: Image.memory(
+                    imageData!,
+                    fit: BoxFit.cover,
+                    width: MediaQuery.of(context).size.width * 0.6,
+                  ),
                 ),
-              )
+              ),
             else ...[
               if (isEncrypted)
                 Padding(
@@ -137,5 +146,27 @@ class MessageBubble extends StatelessWidget {
 
   String _formatTimestamp(DateTime time) {
     return '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+  }
+}
+
+class _FullScreenImage extends StatelessWidget {
+  final Uint8List imageData;
+
+  const _FullScreenImage({required this.imageData});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        iconTheme: const IconThemeData(color: Colors.white),
+      ),
+      body: Center(
+        child: InteractiveViewer(
+          child: Image.memory(imageData),
+        ),
+      ),
+    );
   }
 }
