@@ -1,8 +1,9 @@
 import 'dart:typed_data';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:image_gallery_saver/image_gallery_saver.dart';
+import 'package:gal/gal.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shade/main.dart';
 
 /// Styled message bubble with gradient and shadow.
@@ -180,22 +181,18 @@ class _FullScreenImage extends StatelessWidget {
 
   Future<void> _saveImage(BuildContext context) async {
     try {
-      final result = await ImageGallerySaver.saveImage(
-        imageData,
-        quality: 100,
-        name: 'shade_${DateTime.now().millisecondsSinceEpoch}',
-      );
+      // Save to temp file first, then to gallery
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/shade_${DateTime.now().millisecondsSinceEpoch}.jpg');
+      await file.writeAsBytes(imageData);
+
+      await Gal.putImage(file.path);
+
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              result['isSuccess'] == true
-                  ? 'Фото сохранено'
-                  : 'Ошибка сохранения',
-            ),
-            backgroundColor: result['isSuccess'] == true
-                ? ShadeColors.greenAccent
-                : const Color(0xFFEF4444),
+          const SnackBar(
+            content: Text('Фото сохранено'),
+            backgroundColor: ShadeColors.greenAccent,
           ),
         );
       }
