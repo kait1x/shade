@@ -66,8 +66,19 @@ class MessageBubble extends StatelessWidget {
               GestureDetector(
                 onTap: () {
                   Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => _FullScreenImage(imageData: imageData!),
+                    PageRouteBuilder(
+                      transitionDuration: const Duration(milliseconds: 300),
+                      reverseTransitionDuration:
+                          const Duration(milliseconds: 300),
+                      pageBuilder: (context, animation, secondaryAnimation) =>
+                          _FullScreenImage(imageData: imageData!),
+                      transitionsBuilder:
+                          (context, animation, secondaryAnimation, child) {
+                        return FadeTransition(
+                          opacity: animation,
+                          child: child,
+                        );
+                      },
                     ),
                   );
                 },
@@ -160,26 +171,56 @@ class _FullScreenImage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        iconTheme: const IconThemeData(color: Colors.white),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.download_rounded, color: Colors.white),
-            onPressed: () => _saveImage(context),
-          ),
-        ],
-      ),
-      body: InteractiveViewer(
-        minScale: 0.5,
-        maxScale: 4.0,
-        child: SizedBox(
-          width: MediaQuery.of(context).size.width,
-          height: MediaQuery.of(context).size.height,
-          child: Image.memory(
-            imageData,
-            fit: BoxFit.contain,
+      backgroundColor: Colors.transparent,
+      body: GestureDetector(
+        onTap: () => Navigator.of(context).pop(),
+        child: Container(
+          color: Colors.black,
+          child: Stack(
+            children: [
+              // Photo
+              Center(
+                child: InteractiveViewer(
+                  minScale: 0.5,
+                  maxScale: 4.0,
+                  child: SizedBox(
+                    width: MediaQuery.of(context).size.width,
+                    height: MediaQuery.of(context).size.height,
+                    child: Image.memory(
+                      imageData,
+                      fit: BoxFit.contain,
+                    ),
+                  ),
+                ),
+              ),
+              // Top bar with close + download
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: SafeArea(
+                  child: Padding(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded,
+                              color: Colors.white, size: 28),
+                          onPressed: () => Navigator.of(context).pop(),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.download_rounded,
+                              color: Colors.white),
+                          onPressed: () => _saveImage(context),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
