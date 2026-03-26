@@ -63,8 +63,13 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   /// Automatically restores the previous session on first build.
   Future<void> _restoreSession() async {
-    final restored = await checkExistingProfile();
-    if (!restored && state.status == AuthStatus.initial) {
+    try {
+      final restored = await checkExistingProfile();
+      if (!restored && state.status == AuthStatus.initial) {
+        state = state.copyWith(status: AuthStatus.error);
+      }
+    } catch (e) {
+      // Any error — show welcome screen instead of infinite splash
       state = state.copyWith(status: AuthStatus.error);
     }
   }
