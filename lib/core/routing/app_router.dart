@@ -86,7 +86,9 @@ class _SplashScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final authState = ref.watch(authNotifierProvider);
-    final hasError = authState.status == AuthStatus.error;
+    final hasError = authState.status == AuthStatus.error &&
+        authState.error != null &&
+        authState.error!.isNotEmpty;
 
     return Scaffold(
       backgroundColor: ShadeColors.surfaceDark,

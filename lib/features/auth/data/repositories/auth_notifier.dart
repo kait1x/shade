@@ -66,6 +66,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
     try {
       final restored = await checkExistingProfile();
       if (!restored && state.status == AuthStatus.initial) {
+        // No profile — just go to welcome, no error
         state = state.copyWith(status: AuthStatus.error);
       }
     } catch (e) {
