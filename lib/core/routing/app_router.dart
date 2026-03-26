@@ -11,12 +11,12 @@ import 'package:shade/main.dart';
 
 /// Top-level router provider that listens to [AuthState].
 ///
-/// Shows welcome or home based on auth state. No splash screen.
+/// Uses global [hasProfile] flag to set initial route synchronously.
 final goRouterProvider = Provider<GoRouter>((ref) {
   final authState = ref.watch(authNotifierProvider);
 
   return GoRouter(
-    initialLocation: '/welcome',
+    initialLocation: hasProfile ? '/home' : '/welcome',
     debugLogDiagnostics: true,
     redirect: (context, state) {
       final isAuthenticated = authState.status == AuthStatus.authenticated;

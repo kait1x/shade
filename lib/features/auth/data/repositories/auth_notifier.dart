@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:shade/core/services/crypto_service.dart';
 import 'package:shade/core/services/connection_service.dart';
@@ -129,6 +130,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
         publicKey: publicKey,
         userId: userId,
       );
+
+      // Set flag for fast startup
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('has_profile', true);
 
       debugPrint('Secure profile created');
       return true;
