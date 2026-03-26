@@ -9,6 +9,28 @@ import 'package:shade/core/widgets/notification_overlay.dart';
 /// Global flag: true if user has a profile (checked before first frame)
 bool hasProfile = false;
 
+/// Shade brand colors.
+class ShadeColors {
+  static const Color black = Color(0xFF000000);
+  static const Color surfaceDark = Color(0xFF0A0A0A);
+  static const Color surfaceCard = Color(0xFF111111);
+  static const Color surfaceElevated = Color(0xFF1A1A1A);
+  static const Color greyBorder = Color(0xFF1E1E1E);
+
+  static const Color violet = Color(0xFF8B5CF6);
+  static const Color violetLight = Color(0xFFA78BFA);
+  static const Color violetDark = Color(0xFF6D28D9);
+
+  static const Color cyan = Color(0xFF06B6D4);
+  static const Color cyanLight = Color(0xFF22D3EE);
+
+  static const Color textPrimary = Color(0xFFF5F5F5);
+  static const Color textSecondary = Color(0xFFA1A1AA);
+  static const Color textMuted = Color(0xFF6B7280);
+
+  static const Color greenAccent = Color(0xFF34D399);
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
@@ -16,14 +38,6 @@ void main() async {
   final prefs = await SharedPreferences.getInstance();
   hasProfile = prefs.getBool('has_profile') ?? false;
 
-  runApp(
-    const ProviderScope(
-      child: ShadeApp(),
-    ),
-  );
-}
-
-void main() {
   runApp(
     const ProviderScope(
       child: ShadeApp(),
