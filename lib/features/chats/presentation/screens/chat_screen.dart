@@ -557,51 +557,6 @@ class ChatScreen extends ConsumerWidget {
               onReply: (msg) => notifier.setReply(msg),
             ),
           ),
-          // Reply preview
-          if (messagesState.replyTo != null)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              color: ShadeColors.surfaceElevated,
-              child: Row(
-                children: [
-                  Container(width: 3, height: 40, color: ShadeColors.cyan),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          messagesState.replyTo!.isMine
-                              ? 'Вы'
-                              : args.recipientUsername,
-                          style: const TextStyle(
-                            color: ShadeColors.cyan,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        Text(
-                          messagesState.replyTo!.isImage
-                              ? 'Фото'
-                              : messagesState.replyTo!.text,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            color: ShadeColors.textSecondary,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close_rounded,
-                        size: 18, color: ShadeColors.textMuted),
-                    onPressed: () => notifier.clearReply(),
-                  ),
-                ],
-              ),
-            ),
           // Input area
           MessageInput(
             onSend: (text) => notifier.sendAndEncrypt(text),
@@ -763,15 +718,6 @@ class _MessagesArea extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ListTile(
-              leading: const Icon(Icons.reply_rounded, color: ShadeColors.cyan),
-              title: const Text('Ответить',
-                  style: TextStyle(color: ShadeColors.textPrimary)),
-              onTap: () {
-                Navigator.pop(ctx);
-                if (onReply != null) onReply!(msg);
-              },
-            ),
             ListTile(
               leading: const Icon(Icons.delete_outline_rounded,
                   color: ShadeColors.textSecondary),
