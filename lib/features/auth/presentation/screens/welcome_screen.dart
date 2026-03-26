@@ -34,10 +34,23 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
 
     if (!success && mounted) {
       final updatedState = ref.read(authNotifierProvider);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(updatedState.error ?? 'Failed to create profile.'),
-          backgroundColor: const Color(0xFFEF4444),
+      final errorMsg = updatedState.error ?? 'Не удалось создать профиль';
+
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: ShadeColors.surfaceCard,
+          title: const Text('Ошибка',
+              style: TextStyle(color: ShadeColors.textPrimary)),
+          content: Text(errorMsg,
+              style: const TextStyle(color: ShadeColors.textSecondary)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child:
+                  const Text('OK', style: TextStyle(color: ShadeColors.violet)),
+            ),
+          ],
         ),
       );
     }
