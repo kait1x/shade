@@ -81,18 +81,23 @@ class AuthNotifier extends StateNotifier<AuthState> {
   Future<bool> createSecureProfile(String nickname) async {
     try {
       state = state.copyWith(status: AuthStatus.generatingKeys);
+      debugPrint('[Auth] Generating keys...');
 
       // Generate 4096-bit RSA key pair
       final keys = await _cryptoService.generateIdentityKeys();
       final publicKey = keys['publicKey']!;
+      debugPrint('[Auth] Keys generated');
 
       // Save profile to encrypted database
       final userId =
           await _databaseService.saveUserProfile(nickname, publicKey);
+      debugPrint('[Auth] Profile saved, userId=$userId');
 
       // Register on relay server (signs the key automatically)
       try {
+        debugPrint('[Auth] Registering on server...');
         await _connectionService.register(nickname);
+        debugPrint('[Auth] Registered, connecting...');
         _connectionService.connect(nickname);
         debugPrint('Registered and connected to server');
 
@@ -104,8 +109,10 @@ class AuthNotifier extends StateNotifier<AuthState> {
         );
       } catch (e) {
         final errorStr = e.toString();
+        debugPrint('[Auth] Register error: $errorStr');
         if (errorStr.contains('Username already taken') ||
-            errorStr.contains('409')) {
+            errorStr.contains('409') ||
+            errorStr.contains('Никнейм уже занят')) {
           state = state.copyWith(
             status: AuthStatus.error,
             error: 'Этот никнейм уже занят. Выберите другой.',
