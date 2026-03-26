@@ -94,6 +94,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   final ConnectionService _connectionService;
   StreamSubscription<IncomingMessage>? _wsSub;
   StreamSubscription<String>? _typingSub;
+  StreamSubscription<MessageDeletedEvent>? _deleteSub;
   Timer? _typingTimeout;
 
   ChatMessagesNotifier({
@@ -169,6 +170,18 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         _typingTimeout = Timer(const Duration(seconds: 3), () {
           state = state.copyWith(isRecipientTyping: false);
         });
+      }
+    });
+
+    // Listen for message deletions from other user
+    _deleteSub = _connectionService.messageDeleted.listen((event) {
+      if (event.from == recipientUsername) {
+        final msgId = int.tryParse(event.msgId);
+        if (msgId != null) {
+          final updated = state.messages.where((m) => m.id != msgId).toList();
+          state = state.copyWith(messages: updated);
+          _chatRepository.deleteMessage(msgId);
+        }
       }
     });
   }
@@ -330,11 +343,27 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
     }
   }
 
+  /// Deletes a message locally and optionally for everyone.
+  Future<void> deleteMessage(int msgId, {required bool forEveryone}) async {
+    // Remove from local state
+    final updated = state.messages.where((m) => m.id != msgId).toList();
+    state = state.copyWith(messages: updated);
+
+    // Remove from database
+    await _chatRepository.deleteMessage(msgId);
+
+    // If for everyone, notify via server
+    if (forEveryone && _connectionService.isConnected) {
+      _connectionService.sendDeleteMessage(recipientUsername, msgId.toString());
+    }
+  }
+
   @override
   void dispose() {
     _isDisposed = true;
     _connectionService.unwatchUser(recipientUsername);
     _statusSub?.cancel();
+    _deleteSub?.cancel();
     _wsSub?.cancel();
     _typingSub?.cancel();
     _typingTimeout?.cancel();
@@ -507,6 +536,9 @@ class ChatScreen extends ConsumerWidget {
             child: _MessagesArea(
               messagesState: messagesState,
               onRefresh: () => notifier.refresh(),
+              notifier: notifier,
+              conversationId: conversationId,
+              recipientUsername: args.recipientUsername,
             ),
           ),
           // Input area
@@ -525,10 +557,16 @@ class ChatScreen extends ConsumerWidget {
 class _MessagesArea extends StatelessWidget {
   final ChatMessagesState messagesState;
   final VoidCallback onRefresh;
+  final ChatMessagesNotifier notifier;
+  final int conversationId;
+  final String recipientUsername;
 
   const _MessagesArea({
     required this.messagesState,
     required this.onRefresh,
+    required this.notifier,
+    required this.conversationId,
+    required this.recipientUsername,
   });
 
   @override
@@ -644,8 +682,48 @@ class _MessagesArea extends StatelessWidget {
           isImage: msg.isImage,
           imageData: msg.imageData,
           status: msg.status,
+          onLongPress: () => _showDeleteMenu(context, msg, notifier),
         );
       },
+    );
+  }
+
+  void _showDeleteMenu(
+      BuildContext context, DisplayMessage msg, ChatMessagesNotifier notifier) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: ShadeColors.surfaceCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.delete_outline_rounded,
+                  color: ShadeColors.textSecondary),
+              title: const Text('Удалить у себя',
+                  style: TextStyle(color: ShadeColors.textPrimary)),
+              onTap: () {
+                Navigator.pop(ctx);
+                notifier.deleteMessage(msg.id, forEveryone: false);
+              },
+            ),
+            if (msg.isMine)
+              ListTile(
+                leading: const Icon(Icons.delete_forever_rounded,
+                    color: Color(0xFFEF4444)),
+                title: const Text('Удалить у всех',
+                    style: TextStyle(color: Color(0xFFEF4444))),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  notifier.deleteMessage(msg.id, forEveryone: true);
+                },
+              ),
+          ],
+        ),
+      ),
     );
   }
 }

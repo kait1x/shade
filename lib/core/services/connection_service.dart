@@ -100,6 +100,20 @@ class IncomingMessage {
 
 // ── Connection service ────────────────────────────────────────
 
+class MessageDeletedEvent {
+  final String msgId;
+  final String from;
+
+  const MessageDeletedEvent({required this.msgId, required this.from});
+
+  factory MessageDeletedEvent.fromJson(Map<String, dynamic> json) {
+    return MessageDeletedEvent(
+      msgId: json['msgId'] as String,
+      from: json['from'] as String,
+    );
+  }
+}
+
 /// Manages HTTP + WebSocket communication with the Shade relay server.
 ///
 /// Supports:
@@ -155,6 +169,7 @@ class ConnectionService {
   final _notificationCtrl = StreamController<IncomingMessage>.broadcast();
   final _typingCtrl = StreamController<String>.broadcast();
   final _statusCtrl = StreamController<UserStatusUpdate>.broadcast();
+  final _deleteCtrl = StreamController<MessageDeletedEvent>.broadcast();
 
   bool _isConnected = false;
 
@@ -172,6 +187,7 @@ class ConnectionService {
   Stream<IncomingMessage> get notifications => _notificationCtrl.stream;
   Stream<String> get typing => _typingCtrl.stream;
   Stream<UserStatusUpdate> get statusUpdates => _statusCtrl.stream;
+  Stream<MessageDeletedEvent> get messageDeleted => _deleteCtrl.stream;
   bool get isConnected => _isConnected;
   String? get currentUsername => _username;
 
@@ -197,6 +213,13 @@ class ConnectionService {
     } else if (type == 'delivered' && msgIds != null && msgIds.isNotEmpty) {
       _socket!.emit('delivered', msgIds.first);
     }
+  }
+
+  /// Delete a message for everyone.
+  void sendDeleteMessage(String to, String msgId) {
+    if (_socket == null || !_isConnected) return;
+    _socket!
+        .emit('deleteMessage', {'to': to, 'msgId': msgId, 'forEveryone': true});
   }
 
   // ── REST ────────────────────────────────────────────────────
@@ -347,6 +370,15 @@ class ConnectionService {
       } catch (_) {}
     });
 
+    _socket!.on('messageDeleted', (data) {
+      try {
+        final event = MessageDeletedEvent.fromJson(
+          Map<String, dynamic>.from(data as Map),
+        );
+        if (!_deleteCtrl.isClosed) _deleteCtrl.add(event);
+      } catch (_) {}
+    });
+
     _socket!.onDisconnect((reason) {
       _isConnected = false;
       debugPrint('[ConnectionService] WS disconnected: $reason');
@@ -400,6 +432,7 @@ class ConnectionService {
     _notificationCtrl.close();
     _typingCtrl.close();
     _statusCtrl.close();
+    _deleteCtrl.close();
   }
 
   // ── Incoming message handler ────────────────────────────────

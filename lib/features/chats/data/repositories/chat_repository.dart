@@ -166,6 +166,12 @@ class ChatRepository {
     return rows.map(Message.fromRow).toList();
   }
 
+  /// Deletes a message by ID.
+  Future<void> deleteMessage(int msgId) async {
+    final db = await _db.database;
+    await db.delete('messages', where: 'id = ?', whereArgs: [msgId]);
+  }
+
   Future<int> getMessageCount(int conversationId) =>
       _db.getMessageCount(conversationId);
 
