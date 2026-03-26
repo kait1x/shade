@@ -14,6 +14,7 @@ class MessageBubble extends StatelessWidget {
   final bool isEncrypted;
   final bool isImage;
   final Uint8List? imageData;
+  final String status; // 'sent', 'delivered', 'read'
 
   const MessageBubble({
     super.key,
@@ -23,6 +24,7 @@ class MessageBubble extends StatelessWidget {
     this.isEncrypted = false,
     this.isImage = false,
     this.imageData,
+    this.status = 'sent',
   });
 
   @override
@@ -136,11 +138,7 @@ class MessageBubble extends StatelessWidget {
                 ),
                 if (isMine) ...[
                   const SizedBox(width: 4),
-                  Icon(
-                    Icons.done_all_rounded,
-                    size: 14,
-                    color: Colors.white.withOpacity(0.5),
-                  ),
+                  _buildStatusIcon(),
                 ],
               ],
             ),
@@ -152,6 +150,19 @@ class MessageBubble extends StatelessWidget {
 
   String _formatTimestamp(DateTime time) {
     return '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+  }
+
+  Widget _buildStatusIcon() {
+    switch (status) {
+      case 'read':
+        return Icon(Icons.done_all_rounded, size: 14, color: ShadeColors.cyan);
+      case 'delivered':
+        return Icon(Icons.done_all_rounded,
+            size: 14, color: Colors.white.withOpacity(0.7));
+      default: // sent
+        return Icon(Icons.done_rounded,
+            size: 14, color: Colors.white.withOpacity(0.5));
+    }
   }
 }
 

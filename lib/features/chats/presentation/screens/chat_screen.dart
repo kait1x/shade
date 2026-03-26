@@ -35,6 +35,7 @@ class DisplayMessage {
   final bool decryptSuccess;
   final bool isImage;
   final Uint8List? imageData;
+  final String status; // 'sent', 'delivered', 'read'
 
   const DisplayMessage({
     required this.id,
@@ -44,6 +45,7 @@ class DisplayMessage {
     this.decryptSuccess = true,
     this.isImage = false,
     this.imageData,
+    this.status = 'sent',
   });
 }
 
@@ -110,6 +112,12 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
     _loadMessages();
     _listenForIncoming();
     _watchUserStatus();
+
+    // Send read receipt for all messages from this user
+    if (recipientUsername != currentUsername &&
+        _connectionService.isConnected) {
+      _connectionService.sendMessageStatus('read', recipientUsername);
+    }
   }
 
   StreamSubscription? _statusSub;
@@ -141,6 +149,11 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
     _wsSub = _connectionService.messages.listen((incoming) async {
       // Only handle messages from our conversation partner
       if (incoming.from != recipientUsername) return;
+
+      // Send delivered receipt
+      if (_connectionService.isConnected) {
+        _connectionService.sendMessageStatus('delivered', incoming.from);
+      }
 
       // Message already saved to DB by ConnectionService._handleIncomingMessage
       // Just reload and decrypt
@@ -630,6 +643,7 @@ class _MessagesArea extends StatelessWidget {
           isEncrypted: msg.decryptSuccess,
           isImage: msg.isImage,
           imageData: msg.imageData,
+          status: msg.status,
         );
       },
     );

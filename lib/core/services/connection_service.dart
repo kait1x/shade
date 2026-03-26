@@ -189,6 +189,16 @@ class ConnectionService {
     }
   }
 
+  /// Send read/delivered status for messages.
+  void sendMessageStatus(String type, String from, {List<String>? msgIds}) {
+    if (_socket == null || !_isConnected) return;
+    if (type == 'read') {
+      _socket!.emit('read', {'from': from, 'msgIds': msgIds});
+    } else if (type == 'delivered' && msgIds != null && msgIds.isNotEmpty) {
+      _socket!.emit('delivered', msgIds.first);
+    }
+  }
+
   // ── REST ────────────────────────────────────────────────────
 
   /// Registers the current user on the server.
