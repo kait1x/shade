@@ -20,7 +20,12 @@ final goRouterProvider = Provider<GoRouter>((ref) {
     debugLogDiagnostics: true,
     redirect: (context, state) {
       final isAuthenticated = authState.status == AuthStatus.authenticated;
+      final isChecking = authState.status == AuthStatus.initial ||
+          authState.status == AuthStatus.generatingKeys;
       final isOnWelcome = state.uri.path == '/welcome';
+
+      // Don't redirect while checking auth
+      if (isChecking) return null;
 
       if (isAuthenticated && isOnWelcome) {
         return '/home';
