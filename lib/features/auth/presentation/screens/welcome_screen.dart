@@ -252,7 +252,12 @@ class _ProfileFormState extends State<_ProfileForm> {
               ),
               cursorColor: ShadeColors.violet,
               decoration: InputDecoration(
-                labelText: 'Nickname',
+                labelText: 'Никнейм',
+                helperText: 'a-z, 0-9, _ • от 3 до 32 символов',
+                helperStyle: TextStyle(
+                  color: ShadeColors.textMuted,
+                  fontSize: 12,
+                ),
                 labelStyle: TextStyle(
                   color: _isFocused
                       ? ShadeColors.violetLight
@@ -286,11 +291,19 @@ class _ProfileFormState extends State<_ProfileForm> {
                 if (nick.isEmpty) {
                   return 'Введите никнейм';
                 }
-                if (nick.length < 3 || nick.length > 32) {
-                  return 'От 3 до 32 символов';
+                if (nick.length < 3) {
+                  return 'Минимум 3 символа (сейчас ${nick.length})';
+                }
+                if (nick.length > 32) {
+                  return 'Максимум 32 символа (сейчас ${nick.length})';
                 }
                 if (!RegExp(r'^[a-z0-9_]+$').hasMatch(nick)) {
-                  return 'Только a-z, 0-9, _';
+                  final bad = nick
+                      .split('')
+                      .where((c) => !RegExp(r'[a-z0-9_]').hasMatch(c))
+                      .toSet()
+                      .join(', ');
+                  return 'Недопустимые символы: $bad';
                 }
                 return null;
               },
