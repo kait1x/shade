@@ -1,0 +1,26 @@
+name: Build iOS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build IPA
+        run: flutter build ipa --dart-define=SHADE_SERVER_URL=https://shad3msg.duckdns.org:3444 --no-codesign
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: shade-ios
+          path: build/ios/ipa/*.ipa
