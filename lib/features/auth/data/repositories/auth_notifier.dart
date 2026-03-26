@@ -149,8 +149,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   /// Checks if user already has a profile and reconnects to server.
   Future<bool> checkExistingProfile() async {
-    final hasProfile = await _databaseService.hasUserProfile();
-    if (hasProfile) {
+    final hasProfileInDb = await _databaseService.hasUserProfile();
+    if (hasProfileInDb) {
+      // Set flag for fast startup on next launch
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('has_profile', true);
+
       final profile = await _databaseService.getCurrentUserProfile();
       final publicKey = await _cryptoService.getPublicKey();
 
