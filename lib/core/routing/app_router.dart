@@ -80,11 +80,14 @@ final goRouterProvider = Provider<GoRouter>((ref) {
   );
 });
 
-class _SplashScreen extends StatelessWidget {
+class _SplashScreen extends ConsumerWidget {
   const _SplashScreen();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final authState = ref.watch(authNotifierProvider);
+    final hasError = authState.status == AuthStatus.error;
+
     return Scaffold(
       backgroundColor: ShadeColors.surfaceDark,
       body: Center(
@@ -103,14 +106,34 @@ class _SplashScreen extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 32),
-            const SizedBox(
-              width: 24,
-              height: 24,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: ShadeColors.violet,
+            if (hasError) ...[
+              Text(
+                authState.error ?? 'Ошибка загрузки',
+                style: const TextStyle(
+                  color: Color(0xFFEF4444),
+                  fontSize: 14,
+                ),
+                textAlign: TextAlign.center,
               ),
-            ),
+              const SizedBox(height: 16),
+              TextButton(
+                onPressed: () {
+                  ref
+                      .read(authNotifierProvider.notifier)
+                      .checkExistingProfile();
+                },
+                child: const Text('Повторить'),
+              ),
+            ] else ...[
+              const SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: ShadeColors.violet,
+                ),
+              ),
+            ],
           ],
         ),
       ),
