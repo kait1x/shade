@@ -108,24 +108,30 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         _connectionService = connectionService,
         super(const ChatMessagesState()) {
     _loadMessages();
-    _loadUserStatus();
-    _startStatusPolling();
     _listenForIncoming();
+    _watchUserStatus();
   }
 
-  Future<void> _loadUserStatus() async {
-    // Don't show status for self-chat
+  StreamSubscription? _statusSub;
+
+  void _watchUserStatus() {
     if (recipientUsername == currentUsername) return;
-    final status = await _connectionService.getUserStatus(recipientUsername);
-    if (status != null) {
-      state = state.copyWith(userStatus: status);
-    }
-  }
 
-  void _startStatusPolling() {
-    // Refresh status every 15 seconds
-    Timer.periodic(const Duration(seconds: 15), (_) async {
-      if (!_isDisposed) await _loadUserStatus();
+    // Tell server we're watching this user
+    _connectionService.watchUser(recipientUsername);
+
+    // Listen for real-time status updates
+    _statusSub = _connectionService.statusUpdates.listen((update) {
+      if (update.username == recipientUsername) {
+        state = state.copyWith(userStatus: update.toUserStatus());
+      }
+    });
+
+    // Also fetch initial status via HTTP
+    _connectionService.getUserStatus(recipientUsername).then((status) {
+      if (status != null && !_isDisposed) {
+        state = state.copyWith(userStatus: status);
+      }
     });
   }
 
@@ -312,9 +318,10 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   }
 
   @override
-  @override
   void dispose() {
     _isDisposed = true;
+    _connectionService.unwatchUser(recipientUsername);
+    _statusSub?.cancel();
     _wsSub?.cancel();
     _typingSub?.cancel();
     _typingTimeout?.cancel();

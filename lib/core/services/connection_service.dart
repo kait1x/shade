@@ -56,6 +56,28 @@ class UserStatus {
   }
 }
 
+class UserStatusUpdate {
+  final String username;
+  final bool online;
+  final int lastSeen;
+
+  const UserStatusUpdate({
+    required this.username,
+    required this.online,
+    required this.lastSeen,
+  });
+
+  factory UserStatusUpdate.fromJson(Map<String, dynamic> json) {
+    return UserStatusUpdate(
+      username: json['username'] as String,
+      online: json['online'] as bool,
+      lastSeen: json['lastSeen'] as int? ?? 0,
+    );
+  }
+
+  UserStatus toUserStatus() => UserStatus(online: online, lastSeen: lastSeen);
+}
+
 class IncomingMessage {
   final String from;
   final String data; // encrypted payload JSON
@@ -132,6 +154,7 @@ class ConnectionService {
   final _messageCtrl = StreamController<IncomingMessage>.broadcast();
   final _notificationCtrl = StreamController<IncomingMessage>.broadcast();
   final _typingCtrl = StreamController<String>.broadcast();
+  final _statusCtrl = StreamController<UserStatusUpdate>.broadcast();
 
   bool _isConnected = false;
 
@@ -148,8 +171,23 @@ class ConnectionService {
   Stream<IncomingMessage> get messages => _messageCtrl.stream;
   Stream<IncomingMessage> get notifications => _notificationCtrl.stream;
   Stream<String> get typing => _typingCtrl.stream;
+  Stream<UserStatusUpdate> get statusUpdates => _statusCtrl.stream;
   bool get isConnected => _isConnected;
   String? get currentUsername => _username;
+
+  /// Watch a user's online status (real-time via WebSocket).
+  void watchUser(String username) {
+    if (_socket != null && _isConnected) {
+      _socket!.emit('watch', username);
+    }
+  }
+
+  /// Stop watching a user's status.
+  void unwatchUser(String username) {
+    if (_socket != null && _isConnected) {
+      _socket!.emit('unwatch', username);
+    }
+  }
 
   // ── REST ────────────────────────────────────────────────────
 
@@ -290,6 +328,15 @@ class ConnectionService {
       }
     });
 
+    _socket!.on('statusUpdate', (data) {
+      try {
+        final update = UserStatusUpdate.fromJson(
+          Map<String, dynamic>.from(data as Map),
+        );
+        if (!_statusCtrl.isClosed) _statusCtrl.add(update);
+      } catch (_) {}
+    });
+
     _socket!.onDisconnect((reason) {
       _isConnected = false;
       debugPrint('[ConnectionService] WS disconnected: $reason');
@@ -342,6 +389,7 @@ class ConnectionService {
     _messageCtrl.close();
     _notificationCtrl.close();
     _typingCtrl.close();
+    _statusCtrl.close();
   }
 
   // ── Incoming message handler ────────────────────────────────
