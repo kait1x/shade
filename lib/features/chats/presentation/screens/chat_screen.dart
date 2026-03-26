@@ -36,6 +36,8 @@ class DisplayMessage {
   final bool isImage;
   final Uint8List? imageData;
   final String status; // 'sent', 'delivered', 'read'
+  final String? replyText;
+  final String? replySender;
 
   const DisplayMessage({
     required this.id,
@@ -46,6 +48,8 @@ class DisplayMessage {
     this.isImage = false,
     this.imageData,
     this.status = 'sent',
+    this.replyText,
+    this.replySender,
   });
 }
 
@@ -221,6 +225,8 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
                   decryptSuccess: d.decryptSuccess,
                   isImage: d.isImage,
                   imageData: d.imageData,
+                  replyText: d.replyText,
+                  replySender: d.replySender,
                 ))
             .toList(),
         isLoading: false,
@@ -241,16 +247,28 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
 
       final isSelfChat = recipientPublicKey == myPublicKey;
 
+      // Build payload with optional reply
+      final replyTo = state.replyTo;
+      final payload = replyTo != null
+          ? jsonEncode({
+              't': plainText,
+              'r': {
+                's': replyTo.isMine ? 'me' : recipientUsername,
+                't': replyTo.isImage ? 'Фото' : replyTo.text,
+              }
+            })
+          : plainText;
+
       // Encrypt for recipient (for network transmission)
       final encryptedForRecipient = await _cryptoService.encryptData(
-        plainText,
+        payload,
         recipientPublicKey,
       );
 
       // Encrypt for self (for local display)
       final encryptedForSelf = isSelfChat
           ? encryptedForRecipient // same key — reuse
-          : await _cryptoService.encryptData(plainText, myPublicKey);
+          : await _cryptoService.encryptData(payload, myPublicKey);
 
       // Save locally
       await _chatRepository.sendMessage(
@@ -279,9 +297,15 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         timestamp: DateTime.now(),
         isMine: true,
         decryptSuccess: true,
+        replyText:
+            replyTo != null ? (replyTo.isImage ? 'Фото' : replyTo.text) : null,
+        replySender: replyTo != null
+            ? (replyTo.isMine ? 'Вы' : recipientUsername)
+            : null,
       );
       state = state.copyWith(
         messages: [...state.messages, newMsg],
+        clearReply: true,
       );
     } catch (e) {
       state = state.copyWith(error: e.toString());
@@ -557,6 +581,51 @@ class ChatScreen extends ConsumerWidget {
               onReply: (msg) => notifier.setReply(msg),
             ),
           ),
+          // Reply preview
+          if (messagesState.replyTo != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              color: ShadeColors.surfaceElevated,
+              child: Row(
+                children: [
+                  Container(width: 3, height: 40, color: ShadeColors.cyan),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          messagesState.replyTo!.isMine
+                              ? 'Вы'
+                              : args.recipientUsername,
+                          style: const TextStyle(
+                            color: ShadeColors.cyan,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(
+                          messagesState.replyTo!.isImage
+                              ? 'Фото'
+                              : messagesState.replyTo!.text,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: ShadeColors.textSecondary,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded,
+                        size: 18, color: ShadeColors.textMuted),
+                    onPressed: () => notifier.clearReply(),
+                  ),
+                ],
+              ),
+            ),
           // Input area
           MessageInput(
             onSend: (text) => notifier.sendAndEncrypt(text),
@@ -701,6 +770,8 @@ class _MessagesArea extends StatelessWidget {
           imageData: msg.imageData,
           status: msg.status,
           onLongPress: () => _showDeleteMenu(context, msg, notifier),
+          replyText: msg.replyText,
+          replySender: msg.replySender,
         );
       },
     );
@@ -718,6 +789,15 @@ class _MessagesArea extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            ListTile(
+              leading: const Icon(Icons.reply_rounded, color: ShadeColors.cyan),
+              title: const Text('Ответить',
+                  style: TextStyle(color: ShadeColors.textPrimary)),
+              onTap: () {
+                Navigator.pop(ctx);
+                if (onReply != null) onReply!(msg);
+              },
+            ),
             ListTile(
               leading: const Icon(Icons.delete_outline_rounded,
                   color: ShadeColors.textSecondary),

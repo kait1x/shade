@@ -74,6 +74,8 @@ class DecryptedMessage {
   final bool decryptSuccess;
   final bool isImage;
   final Uint8List? imageData;
+  final String? replyText;
+  final String? replySender;
 
   const DecryptedMessage({
     required this.id,
@@ -83,6 +85,8 @@ class DecryptedMessage {
     this.decryptSuccess = true,
     this.isImage = false,
     this.imageData,
+    this.replyText,
+    this.replySender,
   });
 }
 
@@ -235,12 +239,33 @@ class ChatRepository {
             imageData: base64Decode(b64),
           ));
         } else {
+          // Try to parse JSON (for reply format)
+          String text = plain;
+          String? replyText;
+          String? replySender;
+
+          try {
+            final json = jsonDecode(plain);
+            if (json is Map && json.containsKey('t')) {
+              text = json['t'] as String;
+              if (json.containsKey('r')) {
+                final r = json['r'] as Map;
+                replyText = r['t'] as String?;
+                replySender = r['s'] as String?;
+              }
+            }
+          } catch (_) {
+            // Not JSON — plain text message
+          }
+
           result.add(DecryptedMessage(
             id: msg.id,
-            text: plain,
+            text: text,
             timestamp: msg.timestamp,
             isMine: msg.senderId == mySenderId,
             decryptSuccess: true,
+            replyText: replyText,
+            replySender: replySender,
           ));
         }
       } catch (e) {

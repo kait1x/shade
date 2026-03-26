@@ -16,6 +16,8 @@ class MessageBubble extends StatelessWidget {
   final Uint8List? imageData;
   final String status; // 'sent', 'delivered', 'read'
   final VoidCallback? onLongPress;
+  final String? replyText;
+  final String? replySender;
 
   const MessageBubble({
     super.key,
@@ -27,6 +29,8 @@ class MessageBubble extends StatelessWidget {
     this.imageData,
     this.status = 'sent',
     this.onLongPress,
+    this.replyText,
+    this.replySender,
   });
 
   @override
@@ -90,6 +94,52 @@ class MessageBubble extends StatelessWidget {
                   ),
                 ),
               if (!isImage) ...[
+                // Reply preview
+                if (replyText != null && replySender != null)
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: (isMine ? Colors.white : ShadeColors.violet)
+                          .withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border(
+                        left: BorderSide(
+                          color: isMine
+                              ? Colors.white.withOpacity(0.5)
+                              : ShadeColors.cyan,
+                          width: 2,
+                        ),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          replySender!,
+                          style: TextStyle(
+                            color: isMine
+                                ? Colors.white.withOpacity(0.7)
+                                : ShadeColors.cyan,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(
+                          replyText!,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: (isMine
+                                    ? Colors.white
+                                    : ShadeColors.textSecondary)
+                                .withOpacity(0.7),
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 if (isEncrypted)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 6),
