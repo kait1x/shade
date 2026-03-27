@@ -104,6 +104,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   StreamSubscription<IncomingMessage>? _wsSub;
   StreamSubscription<String>? _typingSub;
   StreamSubscription<MessageDeletedEvent>? _deleteSub;
+  StreamSubscription<Map<String, dynamic>>? _messageStatusSub;
   Timer? _typingTimeout;
 
   ChatMessagesNotifier({
@@ -122,12 +123,59 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
     _loadMessages();
     _listenForIncoming();
     _watchUserStatus();
+    _listenForMessageStatus();
 
     // Send read receipt for all messages from this user
     if (recipientUsername != currentUsername &&
         _connectionService.isConnected) {
       _connectionService.sendMessageStatus('read', recipientUsername);
     }
+  }
+
+  void _listenForMessageStatus() {
+    _messageStatusSub = _connectionService.messageStatusUpdates.listen((data) {
+      final status = data['status'] as String? ?? 'sent';
+      final msgId = data['msgId'] as String?;
+      final from = data['from'] as String?;
+
+      // Update message status in UI
+      if (from == recipientUsername || msgId != null) {
+        final updated = state.messages.map((m) {
+          // Mark all our messages as read if read receipt
+          if (status == 'read' && m.isMine) {
+            return DisplayMessage(
+              id: m.id,
+              text: m.text,
+              timestamp: m.timestamp,
+              isMine: m.isMine,
+              decryptSuccess: m.decryptSuccess,
+              isImage: m.isImage,
+              imageData: m.imageData,
+              status: 'read',
+              replyText: m.replyText,
+              replySender: m.replySender,
+            );
+          }
+          // Mark as delivered
+          if (status == 'delivered' && m.isMine && m.status == 'sent') {
+            return DisplayMessage(
+              id: m.id,
+              text: m.text,
+              timestamp: m.timestamp,
+              isMine: m.isMine,
+              decryptSuccess: m.decryptSuccess,
+              isImage: m.isImage,
+              imageData: m.imageData,
+              status: 'delivered',
+              replyText: m.replyText,
+              replySender: m.replySender,
+            );
+          }
+          return m;
+        }).toList();
+        state = state.copyWith(messages: updated);
+      }
+    });
   }
 
   StreamSubscription? _statusSub;
@@ -403,6 +451,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
     _connectionService.unwatchUser(recipientUsername);
     _statusSub?.cancel();
     _deleteSub?.cancel();
+    _messageStatusSub?.cancel();
     _wsSub?.cancel();
     _typingSub?.cancel();
     _typingTimeout?.cancel();

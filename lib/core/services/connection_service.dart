@@ -170,6 +170,7 @@ class ConnectionService {
   final _typingCtrl = StreamController<String>.broadcast();
   final _statusCtrl = StreamController<UserStatusUpdate>.broadcast();
   final _deleteCtrl = StreamController<MessageDeletedEvent>.broadcast();
+  final _messageStatusCtrl = StreamController<Map<String, dynamic>>.broadcast();
 
   bool _isConnected = false;
 
@@ -188,6 +189,8 @@ class ConnectionService {
   Stream<String> get typing => _typingCtrl.stream;
   Stream<UserStatusUpdate> get statusUpdates => _statusCtrl.stream;
   Stream<MessageDeletedEvent> get messageDeleted => _deleteCtrl.stream;
+  Stream<Map<String, dynamic>> get messageStatusUpdates =>
+      _messageStatusCtrl.stream;
   bool get isConnected => _isConnected;
   String? get currentUsername => _username;
 
@@ -346,6 +349,20 @@ class ConnectionService {
       // The UI will handle the timeout
     });
 
+    _socket!.on('messageStatus', (data) {
+      try {
+        final map = Map<String, dynamic>.from(data as Map);
+        final status = map['status'] as String? ?? 'sent';
+        final msgId = map['msgId'] as String?;
+        final from = map['from'] as String?;
+
+        if (!_messageStatusCtrl.isClosed) {
+          _messageStatusCtrl
+              .add({'status': status, 'msgId': msgId, 'from': from});
+        }
+      } catch (_) {}
+    });
+
     _socket!.on('authError', (data) async {
       debugPrint('[ConnectionService] WS auth error — re-registering');
       _sessionToken = null;
@@ -433,6 +450,7 @@ class ConnectionService {
     _typingCtrl.close();
     _statusCtrl.close();
     _deleteCtrl.close();
+    _messageStatusCtrl.close();
   }
 
   // ── Incoming message handler ────────────────────────────────
