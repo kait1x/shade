@@ -257,7 +257,10 @@ class _ProfileFormState extends ConsumerState<_ProfileForm> {
     final authNotifier = ref.read(authNotifierProvider.notifier);
 
     try {
-      final success = await authNotifier.createSecureProfile(nickname);
+      // Add timeout to prevent hanging
+      final success = await authNotifier
+          .createSecureProfile(nickname)
+          .timeout(const Duration(seconds: 15));
 
       if (!success && mounted) {
         final updatedState = ref.read(authNotifierProvider);
@@ -269,7 +272,7 @@ class _ProfileFormState extends ConsumerState<_ProfileForm> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _errorText = 'Ошибка: $e';
+          _errorText = 'Таймаут или ошибка: $e';
           _isSubmitting = false;
         });
       }
