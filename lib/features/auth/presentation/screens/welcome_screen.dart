@@ -207,7 +207,7 @@ class _LoadingView extends StatelessWidget {
   }
 }
 
-class _ProfileForm extends StatefulWidget {
+class _ProfileForm extends ConsumerStatefulWidget {
   final GlobalKey<FormState> formKey;
   final TextEditingController nicknameController;
   final FocusNode focusNode;
@@ -221,18 +221,59 @@ class _ProfileForm extends StatefulWidget {
   });
 
   @override
-  State<_ProfileForm> createState() => _ProfileFormState();
+  ConsumerState<_ProfileForm> createState() => _ProfileFormState();
 }
 
-class _ProfileFormState extends State<_ProfileForm> {
+class _ProfileFormState extends ConsumerState<_ProfileForm> {
+  final _formKey = GlobalKey<FormState>();
+  final _nicknameController = TextEditingController();
   bool _isFocused = false;
+  bool _isSubmitting = false;
+  String? _errorText;
 
   @override
   void initState() {
     super.initState();
-    widget.focusNode.addListener(() {
-      setState(() => _isFocused = widget.focusNode.hasFocus);
+    _nicknameController.addListener(() {
+      if (_errorText != null) setState(() => _errorText = null);
     });
+  }
+
+  @override
+  void dispose() {
+    _nicknameController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _createProfile() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() {
+      _isSubmitting = true;
+      _errorText = null;
+    });
+
+    final nickname = _nicknameController.text.trim().toLowerCase();
+    final authNotifier = ref.read(authNotifierProvider.notifier);
+
+    try {
+      final success = await authNotifier.createSecureProfile(nickname);
+
+      if (!success && mounted) {
+        final updatedState = ref.read(authNotifierProvider);
+        setState(() {
+          _errorText = updatedState.error ?? 'Не удалось создать профиль';
+          _isSubmitting = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _errorText = 'Ошибка: $e';
+          _isSubmitting = false;
+        });
+      }
+    }
   }
 
   @override
@@ -327,6 +368,33 @@ class _ProfileFormState extends State<_ProfileForm> {
 
           const SizedBox(height: 28),
 
+          // Error message
+          if (_errorText != null)
+            Container(
+              padding: const EdgeInsets.all(12),
+              margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEF4444).withOpacity(0.1),
+                borderRadius: BorderRadius.circular(12),
+                border:
+                    Border.all(color: const Color(0xFFEF4444).withOpacity(0.3)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.error_outline_rounded,
+                      color: Color(0xFFEF4444), size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      _errorText!,
+                      style: const TextStyle(
+                          color: Color(0xFFEF4444), fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
           // Create button
           SizedBox(
             width: double.infinity,
@@ -348,7 +416,7 @@ class _ProfileFormState extends State<_ProfileForm> {
                 ],
               ),
               child: ElevatedButton(
-                onPressed: widget.onSubmit,
+                onPressed: _isSubmitting ? null : _createProfile,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.transparent,
                   shadowColor: Colors.transparent,
@@ -356,15 +424,22 @@ class _ProfileFormState extends State<_ProfileForm> {
                     borderRadius: BorderRadius.circular(16),
                   ),
                 ),
-                child: const Text(
-                  'Create Secure Profile',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                    letterSpacing: 0.5,
-                  ),
-                ),
+                child: _isSubmitting
+                    ? const SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white),
+                      )
+                    : const Text(
+                        'Create Secure Profile',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
               ),
             ),
           ),
