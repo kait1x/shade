@@ -8,6 +8,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+require('dotenv').config();
 
 // ── Firebase Admin SDK (optional) ─────────────────────────────
 let admin = null;
@@ -67,11 +69,31 @@ try {
   console.log('[tls] Cert load failed — running HTTP only:', e.message);
 }
 
-// Use HTTPS if available, otherwise HTTP
-const server = httpsServer || http.createServer(app);
+// ── CORS Configuration ───────────────────────────────────────
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000').split(',');
 
-const io = new Server(server, {
-  cors: { origin: '*', methods: ['GET', 'POST'] },
+const corsOptions = {
+  origin: function(origin, callback) {
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn('[CORS] Blocked origin:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST'],
+  credentials: true,
+};
+
+// Use HTTPS if available, otherwise HTTP
+const server = httpsServer || (process.env.NODE_ENV === 'production' ? null : httpServer);
+if (!server && process.env.NODE_ENV === 'production') {
+  console.error('[FATAL] Cannot start without TLS in production');
+  process.exit(1);
+}
+
+const io = new Server(server || http.createServer(app), {
+  cors: corsOptions,
   transports: ['websocket'],
   pingTimeout: 60000,
   pingInterval: 25000,
@@ -79,8 +101,38 @@ const io = new Server(server, {
 });
 
 app.set('trust proxy', 1);
-app.use(cors({ origin: '*' }));
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '1mb' }));
+
+// ── Security Headers ───────────────────────────────────────
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'");
+  res.removeHeader('X-Powered-By');
+  next();
+});
+
+// ── Rate Limiting ───────────────────────────────────────────
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 минут
+  max: 100, // максимум 100 запросов с одного IP
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5, // только 5 попыток входа
+  message: { error: 'Too many authentication attempts' },
+});
+
+app.use('/api/', limiter);
+app.use('/register', limiter);
+app.use('/dashboard', authLimiter);
 
 // ── In-memory stores ─────────────────────────────────────────
 
@@ -139,9 +191,61 @@ const watchers = new Map(); // targetUsername → Set<socketId> (who is watching
 
 // Secret for session tokens — regenerate on each server start
 const SESSION_SECRET = crypto.randomBytes(32).toString('hex');
+const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 часа
 
 function generateSessionToken(username) {
-  return crypto.createHmac('sha256', SESSION_SECRET).update(username).digest('hex');
+  const timestamp = Date.now();
+  const base = `${username}:${timestamp}`;
+  const signature = crypto.createHmac('sha256', SESSION_SECRET).update(base).digest('hex');
+  return `${base}:${signature}`;
+}
+
+function validateSessionToken(username, token) {
+  if (!token) return false;
+  
+  const parts = token.split(':');
+  if (parts.length !== 3) return false;
+  
+  const [tokenUsername, timestampStr, signature] = parts;
+  const timestamp = parseInt(timestampStr, 10);
+  
+  // Проверка имени пользователя
+  if (tokenUsername !== username) return false;
+  
+  // Проверка времени (24 часа)
+  if (Date.now() - timestamp > SESSION_DURATION) {
+    console.log('[session] expired for', username);
+    return false;
+  }
+  
+  // Проверка подписи
+  const base = `${username}:${timestamp}`;
+  const expectedSignature = crypto.createHmac('sha256', SESSION_SECRET).update(base).digest('hex');
+  
+  try {
+    return crypto.timingSafeEqual(
+      Buffer.from(signature, 'hex'),
+      Buffer.from(expectedSignature, 'hex')
+    );
+  } catch (e) {
+    return false;
+  }
+}
+
+// Middleware для проверки сессии пользователя
+function requireUserAuth(req, res, next) {
+  const sessionToken = req.headers['x-session-token'];
+  const username = req.params.username || req.body.username;
+  
+  if (!sessionToken || !username) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  
+  if (!validateSessionToken(username, sessionToken)) {
+    return res.status(403).json({ error: 'Invalid or expired session' });
+  }
+  
+  next();
 }
 
 // ── REST endpoints ───────────────────────────────────────────
@@ -157,7 +261,12 @@ app.get('/', (_req, res) => {
 
 // ── Dashboard Auth ────────────────────────────────────────
 
-const DASHBOARD_PASS = process.env.DASHBOARD_PASS || 'shade2026';
+const DASHBOARD_PASS = process.env.DASHBOARD_PASS;
+if (!DASHBOARD_PASS) {
+  console.error('[ERROR] DASHBOARD_PASS environment variable is not set!');
+  console.error('Set it with: export DASHBOARD_PASS="your_secure_password" or create .env file');
+  process.exit(1);
+}
 
 function requireAuth(req, res, next) {
   const auth = req.headers.authorization;
@@ -462,8 +571,8 @@ app.post('/fcm/register', (req, res) => {
   res.json({ ok: true });
 });
 
-// Get user public key
-app.get('/user/:username', (req, res) => {
+// Get user public key (requires authentication)
+app.get('/user/:username', requireUserAuth, (req, res) => {
   const user = users.get(req.params.username);
 
   if (!user) {
@@ -580,7 +689,32 @@ io.on('connection', (socket) => {
   });
 
   socket.on('message', (payload) => {
+    // Валидация размера данных
+    const MAX_MESSAGE_SIZE = 1 * 1024 * 1024; // 1MB для текста
+    const MAX_FILE_SIZE = 10 * 1024 * 1024;   // 10MB для файлов
+    
     if (!payload || !payload.to || !payload.data) return;
+    
+    // Проверка размера
+    const dataSize = Buffer.byteLength(JSON.stringify(payload.data), 'utf8');
+    if (dataSize > MAX_FILE_SIZE) {
+      socket.emit('error', { message: 'Message too large' });
+      console.log('[security] oversized message rejected');
+      return;
+    }
+    
+    // Если это файл, проверить тип
+    if (payload.data.type === 'file' || payload.data.type === 'image') {
+      const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.pdf', '.txt'];
+      const fileName = payload.data.fileName || '';
+      const ext = path.extname(fileName).toLowerCase();
+      
+      if (!allowedExtensions.includes(ext)) {
+        socket.emit('error', { message: 'File type not allowed' });
+        console.log('[security] blocked file type:', ext);
+        return;
+      }
+    }
 
     const from = socket.username || 'unknown';
     const msgId = Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
@@ -796,12 +930,17 @@ console.error = (...args) => {
 // ── Admin: delete user ────────────────────────────────────
 
 app.delete('/admin/user/:username', requireAuth, (req, res) => {
-  const name = req.params.username.toLowerCase().trim();
-
+  const targetUser = req.params.username;
+  
+  // Нельзя удалить самого себя (админа)
+  if (targetUser.toLowerCase() === 'admin') {
+    return res.status(403).json({ error: 'Cannot delete admin account' });
+  }
+  
   // Find user (case-insensitive)
   let foundKey = null;
   for (const [key] of users) {
-    if (key.toLowerCase() === name) {
+    if (key.toLowerCase() === targetUser.toLowerCase()) {
       foundKey = key;
       break;
     }
@@ -810,6 +949,9 @@ app.delete('/admin/user/:username', requireAuth, (req, res) => {
   if (!foundKey) {
     return res.status(404).json({ error: 'User not found' });
   }
+  
+  // Логирование действия
+  console.log(`[AUDIT] Admin deleted user: ${foundKey}`);
 
   users.delete(foundKey);
   onlineUsers.delete(foundKey);
@@ -820,12 +962,38 @@ app.delete('/admin/user/:username', requireAuth, (req, res) => {
   saveMap('fcm_tokens.json', fcmTokens);
   saveMap('last_seen.json', lastSeen);
 
+  // Disconnect socket если онлайн
+  const socketId = onlineUsers.get(foundKey);
+  if (socketId) {
+    io.to(socketId).emit('kicked', { reason: 'Account deleted by admin' });
+    const sock = io.sockets.sockets.get(socketId);
+    if (sock) sock.disconnect();
+  }
+
   console.log('[admin] user deleted');
   res.json({ ok: true, deleted: foundKey });
 });
 
 app.get('/logs', requireAuth, (_req, res) => {
   res.json(recentLogs.slice(-50));
+});
+
+// ── Error Handler (без утечки деталей) ──────────────────────
+app.use((err, req, res, next) => {
+  console.error('[ERROR]', err.message);
+  
+  // В production скрываем детали ошибок
+  if (process.env.NODE_ENV === 'production') {
+    res.status(err.status || 500).json({
+      error: 'Internal server error',
+      code: 'SERVER_ERROR'
+    });
+  } else {
+    res.status(err.status || 500).json({
+      error: err.message,
+      stack: err.stack
+    });
+  }
 });
 
 // ── Start ────────────────────────────────────────────────────
