@@ -1,0 +1,45 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Pod install
+        run: |
+          cd ios
+          pod install
+
+      - name: Build IPA
+        run: |
+          flutter build ios \
+            --release \
+            --no-codesign \
+            --dart-define=SHADE_SERVER_URL=https://shad3msg.duckdns.org:3444
+
+      - name: Package IPA
+        run: |
+          cd build/ios/iphoneos
+          mkdir Payload
+          cp -r Runner.app Payload/
+          zip -r Shade.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Shade-iOS
+          path: build/ios/iphoneos/Shade.ipa

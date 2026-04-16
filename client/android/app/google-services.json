@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "751628655814",
+    "project_id": "shade-messenger",
+    "storage_bucket": "shade-messenger.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:751628655814:android:b79205efa837986a288bc7",
+        "android_client_info": {
+          "package_name": "com.example.shade"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCvFmQhVigRZZx6uRX666dduTPMsS-IE_8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": 1
+}

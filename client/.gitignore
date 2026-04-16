@@ -1,0 +1,57 @@
+```
+# Dependencies
+.dart_tool/
+.packages
+.pub/
+
+# Build
+build/
+*.apk
+*.aab
+*.app
+
+# Emulator
+*.avd/
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/build/
+*.xcodeproj/
+*.xcworkspace/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+*.keystore
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+.env.*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Coverage
+coverage/
+*.coverage
+
+# Temporary files
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Web
+build/web/
+
+# Test coverage
+test/.dart_tool/
+```
