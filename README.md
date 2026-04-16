@@ -243,19 +243,15 @@ flutter clean && flutter pub get
 
 ## 🤝 Сообщество
 
-- 💬 [Discord сервер](#) — обсудить идеи и получить помощь
+- 💬 [Telegram канал](https://t.me/shade_net) — новости и обсуждения
 - 🐛 [GitHub Issues](#) — сообщить об ошибке или предложить функцию
-- 📧 Email: team@shade.local
+- 📧 Email: kait1x@proton.me
 
 ---
 
 ## 🙏 Благодарности
 
 - [Flutter](https://flutter.dev) — за прекрасный фреймворк
-- [Riverpod](https://riverpod.dev) — за управление состоянием
-- [Drift](https://drift.simonbinder.eu) — за работу с БД
-- [Pointy Castle](https://github.com/PointyCastle/pointycastle) — за криптографию
-- Всем контрибьюторам! ❤️
 
 ---
 
