@@ -374,34 +374,31 @@ class DatabaseService {
     return result.first['cnt'] as int;
   }
 
+  /// Returns messages with pagination support.
+  /// 
+  /// [conversationId] - ID беседы
+  /// [limit] - количество сообщений для загрузки (по умолчанию 20)
+  /// [offset] - смещение от конца истории (0 = последние сообщения)
   Future<List<Map<String, dynamic>>> getMessages(
     int conversationId, {
-    int limit = 500,
+    int limit = 20,
     int offset = 0,
   }) async {
     final db = await database;
-    return db.query(
-      'messages',
-      where: 'conversation_id = ?',
-      whereArgs: [conversationId],
-      orderBy: 'timestamp ASC',
-      limit: limit,
-      offset: offset,
-    );
-  }
-
-  Future<Map<String, dynamic>?> getLastMessage(int conversationId) async {
-    final db = await database;
-    final rows = await db.query(
+    // Загружаем сообщения в обратном порядке (сначала новые), затем реверсируем
+    final rawMessages = await db.query(
       'messages',
       where: 'conversation_id = ?',
       whereArgs: [conversationId],
       orderBy: 'timestamp DESC',
-      limit: 1,
+      limit: limit,
+      offset: offset,
     );
-    return rows.isNotEmpty ? rows.first : null;
+    // Реверсируем чтобы вернуть в правильном порядке (старые -> новые)
+    return rawMessages.reversed.toList();
   }
 
+  /// Returns total message count for a conversation (for pagination calculation).
   Future<int> getMessageCount(int conversationId) async {
     final db = await database;
     final result = await db.rawQuery(
@@ -409,6 +406,12 @@ class DatabaseService {
       [conversationId],
     );
     return result.first['cnt'] as int;
+  }
+
+  /// Checks if there are more messages to load.
+  Future<bool> hasMoreMessages(int conversationId, int loadedCount) async {
+    final totalCount = await getMessageCount(conversationId);
+    return loadedCount < totalCount;
   }
 
   // ── Cleanup ─────────────────────────────────────────────────

@@ -91,7 +91,7 @@ class ChatMessagesState {
   }
 }
 
-/// Notifier that loads, decrypts, and manages chat messages.
+/// Notifier that loads, decrypts, and manages chat messages with pagination.
 class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   final int conversationId;
   final int currentSenderId;
@@ -106,6 +106,12 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   StreamSubscription<MessageDeletedEvent>? _deleteSub;
   StreamSubscription<Map<String, dynamic>>? _messageStatusSub;
   Timer? _typingTimeout;
+  
+  // Pagination state
+  static const int _pageSize = 20;
+  int _loadedCount = 0;
+  bool _isLoadingMore = false;
+  bool _hasMore = true;
 
   ChatMessagesNotifier({
     required this.conversationId,
@@ -253,11 +259,19 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
     _connectionService.sendStopTyping(recipientUsername);
   }
 
+  /// Load initial messages (latest page)
   Future<void> _loadMessages() async {
     try {
       state = state.copyWith(isLoading: true, error: null);
 
-      final rawMessages = await _chatRepository.getMessages(conversationId);
+      final rawMessages = await _chatRepository.getMessages(
+        conversationId,
+        limit: _pageSize,
+        offset: 0,
+      );
+      _loadedCount = rawMessages.length;
+      _hasMore = _loadedCount >= _pageSize;
+
       final decrypted = await _chatRepository.decryptMessages(
         rawMessages,
         mySenderId: currentSenderId,
@@ -284,6 +298,57 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         isLoading: false,
         error: e.toString(),
       );
+    }
+  }
+
+  /// Load more messages (older) for pagination
+  Future<void> loadMoreMessages() async {
+    if (_isLoadingMore || !_hasMore) return;
+
+    try {
+      _isLoadingMore = true;
+
+      final rawMessages = await _chatRepository.getMessages(
+        conversationId,
+        limit: _pageSize,
+        offset: _loadedCount,
+      );
+
+      if (rawMessages.isEmpty) {
+        _hasMore = false;
+        return;
+      }
+
+      _loadedCount += rawMessages.length;
+      _hasMore = rawMessages.length >= _pageSize;
+
+      final decrypted = await _chatRepository.decryptMessages(
+        rawMessages,
+        mySenderId: currentSenderId,
+      );
+
+      final newMessages = decrypted
+          .map((d) => DisplayMessage(
+                id: d.id,
+                text: d.text,
+                timestamp: d.timestamp,
+                isMine: d.isMine,
+                decryptSuccess: d.decryptSuccess,
+                isImage: d.isImage,
+                imageData: d.imageData,
+                replyText: d.replyText,
+                replySender: d.replySender,
+              ))
+          .toList();
+
+      // Prepend older messages to the beginning
+      state = state.copyWith(
+        messages: [...newMessages, ...state.messages],
+      );
+    } catch (e) {
+      debugPrint('Error loading more messages: $e');
+    } finally {
+      _isLoadingMore = false;
     }
   }
 
@@ -797,33 +862,63 @@ class _MessagesArea extends StatelessWidget {
     final hasTyping = messagesState.isRecipientTyping;
     final msgCount = msgs.length;
 
-    return ListView.builder(
-      reverse: true,
-      padding: const EdgeInsets.only(top: 8, bottom: 8),
-      itemCount: msgCount + (hasTyping ? 1 : 0),
-      itemBuilder: (context, index) {
-        // Typing bubble at the bottom (index 0 in reversed list)
-        if (hasTyping && index == 0) {
-          return const _TypingBubble();
+    return NotificationListener<ScrollNotification>(
+      onNotification: (notification) {
+        // Load more messages when scrolling to the top
+        if (notification is ScrollStartNotification &&
+            notification.metrics.pixels == 0) {
+          notifier.loadMoreMessages();
+          return true;
         }
-        final msgIndex = hasTyping ? index - 1 : index;
-        final reversedIndex = msgCount - 1 - msgIndex;
-        final msg = msgs[reversedIndex];
-        return MessageBubble(
-          key: ValueKey(msg.id),
-          text: msg.text,
-          timestamp: msg.timestamp,
-          isMine: msg.isMine,
-          isEncrypted: msg.decryptSuccess,
-          isImage: msg.isImage,
-          imageData: msg.imageData,
-          status: msg.status,
-          onLongPress: () => _showDeleteMenu(context, msg, notifier),
-          replyText: msg.replyText,
-          replySender: msg.replySender,
-        );
+        return false;
       },
+      child: ListView.builder(
+        reverse: true,
+        padding: const EdgeInsets.only(top: 8, bottom: 8),
+        itemCount: msgCount + (hasTyping ? 1 : 0) + (_isLoadingMoreIndicator ? 1 : 0),
+        itemBuilder: (context, index) {
+          // Loading indicator at the top
+          if (_isLoadingMoreIndicator && index == 0) {
+            return const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12.0),
+              child: Center(
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            );
+          }
+          
+          // Typing bubble at the bottom (index 0 in reversed list)
+          final adjustedIndex = _isLoadingMoreIndicator ? index - 1 : index;
+          if (hasTyping && adjustedIndex == 0) {
+            return const _TypingBubble();
+          }
+          final msgIndex = hasTyping ? adjustedIndex - 1 : adjustedIndex;
+          final reversedIndex = msgCount - 1 - msgIndex;
+          
+          if (reversedIndex < 0 || reversedIndex >= msgCount) {
+            return const SizedBox.shrink();
+          }
+          
+          final msg = msgs[reversedIndex];
+          return MessageBubble(
+            key: ValueKey(msg.id),
+            text: msg.text,
+            timestamp: msg.timestamp,
+            isMine: msg.isMine,
+            isEncrypted: msg.decryptSuccess,
+            isImage: msg.isImage,
+            imageData: msg.imageData,
+            status: msg.status,
+            onLongPress: () => _showDeleteMenu(context, msg, notifier),
+            replyText: msg.replyText,
+            replySender: msg.replySender,
+          );
+        },
+      ),
     );
+  }
+
+  bool get _isLoadingMoreIndicator => false; // Will be handled by state
   }
 
   void _showDeleteMenu(

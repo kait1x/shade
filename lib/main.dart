@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shade/core/routing/app_router.dart';
 import 'package:shade/core/services/notification_service.dart';
 import 'package:shade/core/widgets/notification_overlay.dart';
+import 'package:shade/services/security_service.dart';
 
 /// Global flag: true if user has a profile (checked before first frame)
 bool hasProfile = false;
@@ -37,6 +38,9 @@ void main() async {
   // Synchronous-like check: read SharedPreferences before building UI
   final prefs = await SharedPreferences.getInstance();
   hasProfile = prefs.getBool('has_profile') ?? false;
+
+  // Enable security mode (anti-screenshot on Android)
+  await SecurityService.enableSecureMode();
 
   runApp(
     const ProviderScope(
