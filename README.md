@@ -187,6 +187,45 @@ await SecurityService.enableSecureMode(); // FLAG_SECURE на Android
 
 ### Быстрый старт
 
+#### 🐳 Через Docker (рекомендуется)
+
+```bash
+# 1. Запуск сервера одной командой
+docker-compose up -d --build
+
+# 2. Проверка логов
+docker-compose logs -f shade-server
+
+# 3. Остановка
+docker-compose down
+```
+
+**Переменные окружения через Docker:**
+
+Создайте файл `.env` в корне проекта:
+
+```bash
+DASHBOARD_PASS="your_secure_password"
+ALLOWED_ORIGINS="http://localhost:3000,http://localhost:3443"
+```
+
+Или передайте при запуске:
+
+```bash
+DASHBOARD_PASS="your_password" ALLOWED_ORIGINS="http://localhost:3000" docker-compose up -d
+```
+
+**Что делает Docker-окружение:**
+- Автоматически генерирует TLS-сертификаты при первом запуске
+- Сохраняет данные и сертификаты в volumes (`./server/certs`, `./server/data`)
+- Настраивает HTTP→HTTPS редирект (порт 3000 → 3443)
+- Включает авторестарт контейнера
+- Предоставляет админ-панель по адресу `https://localhost:3443/dashboard`
+
+---
+
+#### 📦 Обычный запуск (без Docker)
+
 ```bash
 # 1. Сервер
 cd server
