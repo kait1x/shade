@@ -610,6 +610,23 @@ app.post('/fcm/register', (req, res) => {
   res.json({ ok: true });
 });
 
+// Unregister FCM token (logout)
+app.post('/fcm/unregister', (req, res) => {
+  const { username, token } = req.body;
+
+  if (!username || !token) {
+    return res.status(400).json({ error: 'Missing data' });
+  }
+
+  const storedToken = fcmTokens.get(username);
+  if (storedToken === token) {
+    fcmTokens.delete(username);
+    saveMap('fcm_tokens.json', fcmTokens);
+    console.log('[fcm] token unregistered');
+  }
+  res.json({ ok: true });
+});
+
 // Get user public key (requires authentication)
 app.get('/user/:username', requireUserAuth, (req, res) => {
   const user = users.get(req.params.username);

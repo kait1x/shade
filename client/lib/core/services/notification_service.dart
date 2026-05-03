@@ -191,6 +191,36 @@ class NotificationService {
   static Future<void> cancelAll() async {
     await _localPlugin.cancelAll();
   }
+
+  /// Unregister FCM token from Shade server (called during logout).
+  static Future<void> unregisterToken(String serverUrl, String? username) async {
+    if (_fcmToken == null || username == null) return;
+
+    try {
+      await http.post(
+        Uri.parse('$serverUrl/fcm/unregister'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'username': username,
+          'token': _fcmToken,
+        }),
+      );
+      debugPrint('[NotificationService] FCM token unregistered');
+    } catch (e) {
+      debugPrint('[NotificationService] Token unregister failed (non-fatal): $e');
+    }
+  }
+
+  /// Dispose the notification service (called during logout).
+  /// 
+  /// This cancels all pending notifications and resets the service state.
+  static Future<void> dispose() async {
+    await cancelAll();
+    _fcmToken = null;
+    _initialized = false;
+    _onTap = null;
+    debugPrint('[NotificationService] Disposed');
+  }
 }
 
 /// Background message handler (must be top-level)
