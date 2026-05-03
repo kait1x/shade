@@ -160,11 +160,12 @@ http.Client _createHttpClient() {
       return fingerprint == _pinSha256;
     };
   } else {
-    // Development: require valid certificate (not any)
+    // Development: require valid certificate
     assert(() {
       debugPrint(
         '⚠️ SECURITY WARNING: Certificate pinning is disabled in debug mode.\n'
-        'Only accepting valid TLS certificates (self-signed allowed for localhost).\n'
+        'For localhost: self-signed certs allowed.\n'
+        'For non-localhost: requires valid certificate from CA or PIN.\n'
         'For production builds, you MUST provide a certificate pin:\n'
         '  flutter build apk --dart-define=SHADED_PIN_SHA256=<fingerprint>\n\n'
         'To get the fingerprint from your server:\n'
@@ -191,18 +192,17 @@ http.Client _createHttpClient() {
       );
     }
 
-    // Debug mode: allow self-signed certs (but require valid TLS handshake)
-    // Reject certs that failed TLS validation (e.g., wrong hostname, expired, etc.)
+    // Debug mode: allow self-signed certs for localhost only
     client.badCertificateCallback = (X509Certificate cert, String host, int port) {
-      // Allow if it's a self-signed cert for localhost or 127.0.0.1
       final isLocalhost = host == 'localhost' || host == '127.0.0.1' || host.startsWith('192.168.') || host.startsWith('10.0.');
       if (isLocalhost) {
         debugPrint('[ConnectionService] Allowing self-signed cert for: $host (debug mode)');
         return true;
       }
-      // For non-localhost, be more strict but still allow in debug
-      debugPrint('[ConnectionService] Allowing cert for non-localhost: $host (debug mode)');
-      return true;
+      // For non-localhost in debug: REJECT (require valid CA-signed cert or PIN)
+      debugPrint('[ConnectionService] REJECTED: Invalid cert for non-localhost: $host (debug mode)');
+      debugPrint('[ConnectionService] For non-localhost, use a valid CA-signed certificate or set PIN');
+      return false;
     };
   }
 

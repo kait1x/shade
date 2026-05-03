@@ -24,21 +24,27 @@ class _SecureRandom {
   /// Инициализирует PRNG, собирая энтропию из нескольких источников.
   /// 
   /// Должно вызываться перед первым использованием для корректной инициализации.
-  /// [FIX] Используем минимум 256 бит (32 байта) качественной энтропии от Random.secure()
-  /// плюс дополнительные источники для усиления.
+  /// 128 bytes entropy for Fortuna seeding
   static void _ensureSeeded() {
     if (_seeded) return;
     
-    // [FIX] Основной источник: Random.secure() - минимум 32 байта (256 бит) качественной энтропии
-    // Fortuna требует достаточного количества энтропии для безопасной работы
-    final secureRandom = Random.secure();
-    final mainEntropy = Uint8List(64); // 512 бит для запаса
+    // 128 bytes entropy for Fortuna seeding (2x64 bytes from Random.secure())
+    final entropy1 = Uint8List(64);
+    final entropy2 = Uint8List(64);
+    final random1 = Random.secure();
+    final random2 = Random.secure();
     for (int i = 0; i < 64; i++) {
-      mainEntropy[i] = secureRandom.nextInt(256) & 0xFF;
+      entropy1[i] = random1.nextInt(256) & 0xFF;
+      entropy2[i] = random2.nextInt(256) & 0xFF;
     }
     
+    // Объединяем 64 + 64 = 128 байт
+    final seed = Uint8List(128);
+    seed.setRange(0, 64, entropy1);
+    seed.setRange(64, 128, entropy2);
+    
     // Дополнительные источники для смешивания
-    final entropySources = <Uint8List>[mainEntropy];
+    final entropySources = <Uint8List>[seed];
     
     // Источник 2: Текущее время с высокой точностью (дополнительное смешивание)
     try {
@@ -50,36 +56,16 @@ class _SecureRandom {
       entropySources.add(timeBytes);
     } catch (_) {}
     
-    // Источник 3: Счётчик производительности (если доступен)
-    try {
-      final perfBytes = Uint8List(8);
-      final perfValue = Stopwatch.getTimestamp();
-      for (int i = 0; i < 8; i++) {
-        perfBytes[i] = (perfValue >> (i * 8)) & 0xFF;
-      }
-      entropySources.add(perfBytes);
-    } catch (_) {}
-    
-    // [FIX] Добавляем ещё один блок от Random.secure() для максимальной энтропии
-    try {
-      final extraSecure = Uint8List(32);
-      final extraRandom = Random.secure();
-      for (int i = 0; i < 32; i++) {
-        extraSecure[i] = extraRandom.nextInt(256) & 0xFF;
-      }
-      entropySources.add(extraSecure);
-    } catch (_) {}
-    
     // Объединяем все источники энтропии
     final combinedLength = entropySources.fold<int>(0, (sum, list) => sum + list.length);
-    final seed = Uint8List(combinedLength);
+    final combinedSeed = Uint8List(combinedLength);
     int offset = 0;
     for (final source in entropySources) {
-      seed.setRange(offset, offset + source.length, source);
+      combinedSeed.setRange(offset, offset + source.length, source);
       offset += source.length;
     }
     
-    _random.seed(pc.KeyParameter(seed));
+    _random.seed(pc.KeyParameter(combinedSeed));
     _seeded = true;
     debugPrint('[CryptoService] [_FIX] PRNG инициализирован с ${combinedLength} байтами энтропии');
   }
@@ -434,34 +420,12 @@ class ServerKeyFingerprintResult {
     }
   }
 
-  /// Подтверждает доверие к ключу сервера (сохраняет fingerprint)
+/// Подтверждает доверие к ключу сервера (сохраняет fingerprint)
   Future<void> trustServerKey(String fingerprint) async {
     const storage = FlutterSecureStorage();
     const key = 'server_pubkey_fingerprint';
     await storage.write(key: key, value: fingerprint);
     debugPrint('[CryptoService] Server key fingerprint trusted and saved');
-  }
-        return;
-      }
-      
-      // [FIX] Приоритет 2: TOFU как fallback (только для разработки!)
-      const storage = FlutterSecureStorage();
-      const key = 'server_pubkey_fingerprint';
-      final stored = await storage.read(key: key);
-      if (stored == null) {
-        // Впервые видим ключ сервера - сохраняем отпечаток
-        await storage.write(key: key, value: fingerprint);
-        debugPrint('[CryptoService] Server key fingerprint stored (TOFU - DEV ONLY)');
-      } else if (stored != fingerprint) {
-        debugPrint('[CryptoService] WARNING: Server key fingerprint changed! Possible MitM attack.');
-        debugPrint('  Stored: $stored');
-        debugPrint('  Got:    $fingerprint');
-      } else {
-        debugPrint('[CryptoService] Server key fingerprint verified (TOFU)');
-      }
-    } catch (e) {
-      debugPrint('[CryptoService] Fingerprint check error: $e');
-    }
   }
 
   /// Вычисляет отпечаток SHA-256 публичного PEM-ключа (убирает заголовки/подвалы, пробелы).

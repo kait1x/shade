@@ -120,7 +120,7 @@ class NotificationService {
 
   /// Register FCM token with Shade server.
   /// [FIX] HIGH #5: Encrypt FCM token with server's public key before sending.
-  static Future<void> registerToken(String serverUrl, String username) async {
+  static Future<void> registerToken(String serverUrl, String username, [String? sessionToken]) async {
     if (_fcmToken == null) return;
 
     try {
@@ -148,10 +148,6 @@ class NotificationService {
           debugPrint('[NotificationService] FCM token encrypted');
         } catch (e) {
           debugPrint('[NotificationService] ERROR: Failed to encrypt FCM token. Push notifications disabled.');
-          debugPrint('[NotificationService] Retrying in 30 seconds...');
-          Future.delayed(const Duration(seconds: 30), () {
-            registerToken(serverUrl, username);
-          });
           return;
         }
       }
@@ -161,9 +157,13 @@ class NotificationService {
         return;
       }
 
+      final headers = <String, String>{'Content-Type': 'application/json'};
+      if (sessionToken != null && sessionToken.isNotEmpty) {
+        headers['Authorization'] = 'Bearer $sessionToken';
+      }
       await http.post(
         Uri.parse('$serverUrl/fcm/register'),
-        headers: {'Content-Type': 'application/json'},
+        headers: headers,
         body: jsonEncode({
           'username': username,
           'token': tokenToSend,

@@ -217,19 +217,19 @@ function loadSessionSecret() {
   if (fs.existsSync(SESSION_SECRET_FILE)) {
     try {
       const secret = fs.readFileSync(SESSION_SECRET_FILE, 'utf8').trim();
-      if (secret) {
+      if (secret && secret.length >= 32) {
         sessionSecretSource = 'file';
         console.log('[session] SESSION_SECRET loaded from file');
         return secret;
       }
-      // Empty file - generate new and save (for backward compatibility)
+      console.warn('[session] Stored secret is empty or too short (< 32 chars) - generating new');
     } catch (e) {
       console.error('[session] Error reading session secret file:', e.message);
     }
   }
   // Priority 3: Generate new and save to file for next run
   if (isProduction) {
-    console.error('[session] FATAL: Set SESSION_SECRET in production.');
+    console.error('[session] FATAL: SESSION_SECRET required in production.');
     process.exit(1);
   }
   const newSecret = crypto.randomBytes(64).toString('hex');
@@ -341,6 +341,24 @@ function _decryptData(encryptedStr, secret) {
   const key = crypto.createHash('sha256').update(secret).digest();
   const { nonce, tag, data } = JSON.parse(encryptedStr);
   const decipher = crypto.createDecipheriv(
+    'aes-256-gcm',
+    key,
+    Buffer.from(nonce, 'hex'),
+  );
+  decipher.setAuthTag(Buffer.from(tag, 'hex'));
+  const decrypted = Buffer.concat([
+    decipher.update(Buffer.from(data, 'hex')),
+    decipher.final(),
+  ]);
+  return JSON.parse(decrypted.toString('utf8'));
+}
+
+// Master key wiped after use
+function _wipeKey(key) {
+  if (key && Buffer.isBuffer(key)) {
+    key.fill(0);
+  }
+}
     'aes-256-gcm',
     key,
     Buffer.from(nonce, 'hex'),
@@ -483,7 +501,9 @@ async function generateRefreshToken(username) {
   try {
     const token = crypto.randomBytes(64).toString('hex');
     const expiresAt = Date.now() + REFRESH_TOKEN_DURATION;
-    refreshTokens.set(token, { username, expiresAt });
+    const user = users.get(username);
+    const tokenVersion = user?.tokenVersion || 1;
+    refreshTokens.set(token, { username, expiresAt, tokenVersion });
     return token;
   } finally {
     release();
@@ -530,7 +550,15 @@ async function validateRefreshToken(token) {
       refreshTokens.delete(token);
       return null;
     }
-    return data.username;
+    // Check tokenVersion
+    const user = users.get(data.username);
+    const userVersion = user?.tokenVersion || 1;
+    if (data.tokenVersion !== userVersion) {
+      refreshTokens.delete(token);
+      console.log('[refresh] token invalidated due to tokenVersion mismatch for', data.username);
+      return null;
+    }
+    return { username: data.username, tokenVersion: data.tokenVersion };
   } finally {
     release();
   }
@@ -744,6 +772,8 @@ app.post('/register', (req, res) => {
             saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
           });
           serverSignature = sig.toString('base64');
+          // Master key wiped after use
+          _wipeKey(serverMasterKey.privateKey);
         } catch (e) {
           console.error('[register] Error signing public key:', e.message);
         }
@@ -753,6 +783,7 @@ app.post('/register', (req, res) => {
         signature,
         serverSignature,
         registeredAt: Date.now(),
+        tokenVersion: 1,
       });
       saveMap('users.json', users);
       const token = generateSessionToken(username_norm);
@@ -803,7 +834,14 @@ app.post('/refresh', async (req, res) => {
 
 app.post('/fcm/register', (req, res) => {
   const { username, token } = req.body;
-  const sessionToken = req.headers['x-session-token'];
+  // Support both x-session-token and Authorization: Bearer <token>
+  let sessionToken = req.headers['x-session-token'];
+  if (!sessionToken && req.headers['authorization']) {
+    const auth = req.headers['authorization'];
+    if (auth.startsWith('Bearer ')) {
+      sessionToken = auth.substring(7);
+    }
+  }
   if (!username || !token) {
     return res.status(400).json({ error: 'Missing data' });
   }
@@ -817,7 +855,7 @@ app.post('/fcm/register', (req, res) => {
   }
   fcmTokens.set(username, token);
   saveMap('fcm_tokens.json', fcmTokens);
-  console.log('[fcm] token registered');
+  console.log('[fcm] token registered for', username);
   res.json({ ok: true });
 });
 
@@ -927,6 +965,25 @@ io.on('connection', (socket) => {
   const wsRegisterAttempts = new Map();
   const WS_MAX_REGISTER_PER_MINUTE = 5;
 
+  // Generic rate limiter for ALL socket events (must be before other handlers)
+  const wsRateLimits = new Map();
+  const WS_MAX_EVENTS_PER_MINUTE = 60;
+  socket.use((packet, next) => {
+    const now = Date.now();
+    let rateInfo = wsRateLimits.get(socket.id);
+    if (!rateInfo || now > rateInfo.resetTime) {
+      rateInfo = { count: 0, resetTime: now + 60000 };
+    }
+    rateInfo.count++;
+    wsRateLimits.set(socket.id, rateInfo);
+    if (rateInfo.count > WS_MAX_EVENTS_PER_MINUTE) {
+      socket.emit('error', { message: 'Rate limit exceeded, slow down' });
+      console.log('[ws] rate limit exceeded for', socket.id, 'event:', packet[0]);
+      return;
+    }
+    next();
+  });
+
   socket.on('register', (payload) => {
     if (!payload || typeof payload.username !== 'string' || !payload.username) return;
     const now = Date.now();
@@ -987,26 +1044,6 @@ io.on('connection', (socket) => {
       }
       offlineBuffer.delete(username);
     }
-  });
-
-  const wsRateLimits = new Map();
-  const WS_MAX_EVENTS_PER_MINUTE = 60;
-
-  // Generic rate limiter for ALL socket events
-  socket.use((packet, next) => {
-    const now = Date.now();
-    let rateInfo = wsRateLimits.get(socket.id);
-    if (!rateInfo || now > rateInfo.resetTime) {
-      rateInfo = { count: 0, resetTime: now + 60000 };
-    }
-    rateInfo.count++;
-    wsRateLimits.set(socket.id, rateInfo);
-    if (rateInfo.count > WS_MAX_EVENTS_PER_MINUTE) {
-      socket.emit('error', { message: 'Rate limit exceeded, slow down' });
-      console.log('[ws] rate limit exceeded for', socket.id, 'event:', packet[0]);
-      return;
-    }
-    next();
   });
 
   socket.on('message', (payload) => {
@@ -1220,6 +1257,35 @@ console.error = (...args) => {
   if (recentLogs.length > MAX_LOGS) recentLogs.shift();
   origError(...args);
 };
+
+// ── Admin: revoke all tokens (token versioning) ───────────────────────
+app.post('/admin/revoke/:username', requireAuth, (req, res) => {
+  const targetUser = req.params.username;
+  let foundKey = null;
+  for (const [key] of users) {
+    if (key.toLowerCase() === targetUser.toLowerCase()) {
+      foundKey = key;
+      break;
+    }
+  }
+  if (!foundKey) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  const user = users.get(foundKey);
+  const newVersion = (user?.tokenVersion || 0) + 1;
+  users.set(foundKey, { ...user, tokenVersion: newVersion });
+  saveMap('users.json', users);
+  
+  // Invalidate all existing refresh tokens for this user
+  for (const [token, data] of refreshTokens) {
+    if (data.username === foundKey) {
+      refreshTokens.delete(token);
+    }
+  }
+  sessions.delete(foundKey);
+  console.log(`[AUDIT] Admin revoked tokens for: ${foundKey} (tokenVersion=${newVersion})`);
+  res.json({ ok: true, message: `All tokens revoked. New tokenVersion: ${newVersion}` });
+});
 
 // ── Admin: delete user ────────────────────────────────────
 
