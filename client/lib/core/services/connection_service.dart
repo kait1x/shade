@@ -18,13 +18,19 @@ import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 class PublicKeyBundle {
   final String publicKey;
   final String signature;
+  final String? serverSignature;
 
-  const PublicKeyBundle({required this.publicKey, required this.signature});
+  const PublicKeyBundle({
+    required this.publicKey,
+    required this.signature,
+    this.serverSignature,
+  });
 
   factory PublicKeyBundle.fromJson(Map<String, dynamic> json) {
     return PublicKeyBundle(
       publicKey: json['publicKey'] as String,
       signature: json['signature'] as String,
+      serverSignature: json['serverSignature'] as String?,
     );
   }
 }
@@ -204,6 +210,7 @@ class ConnectionService {
   io.Socket? _socket;
   String? _username;
   String? _sessionToken;
+  String? _serverPublicKey;
   Timer? _reconnectTimer;
   bool _isDisposed = false;
 
@@ -220,11 +227,31 @@ class ConnectionService {
     required this.serverUrl,
     required CryptoService cryptoService,
     required DatabaseService databaseService,
-  })  : _crypto = cryptoService,
+    })  : _crypto = cryptoService,
         _db = databaseService,
         _httpClient = _createHttpClient();
 
-  // ── Public API ──────────────────────────────────────────────
+  // ── Server public key (cached) ─────────────────────────
+  Future<String?> _getServerPublicKey() async {
+    if (_serverPublicKey != null) return _serverPublicKey;
+    try {
+      final response = await _retryGet(
+        Uri.parse('$serverUrl/api/server/public-key'),
+      );
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        _serverPublicKey = data['publicKey'] as String?;
+        debugPrint('[ConnectionService] Server public key cached');
+        return _serverPublicKey;
+      }
+    } catch (e) {
+      debugPrint('[ConnectionService] Failed to fetch server public key: $e');
+    }
+    return null;
+  }
+
+  // ── Public API ──────────────────────────────────────
+────────
 
   Stream<IncomingMessage> get messages => _messageCtrl.stream;
   Stream<IncomingMessage> get notifications => _notificationCtrl.stream;
@@ -299,7 +326,7 @@ class ConnectionService {
     debugPrint('[ConnectionService] Registered');
   }
 
-  /// Fetches the public key bundle for [username] and verifies the signature.
+  /// Fetches the public key bundle for [username] and verifies the server signature.
   Future<PublicKeyBundle?> getPublicKey(String username) async {
     try {
       final response = await _retryGet(
@@ -310,12 +337,20 @@ class ConnectionService {
       final json = jsonDecode(response.body) as Map<String, dynamic>;
       final bundle = PublicKeyBundle.fromJson(json);
 
+      // Get server public key (cached)
+      final serverPubKey = await _getServerPublicKey();
+      if (serverPubKey == null) {
+        debugPrint('[ConnectionService] Cannot verify: no server public key');
+        return null; // Or decide to trust on first fetch?
+      }
+
       final valid = await _crypto.verifyPublicKeySignature(
         bundle.publicKey,
-        bundle.signature,
+        bundle.serverSignature ?? '',
+        serverPubKey,
       );
       if (!valid) {
-        debugPrint('[ConnectionService] Invalid signature');
+        debugPrint('[ConnectionService] Invalid server signature');
         return null;
       }
       return bundle;

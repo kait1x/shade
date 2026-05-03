@@ -24,6 +24,38 @@ try {
   console.log('[firebase] disabled — push notifications unavailable');
 }
 
+// ── Мастер-ключ сервера (для подписи публичных ключей пользователей) ─────────────────────
+const MASTER_KEY_FILE = path.join(DATA_DIR, 'server_master_key');
+let serverMasterKey = null;
+let serverPublicKey = null;
+
+function loadOrGenerateMasterKey() {
+  if (fs.existsSync(MASTER_KEY_FILE)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(MASTER_KEY_FILE, 'utf8'));
+      serverMasterKey = data;
+      serverPublicKey = data.publicKey;
+      console.log('[server] Мастер-ключ загружен');
+      return;
+    } catch (e) {
+      console.error('[server] Ошибка чтения мастер-ключа:', e.message);
+    }
+  }
+  // Генерируем новый мастер-ключ (RSA-4096)
+  console.log('[server] Генерация нового мастер-ключа...');
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+    modulusLength: 4096,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
+  });
+  serverMasterKey = { publicKey, privateKey };
+  serverPublicKey = publicKey;
+  fs.writeFileSync(MASTER_KEY_FILE, JSON.stringify({ publicKey, privateKey }), { mode: 0o600 });
+  console.log('[server] Мастер-ключ сгенерирован и сохранён');
+}
+
+loadOrGenerateMasterKey();
+
 // ── App Setup ────────────────────────────────────────────────
 
 const app = express();
@@ -138,9 +170,9 @@ app.use('/dashboard', authLimiter);
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 
-// Ensure data directory exists
+// Ensure data directory exists with restricted permissions
 if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 }
 
 // ── SESSION_SECRET Management ─────────────────────────────────
@@ -173,8 +205,8 @@ function loadSessionSecret() {
     fs.writeFileSync(SESSION_SECRET_FILE, newSecret, { mode: 0o600 });
     console.log('[session] SESSION_SECRET generated and saved to file (mode 600)');
   } catch (e) {
-    console.error('[session] Error saving session secret file:', e.message);
-    console.warn('[session] SESSION_SECRET will be lost on server restart!');
+    console.error('[session] FATAL: Cannot write session secret to data/session_secret. Check permissions.');
+    process.exit(1); // Exit server - session secret is critical
   }
   
   return newSecret;
@@ -298,215 +330,12 @@ app.get('/', (_req, res) => {
   });
 });
 
-// ── Dashboard Auth ────────────────────────────────────────
-
-const DASHBOARD_PASS = process.env.DASHBOARD_PASS;
-if (!DASHBOARD_PASS) {
-  console.error('[ERROR] DASHBOARD_PASS environment variable is not set!');
-  console.error('Set it with: export DASHBOARD_PASS="your_secure_password" or create .env file');
-  process.exit(1);
-}
-
-function requireAuth(req, res, next) {
-  const auth = req.headers.authorization;
-  if (!auth || auth !== 'Basic ' + Buffer.from('admin:' + DASHBOARD_PASS).toString('base64')) {
-    res.setHeader('WWW-Authenticate', 'Basic realm="Shade Dashboard"');
-    return res.status(401).send('Unauthorized');
+// Отдаёт публичный ключ сервера (для проверки подписей)
+app.get('/api/server/public-key', (req, res) => {
+  if (!serverPublicKey) {
+    return res.status(500).json({ error: 'Server key not available' });
   }
-  next();
-}
-
-// ── Dashboard API (JSON) ──────────────────────────────────
-
-app.get('/api/stats', requireAuth, (_req, res) => {
-  const mem = process.memoryUsage();
-  const uptime = process.uptime();
-  const userList = [...users.entries()].map(([name, u]) => ({
-    name,
-    online: onlineUsers.has(name),
-    lastSeen: lastSeen.get(name) || 0,
-    registeredAt: u.registeredAt,
-  }));
-
-  res.json({
-    totalUsers: users.size,
-    online: onlineUsers.size,
-    uptime,
-    memory: {
-      used: Math.round(mem.heapUsed / 1024 / 1024),
-      total: Math.round(mem.heapTotal / 1024 / 1024),
-    },
-    groups: groups.size,
-    queuedMessages: [...offlineBuffer.values()].reduce((s, a) => s + a.length, 0),
-    users: userList.sort((a, b) => b.registeredAt - a.registeredAt),
-  });
-});
-
-// ── Dashboard (HTML) ──────────────────────────────────────
-
-app.get('/dashboard', requireAuth, (_req, res) => {
-  res.send(`<!DOCTYPE html>
-<html lang="ru">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Shade Dashboard</title>
-<style>
-  :root{--violet:#8b5cf6;--cyan:#06b6d4;--green:#34d399;--red:#ef4444;--bg:#0a0a0a;--card:#111;--border:#1e1e1e;--text:#f5f5f5;--muted:#6b7280}
-  *{margin:0;padding:0;box-sizing:border-box}
-  body{background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,sans-serif;padding:24px;min-height:100vh}
-  .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:32px}
-  .header h1{font-size:32px;background:linear-gradient(135deg,var(--violet),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;font-weight:800}
-  .header .subtitle{color:var(--muted);font-size:14px;margin-top:4px}
-  .live{display:flex;align-items:center;gap:8px;color:var(--green);font-size:13px}
-  .live::before{content:'';width:8px;height:8px;background:var(--green);border-radius:50%;animation:pulse 2s infinite}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:32px}
-  .card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:20px;transition:border-color .2s}
-  .card:hover{border-color:var(--violet)}
-  .card h3{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:8px;display:flex;align-items:center;gap:8px}
-  .card .value{font-size:36px;font-weight:700;line-height:1}
-  .card .sub{color:var(--muted);font-size:12px;margin-top:4px}
-  .section{margin-bottom:32px}
-  .section h2{color:var(--muted);font-size:14px;text-transform:uppercase;letter-spacing:1px;margin-bottom:16px;display:flex;align-items:center;gap:8px}
-  table{width:100%;border-collapse:collapse;background:var(--card);border-radius:16px;overflow:hidden;border:1px solid var(--border)}
-  th,td{text-align:left;padding:14px 20px;border-bottom:1px solid var(--border)}
-  th{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:1px;background:rgba(139,92,246,.05)}
-  tr:last-child td{border-bottom:none}
-  tr:hover td{background:rgba(139,92,246,.03)}
-  .badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:500}
-  .badge.online{background:rgba(52,211,153,.1);color:var(--green)}
-  .badge.online::before{content:'';width:6px;height:6px;background:var(--green);border-radius:50%}
-  .badge.offline{background:rgba(107,114,128,.1);color:var(--muted)}
-  .badge.offline::before{content:'';width:6px;height:6px;background:var(--muted);border-radius:50%}
-  .btn{border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:500;transition:all .2s}
-  .btn-danger{background:rgba(239,68,68,.1);color:var(--red)}
-  .btn-danger:hover{background:rgba(239,68,68,.2)}
-  .btn-primary{background:var(--violet);color:#fff}
-  .btn-primary:hover{background:#7c3aed}
-  .logs{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:16px;font-family:'JetBrains Mono',monospace;font-size:13px;max-height:400px;overflow-y:auto}
-  .logs::-webkit-scrollbar{width:6px}
-  .logs::-webkit-scrollbar-track{background:transparent}
-  .logs::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
-  .log-line{padding:4px 8px;border-radius:4px;margin:2px 0;display:flex;gap:8px}
-  .log-line:hover{background:rgba(255,255,255,.02)}
-  .log-time{color:var(--muted);min-width:80px}
-  .log-error{color:var(--red)}
-  .log-success{color:var(--green)}
-  .log-info{color:var(--cyan)}
-  .log-warning{color:#f59e0b}
-  .empty{text-align:center;padding:40px;color:var(--muted)}
-  .footer{text-align:center;color:var(--muted);font-size:12px;margin-top:48px;padding-top:24px;border-top:1px solid var(--border)}
-  @media(max-width:768px){.grid{grid-template-columns:repeat(2,1fr)}.header h1{font-size:24px}th,td{padding:10px 12px}}
-</style>
-</head>
-<body>
-  <div class="header">
-    <div>
-      <h1>Shade</h1>
-      <div class="subtitle">Relay Server Dashboard</div>
-    </div>
-    <div class="live">Онлайн</div>
-  </div>
-
-  <div class="grid" id="stats"></div>
-
-  <div class="section">
-    <h2>Пользователи</h2>
-    <div id="users"><div class="empty">Загрузка...</div></div>
-  </div>
-
-  <div class="section">
-    <h2>Логи сервера</h2>
-    <div class="logs" id="logs"><div class="log-line"><span class="log-time">--:--:--</span><span class="log-info">Загрузка...</span></div></div>
-  </div>
-
-  <div class="footer">Shade Relay Server • E2EE • RSA-4096 + AES-256-GCM</div>
-
-  <script>
-    function formatTime(s) {
-      const h = Math.floor(s/3600);
-      const m = Math.floor((s%3600)/60);
-      return h > 0 ? h+'ч '+m+'м' : m+'м';
-    }
-    function formatDate(ts) {
-      return new Date(ts).toLocaleString('ru-RU',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
-    }
-    function lastSeenText(ts) {
-      if(!ts) return 'н/д';
-      const d = Date.now()-ts;
-      const min = Math.floor(d/60000);
-      const hrs = Math.floor(d/3600000);
-      const days = Math.floor(d/86400000);
-      if(min<1) return 'только что';
-      if(min<5) return min+'мин';
-      if(hrs<24) return 'сегодня';
-      if(hrs<48) return 'вчера';
-      if(days<7) return days+'дн';
-      if(days<30) return 'месяц';
-      return 'давно';
-    }
-    function logClass(msg) {
-      if(msg.includes('error')||msg.includes('failed')||msg.includes('auth failed')) return 'log-error';
-      if(msg.includes('initialized')||msg.includes('ok')||msg.includes('online')||msg.includes('registered')||msg.includes('Shade')) return 'log-success';
-      if(msg.includes('warn')) return 'log-warning';
-      return 'log-info';
-    }
-
-    async function loadStats() {
-      try {
-        const r = await fetch('/api/stats');
-        const d = await r.json();
-        document.getElementById('stats').innerHTML = [
-          {icon:'👥',label:'Пользователей',value:d.totalUsers,color:'violet'},
-          {icon:'🟢',label:'Онлайн',value:d.online,color:'green'},
-          {icon:'⏱',label:'Аптайм',value:formatTime(d.uptime),color:'cyan'},
-          {icon:'💾',label:'Память',value:d.memory.used+'MB / '+d.memory.total+'MB',color:'cyan'},
-          {icon:'💬',label:'Очередь',value:d.queuedMessages,color:'muted'},
-          {icon:'👥',label:'Групп',value:d.groups,color:'muted'},
-        ].map(c => '<div class="card"><h3>'+c.icon+' '+c.label+'</h3><div class="value" style="color:var(--'+c.color+')">'+c.value+'</div></div>').join('');
-
-        const users = d.users;
-        if(!users.length) {
-          document.getElementById('users').innerHTML = '<div class="empty">Нет пользователей</div>';
-          return;
-        }
-        document.getElementById('users').innerHTML = '<table><thead><tr><th>Ник</th><th>Статус</th><th>Активность</th><th>Регистрация</th><th></th></tr></thead><tbody>'+users.map(u => {
-          const status = u.online ? '<span class="badge online">онлайн</span>' : '<span class="badge offline">'+lastSeenText(u.lastSeen)+'</span>';
-          return '<tr><td><strong>'+u.name+'</strong></td><td>'+status+'</td><td>'+lastSeenText(u.lastSeen)+'</td><td>'+formatDate(u.registeredAt)+'</td><td><button class="btn btn-danger" onclick="deleteUser(\\''+u.name+'\\')">✕</button></td></tr>';
-        }).join('')+'</tbody></table>';
-      } catch(e) {
-        document.getElementById('stats').innerHTML = '<div class="empty">Ошибка загрузки</div>';
-      }
-    }
-
-    async function loadLogs() {
-      try {
-        const r = await fetch('/logs');
-        const logs = await r.json();
-        const el = document.getElementById('logs');
-        el.innerHTML = logs.map(l => {
-          const time = new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-          return '<div class="log-line"><span class="log-time">'+time+'</span><span class="'+logClass(l)+'">'+l+'</span></div>';
-        }).join('');
-        el.scrollTop = el.scrollHeight;
-      } catch(e) {}
-    }
-
-    function deleteUser(name) {
-      if(!confirm('Удалить '+name+'?')) return;
-      fetch('/admin/user/'+encodeURIComponent(name),{method:'DELETE'})
-        .then(r=>r.json())
-        .then(d=>{if(d.ok){loadStats()}else{alert('Ошибка')}});
-    }
-
-    loadStats();
-    loadLogs();
-    setInterval(loadStats, 5000);
-    setInterval(loadLogs, 3000);
-  </script>
-</body>
-</html>`);
+  res.json({ publicKey: serverPublicKey });
 });
 
 // Register user (or reissue token for existing user with valid signature)
@@ -581,9 +410,20 @@ app.post('/register', (req, res) => {
     return res.json({ ok: true, username: username_norm, token });
   }
 
+  // Подписываем публичный ключ мастер-ключом сервера
+  let serverSignature = null;
+  if (serverMasterKey && serverMasterKey.privateKey) {
+    try {
+      serverSignature = crypto.sign('sha256', Buffer.from(publicKey), serverMasterKey.privateKey).toString('base64');
+    } catch (e) {
+      console.error('[register] Ошибка подписи публичного ключа:', e.message);
+    }
+  }
+
   users.set(username_norm, {
     publicKey,
     signature,
+    serverSignature,
     registeredAt: Date.now(),
   });
   saveMap('users.json', users);
@@ -627,12 +467,24 @@ app.post('/fcm/unregister', (req, res) => {
   res.json({ ok: true });
 });
 
-// Get user public key (requires authentication)
+// Получение публичного ключа пользователя (требует аутентификации)
 app.get('/user/:username', requireUserAuth, (req, res) => {
   const user = users.get(req.params.username);
 
   if (!user) {
     return res.status(404).json({ error: 'Not found' });
+  }
+
+  // Если serverSignature отсутствует, подписываем ключ сейчас
+  if (!user.serverSignature && serverMasterKey && serverMasterKey.privateKey) {
+    try {
+      user.serverSignature = crypto.sign('sha256', Buffer.from(user.publicKey), serverMasterKey.privateKey).toString('base64');
+      // Обновляем хранилище
+      users.set(req.params.username, user);
+      saveMap('users.json', users);
+    } catch (e) {
+      console.error('[user] Ошибка подписи публичного ключа:', e.message);
+    }
   }
 
   const isOnline = onlineUsers.has(req.params.username);
@@ -642,6 +494,7 @@ app.get('/user/:username', requireUserAuth, (req, res) => {
     username: req.params.username,
     publicKey: user.publicKey,
     signature: user.signature,
+    serverSignature: user.serverSignature || null,
     online: isOnline,
     lastSeen: lastSeenTime,
   });

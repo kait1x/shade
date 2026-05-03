@@ -62,6 +62,53 @@ class DatabaseService {
     final filePath = p.join(dir, _dbName);
 
     if (_isMobile) {
+      // ── Mobile: SQLCipher ────────────────────────────
+      final key = await _getOrCreateKey();
+      return sqlcipher.openDatabase(
+        filePath,
+        version: _dbVersion,
+        password: key,
+        onConfigure: (db) async {
+          // Foreign keys managed in application code
+        },
+        onCreate: _onCreate,
+        onUpgrade: _onUpgrade,
+      );
+    } else {
+      // ── Desktop: try SQLCipher first, fallback to plaintext with warning ──
+      try {
+        // Attempt to use SQLCipher on desktop (requires native library)
+        final key = await _getOrCreateKey();
+        return sqlcipher.openDatabase(
+          filePath,
+          version: _dbVersion,
+          password: key,
+          onConfigure: (db) async {
+            // Foreign keys managed in application code
+          },
+          onCreate: _onCreate,
+          onUpgrade: _onUpgrade,
+        );
+      } catch (e) {
+        debugPrint('[DatabaseService] SQLCipher not available on desktop: $e');
+        debugPrint('[DatabaseService] WARNING: Database will be stored UNENCRYPTED on desktop!');
+        // Fallback to sqflite_common_ffi without encryption
+        return sqflite_ffi.openDatabase(
+          filePath,
+          version: _dbVersion,
+          onConfigure: (db) async {
+            // Foreign keys managed in application code
+          },
+          onCreate: _onCreate,
+          onUpgrade: _onUpgrade,
+        );
+      }
+    }
+  }
+
+    final filePath = p.join(dir, _dbName);
+
+    if (_isMobile) {
       // ── Mobile: SQLCipher ────────────────────────────────────
       final key = await _getOrCreateKey();
       return sqlcipher.openDatabase(
