@@ -1,5 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -11,7 +13,6 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart' as sqflite_ffi;
 // Common types (Database, ConflictAlgorithm)
 import 'package:sqflite_common/sqflite.dart' show Database, ConflictAlgorithm;
 import 'package:pointycastle/export.dart' as pc;
-import 'dart:typed_data';
 
 /// Returns true when running on a mobile platform that supports SQLCipher.
 bool get _isMobile => Platform.isAndroid || Platform.isIOS;
