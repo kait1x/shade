@@ -143,6 +143,46 @@ if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
+// ── SESSION_SECRET Management ─────────────────────────────────
+// Priority: 1) Environment variable, 2) File, 3) Generate new
+const SESSION_SECRET_FILE = path.join(DATA_DIR, 'session_secret');
+
+function loadSessionSecret() {
+  // 1. Check environment variable first
+  if (process.env.SESSION_SECRET) {
+    console.log('[session] SESSION_SECRET loaded from environment variable');
+    return process.env.SESSION_SECRET;
+  }
+  
+  // 2. Check if file exists
+  if (fs.existsSync(SESSION_SECRET_FILE)) {
+    try {
+      const secret = fs.readFileSync(SESSION_SECRET_FILE, 'utf8').trim();
+      if (secret) {
+        console.log('[session] SESSION_SECRET loaded from file');
+        return secret;
+      }
+    } catch (e) {
+      console.error('[session] Error reading session secret file:', e.message);
+    }
+  }
+  
+  // 3. Generate new secret and save to file
+  const newSecret = crypto.randomBytes(64).toString('hex');
+  try {
+    fs.writeFileSync(SESSION_SECRET_FILE, newSecret, { mode: 0o600 });
+    console.log('[session] SESSION_SECRET generated and saved to file (mode 600)');
+  } catch (e) {
+    console.error('[session] Error saving session secret file:', e.message);
+    console.warn('[session] SESSION_SECRET will be lost on server restart!');
+  }
+  
+  return newSecret;
+}
+
+const SESSION_SECRET = loadSessionSecret();
+const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 часа
+
 function loadMap(filename) {
   const file = path.join(DATA_DIR, filename);
   try {
@@ -189,9 +229,8 @@ const offlineBuffer = new Map();
 const sessions = new Map(); // username → sessionToken
 const watchers = new Map(); // targetUsername → Set<socketId> (who is watching)
 
-// Secret for session tokens — regenerate on each server start
-const SESSION_SECRET = crypto.randomBytes(32).toString('hex');
-const SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 часа
+// SESSION_SECRET уже определён выше через loadSessionSecret()
+// SESSION_DURATION уже определён выше
 
 function generateSessionToken(username) {
   const timestamp = Date.now();
