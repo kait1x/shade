@@ -285,6 +285,8 @@ const offlineBuffer = new Map();
 const sessions = new Map();
 const watchers = new Map();
 const refreshTokens = new Map();
+const gracePeriodSessions = new Map();
+const GRACE_PERIOD_MS = 60000;
 
 // ── Mutex for race condition protection ─────────────────────
 class Mutex {
@@ -733,7 +735,22 @@ io.on('connection', (socket) => {
     }
     const username = payload.username.toLowerCase().trim();
     const token = payload.token;
-    const expected = sessions.get(username);
+    let expected = sessions.get(username);
+    
+    if (!expected || token !== expected) {
+      const graceData = gracePeriodSessions.get(username);
+      if (graceData && token === graceData.sessionToken) {
+        const elapsed = Date.now() - graceData.timestamp;
+        if (elapsed < GRACE_PERIOD_MS) {
+          sessions.set(username, token);
+          gracePeriodSessions.delete(username);
+          console.log('[ws] Reconnected during grace period for:', username);
+        } else {
+          expected = null;
+        }
+      }
+    }
+    
     if (!expected || token !== expected) {
       console.warn('[ws] auth failed');
       socket.emit('authError', { error: 'Invalid session token' });
@@ -918,20 +935,43 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     if (socket.username) {
-      onlineUsers.delete(socket.username);
-      sessions.delete(socket.username);
-      lastSeen.set(socket.username, Date.now());
+      const username = socket.username;
+      const existingSession = sessions.get(username);
+      
+      onlineUsers.delete(username);
+      
+      if (existingSession) {
+        gracePeriodSessions.set(username, {
+          sessionToken: existingSession,
+          timestamp: Date.now(),
+        });
+        sessions.delete(username);
+        setTimeout(() => {
+          const graceData = gracePeriodSessions.get(username);
+          if (graceData && Date.now() - graceData.timestamp >= GRACE_PERIOD_MS) {
+            gracePeriodSessions.delete(username);
+            for (const [token, data] of refreshTokens) {
+              if (data.username === username) {
+                refreshTokens.delete(token);
+              }
+            }
+            console.log('[session] Session and refresh tokens invalidated for user:', username, 'after grace period');
+          }
+        }, GRACE_PERIOD_MS);
+      }
+      
+      lastSeen.set(username, Date.now());
       saveMap('last_seen.json', lastSeen);
-      const userWatchers = watchers.get(socket.username);
+      const userWatchers = watchers.get(username);
       if (userWatchers) {
         for (const sid of userWatchers) {
-          io.to(sid).emit('statusUpdate', { username: socket.username, online: false, lastSeen: Date.now() });
+          io.to(sid).emit('statusUpdate', { username: username, online: false, lastSeen: Date.now() });
         }
       }
       for (const [target, set] of watchers) {
         set.delete(socket.id);
       }
-      console.log('[ws] user offline');
+      console.log('[ws] user offline:', username, existingSession ? '(grace period active)' : '');
     }
   });
 });

@@ -136,11 +136,9 @@ class NotificationService {
         }
       } catch (_) {}
 
-      String tokenToSend = _fcmToken!;
-      // If we have server public key, encrypt the FCM token
+      String? tokenToSend;
       if (serverPubKey != null) {
         try {
-          // Encrypt FCM token with server's public key (RSA-OAEP-SHA256)
           tokenToSend = await RSA.encryptOAEP(
             _fcmToken!,
             '',
@@ -149,10 +147,18 @@ class NotificationService {
           );
           debugPrint('[NotificationService] FCM token encrypted');
         } catch (e) {
-          debugPrint('[NotificationService] Failed to encrypt FCM token: $e');
-          // Fallback to plaintext if encryption fails
-          tokenToSend = _fcmToken!;
+          debugPrint('[NotificationService] ERROR: Failed to encrypt FCM token. Push notifications disabled.');
+          debugPrint('[NotificationService] Retrying in 30 seconds...');
+          Future.delayed(const Duration(seconds: 30), () {
+            registerToken(serverUrl, username);
+          });
+          return;
         }
+      }
+
+      if (tokenToSend == null) {
+        debugPrint('[NotificationService] ERROR: No server public key. Push notifications disabled.');
+        return;
       }
 
       await http.post(

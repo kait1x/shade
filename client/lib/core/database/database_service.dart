@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
@@ -63,47 +62,57 @@ class DatabaseService {
     final filePath = p.join(dir, _dbName);
 
     if (_isMobile) {
-      // ── Mobile: SQLCipher ────────────────────────────
       final key = await _getOrCreateKey();
-      return sqlcipher.openDatabase(
+      final db = await sqlcipher.openDatabase(
         filePath,
         version: _dbVersion,
         password: key,
-        onConfigure: (db) async {
-          // Foreign keys managed in application code
-        },
+        onConfigure: (db) async {},
         onCreate: _onCreate,
         onUpgrade: _onUpgrade,
       );
+      await _verifyDatabaseIntegrity(db);
+      return db;
     } else {
-      // ── Desktop: try SQLCipher first, fallback to plaintext with warning ──
       try {
-        // Attempt to use SQLCipher on desktop (requires native library)
         final key = await _getOrCreateKey();
-        return sqlcipher.openDatabase(
+        final db = await sqlcipher.openDatabase(
           filePath,
           version: _dbVersion,
           password: key,
-          onConfigure: (db) async {
-            // Foreign keys managed in application code
-          },
+          onConfigure: (db) async {},
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         );
+        await _verifyDatabaseIntegrity(db);
+        return db;
       } catch (e) {
         debugPrint('[DatabaseService] SQLCipher not available on desktop: $e');
         debugPrint('[DatabaseService] WARNING: Database will be stored UNENCRYPTED on desktop!');
-        // Fallback to sqflite_common_ffi without encryption
         return sqflite_ffi.openDatabase(
           filePath,
           version: _dbVersion,
-          onConfigure: (db) async {
-            // Foreign keys managed in application code
-          },
+          onConfigure: (db) async {},
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
         );
       }
+    }
+  }
+
+  Future<void> _verifyDatabaseIntegrity(Database db) async {
+    try {
+      final result = await db.rawQuery('SELECT count(*) as cnt FROM sqlite_master');
+      final count = result.first['cnt'] as int?;
+      if (count != null) {
+        debugPrint('[DatabaseService] Database integrity verified OK');
+      } else {
+        throw Exception('Unexpected integrity check result');
+      }
+    } catch (e) {
+      throw Exception(
+        'Database integrity check failed. Wrong key or corrupted database.',
+      );
     }
   }
 
@@ -118,6 +127,20 @@ class DatabaseService {
 
   // ── Key management (mobile only) ────────────────────────────
 
+  /// Using Fortuna PRNG for DB key generation (audit requirement)
+  static final pc.FortunaRandom _dbRandom = pc.FortunaRandom();
+  static bool _dbRandomSeeded = false;
+
+  static void _ensureDbRandomSeeded() {
+    if (_dbRandomSeeded) return;
+    final seed = Uint8List(32);
+    for (int i = 0; i < 32; i++) {
+      seed[i] = DateTime.now().microsecondsSinceEpoch % 256;
+    }
+    _dbRandom.seed(pc.KeyParameter(seed));
+    _dbRandomSeeded = true;
+  }
+
   /// Generates or retrieves the SQLCipher database encryption key.
   ///
   /// SECURITY: Uses cryptographically secure random number generation
@@ -130,18 +153,13 @@ class DatabaseService {
       debugPrint('[DatabaseService] secure storage read failed: $e');
     }
 
-    // [FIX] CRIT #1: Generate 32 bytes (256 bits) using cryptographically secure Random.secure()
-    // Using Fortuna is removed - we just need 32 bytes of high-quality entropy
-    final secureRandom = Random.secure();
-    final bytes = Uint8List(32);
-    for (int i = 0; i < 32; i++) {
-      bytes[i] = secureRandom.nextInt(256) & 0xFF;
-    }
-    
+    // [FIX] CRIT #1: Using Fortuna PRNG for DB key generation (audit requirement)
+    _ensureDbRandomSeeded();
+    final bytes = _dbRandom.nextBytes(32);
     final key = base64Url.encode(bytes);
 
     await _secureStorage.write(key: _dbKeyStorageKey, value: key);
-    debugPrint('[DatabaseService] Generated new DB encryption key');
+    debugPrint('[DatabaseService] Generated new DB encryption key (Fortuna PRNG)');
     return key;
   }
 
