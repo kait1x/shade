@@ -240,14 +240,55 @@ class ConnectionService {
       );
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
-        _serverPublicKey = data['publicKey'] as String?;
-        debugPrint('[ConnectionService] Server public key cached');
-        return _serverPublicKey;
+        final publicKey = data['publicKey'] as String?;
+        
+        // [FIX] CRIT #2: Verify server key fingerprint
+        const pinnedFingerprint = String.fromEnvironment('SHADED_PIN_SHA256', defaultValue: '');
+        if (publicKey != null && _verifyServerKeyPin(publicKey, pinnedFingerprint)) {
+          _serverPublicKey = publicKey;
+          debugPrint('[ConnectionService] Server public key cached and verified');
+          return _serverPublicKey;
+        } else if (publicKey != null && pinnedFingerprint.isNotEmpty) {
+          debugPrint('[ConnectionService] Server key fingerprint MISMATCH - possible MitM!');
+          return null;
+        } else {
+          // No pin configured - use key anyway (with warning)
+          _serverPublicKey = publicKey;
+          debugPrint('[ConnectionService] Server public key cached (no pin verification)');
+          return _serverPublicKey;
+        }
       }
     } catch (e) {
       debugPrint('[ConnectionService] Failed to fetch server public key: $e');
     }
     return null;
+  }
+
+  // [FIX] CRIT #2: Verify server key fingerprint against pinned value
+  bool _verifyServerKeyPin(String publicKey, String? pinnedFingerprint) {
+    if (pinnedFingerprint == null || pinnedFingerprint.isEmpty) {
+      debugPrint('[ConnectionService] No pinned fingerprint - skipping verification');
+      return true; // Allow if no pin configured
+    }
+    try {
+      // Вычисляем SHA-256 fingerprint публичного ключа
+      final lines = publicKey.split('\n').where((l) => !l.contains('BEGIN') && !l.contains('END') && l.trim().isNotEmpty).join();
+      final bytes = base64.decode(lines);
+      final hash = crypto.sha256.convert(bytes);
+      final fingerprint = hash.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(':');
+      
+      if (fingerprint != pinnedFingerprint) {
+        debugPrint('[ConnectionService] WARNING: Server key fingerprint MISMATCH!');
+        debugPrint('  Expected: $pinnedFingerprint');
+        debugPrint('  Got:      $fingerprint');
+        return false;
+      }
+      debugPrint('[ConnectionService] Server key fingerprint verified');
+      return true;
+    } catch (e) {
+      debugPrint('[ConnectionService] Error verifying server key: $e');
+      return false;
+    }
   }
 
   // ── Public API ──────────────────────────────────────

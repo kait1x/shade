@@ -56,6 +56,15 @@ function loadOrGenerateMasterKey() {
 
 loadOrGenerateMasterKey();
 
+// [FIX] HIGH #4: Validate DASHBOARD_PASS at startup
+if (!DASHBOARD_PASS || DASHBOARD_PASS === '<SET_YOUR_STRONG_PASSWORD_HERE>') {
+  console.error('[FATAL] DASHBOARD_PASS is not configured!');
+  console.error('[FATAL] Please set a strong password:');
+  console.error('[FATAL]   export DASHBOARD_PASS="your_secure_password"');
+  console.error('[FATAL] Or update server/.env with a real password');
+  process.exit(1);
+}
+
 // ── App Setup ────────────────────────────────────────────────
 
 const app = express();
@@ -240,17 +249,22 @@ function loadMap(filename) {
 
 function saveMap(filename, map) {
   const file = path.join(DATA_DIR, filename);
-  try {
-    let data;
-    if (filename === 'groups.json') {
-      data = [...map.entries()].map(([k, v]) => [k, { ...v, members: [...v.members] }]);
-    } else {
-      data = [...map.entries()];
+  // [FIX] CRIT #3: Use mutex for race condition protection
+  dbMutex.acquire().then((release) => {
+    try {
+      let data;
+      if (filename === 'groups.json') {
+        data = [...map.entries()].map(([k, v]) => [k, { ...v, members: [...v.members] }]);
+      } else {
+        data = [...map.entries()];
+      }
+      fs.writeFileSync(file, JSON.stringify(data));
+    } catch (e) {
+      console.error('[db] save error:', filename, e.message);
+    } finally {
+      release();
     }
-    fs.writeFileSync(file, JSON.stringify(data));
-  } catch (e) {
-    console.error('[db] save error:', filename, e.message);
-  }
+  });
 }
 
 const users = loadMap('users.json');
@@ -261,6 +275,36 @@ const onlineUsers = new Map();
 const offlineBuffer = new Map();
 const sessions = new Map(); // username → sessionToken
 const watchers = new Map(); // targetUsername → Set<socketId> (who is watching)
+
+// [FIX] CRIT #3: Simple mutex for race condition protection
+class Mutex {
+  constructor() {
+    this.queue = [];
+    this.locked = false;
+  }
+  
+  acquire() {
+    return new Promise((resolve) => {
+      if (!this.locked) {
+        this.locked = true;
+        resolve(() => { this.release(); });
+      } else {
+        this.queue.push(resolve);
+      }
+    });
+  }
+  
+  release() {
+    if (this.queue.length > 0) {
+      const next = this.queue.shift();
+      next(() => { this.release(); });
+    } else {
+      this.locked = false;
+    }
+  }
+}
+
+const dbMutex = new Mutex();
 
 // SESSION_SECRET уже определён выше через loadSessionSecret()
 // SESSION_DURATION уже определён выше
@@ -375,14 +419,142 @@ app.get('/api/server/public-key', (req, res) => {
 
 // Register user (or reissue token for existing user with valid signature)
 app.post('/register', (req, res) => {
-  const { username, publicKey, signature } = req.body;
+  // [FIX] CRIT #3: Acquire mutex for race condition protection
+  dbMutex.acquire().then((release) => {
+    try {
+      const { username, publicKey, signature } = req.body;
 
-  // Validate nickname: 3-32 chars, a-z 0-9 _, case-insensitive
-  const nick = (username || '').toLowerCase().trim();
-  if (!/^[a-z0-9_]{3,32}$/.test(nick)) {
-    return res.status(400).json({
-      error: 'Никнейм: 3-32 символа, только a-z, 0-9, _',
-    });
+      // Validate nickname: 3-32 chars, a-z 0-9 _, case-insensitive
+      const nick = (username || '').toLowerCase().trim();
+      if (!/^[a-z0-9_]{3,32}$/.test(nick)) {
+        release();
+        return res.status(400).json({
+          error: 'Никнейм: 3-32 символа, только a-z, 0-9, _',
+        });
+      }
+      if (!publicKey) {
+        release();
+        return res.status(400).json({ error: 'Invalid key' });
+      }
+      if (!signature) {
+        release();
+        return res.status(400).json({ error: 'Missing signature' });
+      }
+  
+      // Use normalized nickname everywhere
+      const username_norm = nick;
+  
+      // Verify RSA-PSS signature: signer proves they hold the private key
+      try {
+        const dataB64 = Buffer.from(publicKey).toString('base64');
+        const isValid = crypto.verify(
+          'sha256',
+          Buffer.from(dataB64),
+          {
+            key: publicKey,
+            padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+            saltLength: crypto.constants.RSA_PSS_SALTLEN_AUTO,
+          },
+          Buffer.from(signature, 'base64'),
+        );
+  
+        if (!isValid) {
+          console.warn('[register] invalid signature');
+          release();
+          return res.status(403).json({ error: 'Invalid signature' });
+        }
+      } catch (e) {
+        console.warn('[register] signature verification error:', e.message);
+        release();
+        return res.status(403).json({ error: 'Signature verification failed' });
+      }
+  
+      // [FIX] Validate public key is valid RSA key
+      try {
+        const pubKey = crypto.createPublicKey(publicKey);
+        // Try to use it for encryption (should not throw)
+        const testData = Buffer.from('test');
+        crypto.publicEncrypt(pubKey, testData);
+        console.log('[register] public key validated');
+      } catch (e) {
+        console.warn('[register] invalid public key:', e.message);
+        release();
+        return res.status(400).json({ error: 'Invalid public key' });
+      }
+  
+      // Case-insensitive lookup (handles old mixed-case keys)
+      let existingKey = null;
+      let existing = null;
+      for (const [key, value] of users) {
+        if (key.toLowerCase() === username_norm) {
+          existingKey = key;
+          existing = value;
+          break;
+        }
+      }
+  
+      if (existing) {
+        // Same key? Reissue token. Different key? Taken.
+        if (existing.publicKey !== publicKey) {
+          release();
+          return res.status(409).json({ error: 'Никнейм уже занят' });
+        }
+        // Migrate old key to lowercase
+        if (existingKey !== username_norm) {
+          users.delete(existingKey);
+          users.set(username_norm, existing);
+          saveMap('users.json', users);
+        }
+        const token = generateSessionToken(username_norm);
+        sessions.set(username_norm, token);
+        console.log('[register] reissued token');
+        release();
+        return res.json({ ok: true, username: username_norm, token });
+      }
+  
+      // Подписываем публичный ключ мастер-ключом сервера используя RSA-PSS-SHA256
+      let serverSignature = null;
+      if (serverMasterKey && serverMasterKey.privateKey) {
+        try {
+          // [FIX] Используем RSA-PSS вместо PKCS#1 v1.5
+          const sign = crypto.createSign('sha256');
+          sign.update(publicKey);
+          sign.end();
+          const signature = sign.sign({
+            key: serverMasterKey.privateKey,
+            padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+            saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST, // salt = hash length (32 bytes for SHA-256)
+          });
+          serverSignature = signature.toString('base64');
+        } catch (e) {
+          console.error('[register] Ошибка подписи публичного ключа:', e.message);
+        }
+      }
+  
+      users.set(username_norm, {
+        publicKey,
+        signature,
+        serverSignature,
+        registeredAt: Date.now(),
+      });
+      saveMap('users.json', users);
+  
+      // Generate session token for WebSocket authentication
+      const token = generateSessionToken(username_norm);
+      sessions.set(username_norm, token);
+  
+      console.log('[register] new user');
+      release();
+      res.json({ ok: true, username: username_norm, token });
+    } catch (e) {
+      console.error('[register] error:', e.message);
+      release();
+      res.status(500).json({ error: 'Internal error' });
+    }
+  });
+});
+});
+});
   }
   if (!publicKey) {
     return res.status(400).json({ error: 'Invalid key' });
@@ -505,12 +677,25 @@ app.post('/logout', requireUserAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-// Register FCM token
+// [FIX] HIGH #7: Register FCM token with authentication
 app.post('/fcm/register', (req, res) => {
   const { username, token } = req.body;
+  const sessionToken = req.headers['x-session-token'];
 
   if (!username || !token) {
     return res.status(400).json({ error: 'Missing data' });
+  }
+
+  // [FIX] Verify session token and username match
+  if (!sessionToken || !validateSessionToken(username, sessionToken)) {
+    return res.status(403).json({ error: 'Invalid or expired session' });
+  }
+
+  // [FIX] HIGH #7: Verify username in request matches session
+  const sessionUsername = sessionToken.split(':')[0];
+  if (sessionUsername !== username) {
+    console.warn('[fcm] Username mismatch: session=' + sessionUsername + ' req=' + username);
+    return res.status(403).json({ error: 'Username mismatch' });
   }
 
   fcmTokens.set(username, token);
@@ -519,12 +704,25 @@ app.post('/fcm/register', (req, res) => {
   res.json({ ok: true });
 });
 
-// Unregister FCM token (logout)
+// [FIX] HIGH #7: Unregister FCM token (logout) with authentication
 app.post('/fcm/unregister', (req, res) => {
   const { username, token } = req.body;
+  const sessionToken = req.headers['x-session-token'];
 
   if (!username || !token) {
     return res.status(400).json({ error: 'Missing data' });
+  }
+
+  // [FIX] Verify session token and username match
+  if (!sessionToken || !validateSessionToken(username, sessionToken)) {
+    return res.status(403).json({ error: 'Invalid or expired session' });
+  }
+
+  // [FIX] HIGH #7: Verify username in request matches session
+  const sessionUsername = sessionToken.split(':')[0];
+  if (sessionUsername !== username) {
+    console.warn('[fcm] Username mismatch: session=' + sessionUsername + ' req=' + username);
+    return res.status(403).json({ error: 'Username mismatch' });
   }
 
   const storedToken = fcmTokens.get(username);

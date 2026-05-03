@@ -158,19 +158,12 @@ class DatabaseService {
       debugPrint('[DatabaseService] secure storage read failed: $e');
     }
 
-    // Generate 32 bytes (256 bits) using cryptographically secure PRNG
-    final secureRandom = pc.FortunaRandom();
-    // Seed with entropy from multiple sources
-    final timeBytes = Uint8List(8);
-    final timeValue = DateTime.now().microsecondsSinceEpoch;
-    for (int i = 0; i < 8; i++) {
-      timeBytes[i] = (timeValue >> (i * 8)) & 0xFF;
-    }
-    secureRandom.seed(pc.KeyParameter(timeBytes));
-    
+    // [FIX] CRIT #1: Generate 32 bytes (256 bits) using cryptographically secure Random.secure()
+    // Using Fortuna is removed - we just need 32 bytes of high-quality entropy
+    final secureRandom = Random.secure();
     final bytes = Uint8List(32);
     for (int i = 0; i < 32; i++) {
-      bytes[i] = secureRandom.nextUint8();
+      bytes[i] = secureRandom.nextInt(256) & 0xFF;
     }
     
     final key = base64Url.encode(bytes);
