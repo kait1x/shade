@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart' show AlertDialog, BuildContext;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -107,6 +108,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         await NotificationService.registerToken(
           _connectionService.serverUrl,
           nickname,
+          _connectionService.sessionToken,
         );
       } catch (e) {
         final errorStr = e.toString();
@@ -175,6 +177,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
         await NotificationService.registerToken(
           _connectionService.serverUrl,
           nickname,
+          _connectionService.sessionToken,
         );
         debugPrint('Reconnected to server');
 
@@ -245,6 +248,16 @@ class AuthNotifier extends StateNotifier<AuthState> {
       );
       rethrow;
     }
+  }
+
+  /// Check if server key needs user confirmation (TOFU)
+  Future<ServerKeyFingerprintResult?> checkServerKeyConfirmation() async {
+    return await _connectionService.checkServerKeyForConfirmation();
+  }
+
+  /// Trust the server key after user confirms
+  Future<void> trustServerKey(String fingerprint) async {
+    await _connectionService.trustServerKey(fingerprint);
   }
 }
 

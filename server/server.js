@@ -216,11 +216,24 @@ function loadSessionSecret() {
   // Priority 2: File exists (read existing or generate new and save for next run)
   if (fs.existsSync(SESSION_SECRET_FILE)) {
     try {
-      const secret = fs.readFileSync(SESSION_SECRET_FILE, 'utf8').trim();
-      if (secret && secret.length >= 32) {
+      const fileContent = fs.readFileSync(SESSION_SECRET_FILE, 'utf8').trim();
+      // Format: secret:sha256Checksum
+      const lastColonIdx = fileContent.lastIndexOf(':');
+      if (lastColonIdx > 0) {
+        const secret = fileContent.substring(0, lastColonIdx);
+        const storedChecksum = fileContent.substring(lastColonIdx + 1);
+        const computedChecksum = crypto.createHash('sha256').update(secret).digest('hex');
+        if (storedChecksum === computedChecksum && secret.length >= 32) {
+          sessionSecretSource = 'file';
+          console.log('[session] SESSION_SECRET loaded from file (checksum verified)');
+          return secret;
+        }
+      }
+      // Fallback: legacy format without checksum
+      if (fileContent && fileContent.length >= 32) {
         sessionSecretSource = 'file';
-        console.log('[session] SESSION_SECRET loaded from file');
-        return secret;
+        console.log('[session] SESSION_SECRET loaded from file (legacy format)');
+        return fileContent;
       }
       console.warn('[session] Stored secret is empty or too short (< 32 chars) - generating new');
     } catch (e) {
@@ -236,8 +249,9 @@ function loadSessionSecret() {
   sessionSecretSource = 'generated';
   console.warn('[session] WARNING: SESSION_SECRET generated at runtime. Saved to file for next run.');
   try {
-    fs.writeFileSync(SESSION_SECRET_FILE, newSecret, { mode: 0o600 });
-    console.log('[session] SESSION_SECRET saved to file for persistence');
+    const checksum = crypto.createHash('sha256').update(newSecret).digest('hex');
+    fs.writeFileSync(SESSION_SECRET_FILE, `${newSecret}:${checksum}`, { mode: 0o600 });
+    console.log('[session] SESSION_SECRET saved to file with checksum');
   } catch (e) {
     console.error('[session] FATAL: Cannot write session secret to data/session_secret. Check permissions.');
     process.exit(1);
@@ -496,14 +510,29 @@ function generateSessionToken(username) {
   return `${base}:${signature}`;
 }
 
-async function generateRefreshToken(username) {
+// Track used refresh token nonces to detect family reuse
+const usedRefreshNonces = new Set();
+const REFRESH_NONCE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+async function generateRefreshToken(username, oldToken = null) {
   const release = await refreshTokenMutex.acquire();
   try {
     const token = crypto.randomBytes(64).toString('hex');
+    const familyId = crypto.randomBytes(16).toString('hex');
     const expiresAt = Date.now() + REFRESH_TOKEN_DURATION;
     const user = users.get(username);
     const tokenVersion = user?.tokenVersion || 1;
-    refreshTokens.set(token, { username, expiresAt, tokenVersion });
+    
+    // If replacing old token, record old nonce to detect family reuse
+    if (oldToken) {
+      const oldData = refreshTokens.get(oldToken);
+      if (oldData && oldData.familyId) {
+        usedRefreshNonces.add(oldData.familyId);
+      }
+      refreshTokens.delete(oldToken);
+    }
+    
+    refreshTokens.set(token, { username, expiresAt, tokenVersion, familyId });
     return token;
   } finally {
     release();
@@ -558,6 +587,17 @@ async function validateRefreshToken(token) {
       console.log('[refresh] token invalidated due to tokenVersion mismatch for', data.username);
       return null;
     }
+    // Check family reuse (if this family was already used, invalidate entire family)
+    if (data.familyId && usedRefreshNonces.has(data.familyId)) {
+      // Family reuse detected - invalidate all tokens for this user
+      for (const [t, d] of refreshTokens) {
+        if (d.username === data.username) {
+          refreshTokens.delete(t);
+        }
+      }
+      console.log('[refresh] Family reuse detected - invalidated all tokens for', data.username);
+      return null;
+    }
     return { username: data.username, tokenVersion: data.tokenVersion };
   } finally {
     release();
@@ -581,16 +621,37 @@ function requireUserAuth(req, res, next) {
 const adminSessions = new Map();
 const ADMIN_SESSION_DURATION = 60 * 60 * 1000; // 1 hour
 const ADMIN_COOKIE_NAME = 'shade_admin_sess';
+const ADMIN_LOGIN_ATTEMPTS = new Map();
+const ADMIN_MAX_LOGIN_ATTEMPTS = 5;
+const ADMIN_LOGIN_WINDOW = 15 * 60 * 1000; // 15 minutes
+
+function _signAdminToken(token) {
+  return crypto.createHmac('sha256', SESSION_SECRET).update(token).digest('hex');
+}
+
+function _verifyAdminToken(token, signature) {
+  const expected = _signAdminToken(token);
+  try {
+    return crypto.timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expected, 'hex'));
+  } catch (_) {
+    return false;
+  }
+}
 
 function requireAuth(req, res, next) {
   // Check for session cookie first
   const sessionCookie = req.cookies?.[ADMIN_COOKIE_NAME];
   if (sessionCookie) {
-    const sessionData = adminSessions.get(sessionCookie);
-    if (sessionData && Date.now() < sessionData.expiresAt) {
-      // Extend session on activity
-      sessionData.expiresAt = Date.now() + ADMIN_SESSION_DURATION;
-      return next();
+    const parts = sessionCookie.split('.');
+    if (parts.length === 2) {
+      const [token, signature] = parts;
+      if (_verifyAdminToken(token, signature)) {
+        const sessionData = adminSessions.get(token);
+        if (sessionData && Date.now() < sessionData.expiresAt) {
+          sessionData.expiresAt = Date.now() + ADMIN_SESSION_DURATION;
+          return next();
+        }
+      }
     }
     adminSessions.delete(sessionCookie);
   }
@@ -605,21 +666,42 @@ function requireAuth(req, res, next) {
 
 // Endpoint to set session cookie after successful Basic Auth
 app.post('/admin/login', (req, res) => {
+  const clientIp = req.ip || req.connection.remoteAddress || 'unknown';
+  const now = Date.now();
+  
+  // Rate limiting check
+  let loginAttempt = ADMIN_LOGIN_ATTEMPTS.get(clientIp);
+  if (!loginAttempt || now > loginAttempt.resetTime) {
+    loginAttempt = { count: 0, resetTime: now + ADMIN_LOGIN_WINDOW };
+  }
+  loginAttempt.count++;
+  ADMIN_LOGIN_ATTEMPTS.set(clientIp, loginAttempt);
+  
+  if (loginAttempt.count > ADMIN_MAX_LOGIN_ATTEMPTS) {
+    console.warn('[admin] Too many login attempts from:', clientIp);
+    return res.status(429).json({ error: 'Too many login attempts. Try again later.' });
+  }
+  
   const auth = req.headers.authorization;
   if (!auth || auth !== 'Basic ' + Buffer.from('admin:' + DASHBOARD_PASS).toString('base64')) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
+  
   const sessionToken = crypto.randomBytes(32).toString('hex');
+  const signature = _signAdminToken(sessionToken);
+  const signedToken = `${sessionToken}.${signature}`;
+  
   adminSessions.set(sessionToken, {
     createdAt: Date.now(),
     expiresAt: Date.now() + ADMIN_SESSION_DURATION,
   });
-  res.cookie(ADMIN_COOKIE_NAME, sessionToken, {
+  res.cookie(ADMIN_COOKIE_NAME, signedToken, {
     httpOnly: true,
     secure: true,
     sameSite: 'strict',
     maxAge: ADMIN_SESSION_DURATION,
   });
+  console.log('[admin] Session created for IP:', clientIp);
   res.json({ ok: true, message: 'Session created' });
 });
 
@@ -819,15 +901,10 @@ app.post('/refresh', async (req, res) => {
   if (!data) {
     return res.status(403).json({ error: 'Invalid or expired refresh token' });
   }
-  const release = await refreshTokenMutex.acquire();
-  try {
-    refreshTokens.delete(refreshToken);
-  } finally {
-    release();
-  }
+  // Token rotation: delete old and generate new with family tracking
   const newSessionToken = generateSessionToken(data.username);
   sessions.set(data.username, newSessionToken);
-  const newRefreshToken = await generateRefreshToken(data.username);
+  const newRefreshToken = await generateRefreshToken(data.username, refreshToken);
   console.log('[refresh] token refreshed for', data.username);
   res.json({ ok: true, token: newSessionToken, refreshToken: newRefreshToken });
 });
@@ -965,22 +1042,45 @@ io.on('connection', (socket) => {
   const wsRegisterAttempts = new Map();
   const WS_MAX_REGISTER_PER_MINUTE = 5;
 
-  // Generic rate limiter for ALL socket events (must be before other handlers)
+  // Per-event rate limiter for WebSocket events
   const wsRateLimits = new Map();
-  const WS_MAX_EVENTS_PER_MINUTE = 60;
+  const WS_MAX_MESSAGE_PER_MINUTE = 60;
+  const WS_MAX_TYPING_PER_MINUTE = 120;
+  const WS_MAX_OTHER_PER_MINUTE = 60;
   socket.use((packet, next) => {
+    const eventName = packet[0];
     const now = Date.now();
     let rateInfo = wsRateLimits.get(socket.id);
     if (!rateInfo || now > rateInfo.resetTime) {
-      rateInfo = { count: 0, resetTime: now + 60000 };
+      rateInfo = { message: 0, typing: 0, other: 0, resetTime: now + 60000 };
     }
-    rateInfo.count++;
+    let limit;
+    if (eventName === 'message') {
+      rateInfo.message++;
+      limit = WS_MAX_MESSAGE_PER_MINUTE;
+      if (rateInfo.message > limit) {
+        socket.emit('error', { message: 'Too many messages, slow down' });
+        console.log('[ws] message rate limit exceeded for', socket.id);
+        return;
+      }
+    } else if (eventName === 'typing') {
+      rateInfo.typing++;
+      limit = WS_MAX_TYPING_PER_MINUTE;
+      if (rateInfo.typing > limit) {
+        socket.emit('error', { message: 'Typing too fast, slow down' });
+        console.log('[ws] typing rate limit exceeded for', socket.id);
+        return;
+      }
+    } else {
+      rateInfo.other++;
+      limit = WS_MAX_OTHER_PER_MINUTE;
+      if (rateInfo.other > limit) {
+        socket.emit('error', { message: 'Rate limit exceeded, slow down' });
+        console.log('[ws] rate limit exceeded for', socket.id, 'event:', eventName);
+        return;
+      }
+    }
     wsRateLimits.set(socket.id, rateInfo);
-    if (rateInfo.count > WS_MAX_EVENTS_PER_MINUTE) {
-      socket.emit('error', { message: 'Rate limit exceeded, slow down' });
-      console.log('[ws] rate limit exceeded for', socket.id, 'event:', packet[0]);
-      return;
-    }
     next();
   });
 
@@ -1235,24 +1335,45 @@ io.on('connection', (socket) => {
 const recentLogs = [];
 const MAX_LOGS = 100;
 
+// Log filter for sensitive data
+function _filterLog(msg) {
+  // Filter usernames: word:word → [user]:[user]
+  msg = msg.replace(/username[=:]?\s*([a-zA-Z0-9_]+)/gi, 'username=[user]');
+  msg = msg.replace(/for\s+([a-zA-Z0-9_]+)(?:\s|$|,|\.)/gi, 'for [user]$2');
+  msg = msg.replace(/user:\s*([a-zA-Z0-9_]+)/gi, 'user: [user]');
+  
+  // Filter IPs: 192.168.x.x, 10.x.x.x, localhost -> [ip]
+  msg = msg.replace(/\b(?:192\.168|10\.|172\.(?:1[6-9]|2\d|3[01]))\.\d+\.\d+\b/g, '[ip]');
+  msg = msg.replace(/\b(?:localhost|127\.0\.0\.1)\b/g, '[ip]');
+  
+  // Filter tokens: long hex strings are likely tokens
+  msg = msg.replace(/([a-f0-9]{32,})\b/gi, '[token]');
+  msg = msg.replace(/token[=:]?\s*([a-zA-Z0-9_-]+)/gi, 'token=[token]');
+  
+  // Filter session tokens (format: user:timestamp:nonce:signature)
+  msg = msg.replace(/[a-zA-Z0-9_]+:\d+:[a-f0-9]+:[a-f0-9]+/g, '[token]');
+  
+  return msg;
+}
+
 const origLog = console.log;
 const origWarn = console.warn;
 const origError = console.error;
 
 console.log = (...args) => {
-  const msg = args.join(' ');
+  const msg = _filterLog(args.join(' '));
   recentLogs.push(msg);
   if (recentLogs.length > MAX_LOGS) recentLogs.shift();
   origLog(...args);
 };
 console.warn = (...args) => {
-  const msg = args.join(' ');
+  const msg = _filterLog(args.join(' '));
   recentLogs.push(msg);
   if (recentLogs.length > MAX_LOGS) recentLogs.shift();
   origWarn(...args);
 };
 console.error = (...args) => {
-  const msg = args.join(' ');
+  const msg = _filterLog(args.join(' '));
   recentLogs.push(msg);
   if (recentLogs.length > MAX_LOGS) recentLogs.shift();
   origError(...args);

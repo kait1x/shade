@@ -24,50 +24,19 @@ class _SecureRandom {
   /// Инициализирует PRNG, собирая энтропию из нескольких источников.
   /// 
   /// Должно вызываться перед первым использованием для корректной инициализации.
-  /// 128 bytes entropy for Fortuna seeding
   static void _ensureSeeded() {
     if (_seeded) return;
     
-    // 128 bytes entropy for Fortuna seeding (2x64 bytes from Random.secure())
-    final entropy1 = Uint8List(64);
-    final entropy2 = Uint8List(64);
-    final random1 = Random.secure();
-    final random2 = Random.secure();
-    for (int i = 0; i < 64; i++) {
-      entropy1[i] = random1.nextInt(256) & 0xFF;
-      entropy2[i] = random2.nextInt(256) & 0xFF;
-    }
-    
-    // Объединяем 64 + 64 = 128 байт
+    // 128 bytes from platform CSPRNG — sufficient (Fortuna min: 32 bytes)
+    final random = Random.secure();
     final seed = Uint8List(128);
-    seed.setRange(0, 64, entropy1);
-    seed.setRange(64, 128, entropy2);
-    
-    // Дополнительные источники для смешивания
-    final entropySources = <Uint8List>[seed];
-    
-    // Источник 2: Текущее время с высокой точностью (дополнительное смешивание)
-    try {
-      final timeBytes = Uint8List(8);
-      final timeValue = DateTime.now().microsecondsSinceEpoch;
-      for (int i = 0; i < 8; i++) {
-        timeBytes[i] = (timeValue >> (i * 8)) & 0xFF;
-      }
-      entropySources.add(timeBytes);
-    } catch (_) {}
-    
-    // Объединяем все источники энтропии
-    final combinedLength = entropySources.fold<int>(0, (sum, list) => sum + list.length);
-    final combinedSeed = Uint8List(combinedLength);
-    int offset = 0;
-    for (final source in entropySources) {
-      combinedSeed.setRange(offset, offset + source.length, source);
-      offset += source.length;
+    for (int i = 0; i < 128; i++) {
+      seed[i] = random.nextInt(256) & 0xFF;
     }
     
-    _random.seed(pc.KeyParameter(combinedSeed));
+    _random.seed(pc.KeyParameter(seed));
     _seeded = true;
-    debugPrint('[CryptoService] [_FIX] PRNG инициализирован с ${combinedLength} байтами энтропии');
+    debugPrint('[CryptoService] PRNG seeded with 128 bytes from CSPRNG');
   }
 
   /// Генерирует [length] криптографически стойких случайных байт.
@@ -566,6 +535,8 @@ class ServerKeyFingerprintResult {
     }
   }
 
+  // FEATURE: Password fallback is a last resort when OS Keychain is unavailable on desktop.
+  // Keys are encrypted with PBKDF2+ AES-256-GCM before writing to disk.
   Future<void> _writeToPasswordFallback(String alias, String value) async {
     if (_password == null) {
       throw Exception(
@@ -676,7 +647,8 @@ class ServerKeyFingerprintResult {
   }
 
   Uint8List _deriveKeyPBKDF2(String password, Uint8List salt) {
-    const iterations = 100000;
+    // OWASP 2023: 600K iterations for PBKDF2-SHA256
+    const iterations = 600000;
     const keyLength = 32;
     final pbkdf2 = pc.PBKDF2KeyDerivator(pc.HMac(pc.SHA256Digest(), 64));
     pbkdf2.init(pc.Pbkdf2Parameters(salt, iterations, keyLength));

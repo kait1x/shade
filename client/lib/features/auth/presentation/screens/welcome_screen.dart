@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:shade/core/services/crypto_service.dart';
 import 'package:shade/core/widgets/shade_logo.dart';
 import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 import 'package:shade/main.dart';
@@ -257,7 +258,6 @@ class _ProfileFormState extends ConsumerState<_ProfileForm> {
     final authNotifier = ref.read(authNotifierProvider.notifier);
 
     try {
-      // Add timeout to prevent hanging
       final success = await authNotifier
           .createSecureProfile(nickname)
           .timeout(const Duration(seconds: 15));
@@ -268,6 +268,56 @@ class _ProfileFormState extends ConsumerState<_ProfileForm> {
           _errorText = updatedState.error ?? 'Не удалось создать профиль';
           _isSubmitting = false;
         });
+        return;
+      }
+
+      // Check if server key needs confirmation (TOFU)
+      final fpResult = await authNotifier.checkServerKeyConfirmation();
+      if (fpResult != null && 
+          fpResult.status == ServerKeyTrustStatus.newKeyRequiresConfirmation) {
+        if (!mounted) return;
+        
+        final confirmed = await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            title: const Text('Подтверждение сервера'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Впервые подключаетесь к этому серверу.'),
+                const SizedBox(height: 8),
+                const Text('Fingerprint серверного ключа:'),
+                const SizedBox(height: 4),
+                SelectableText(
+                  fpResult.fingerprint,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 10),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Отклонить'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Доверять'),
+              ),
+            ],
+          ),
+        );
+
+        if (confirmed == true) {
+          await authNotifier.trustServerKey(fpResult.fingerprint);
+        } else {
+          setState(() {
+            _errorText = 'Server key rejected by user';
+            _isSubmitting = false;
+          });
+          return;
+        }
       }
     } catch (e) {
       if (mounted) {

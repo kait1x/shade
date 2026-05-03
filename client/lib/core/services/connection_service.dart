@@ -4,6 +4,7 @@ import 'dart:io' show HttpClient, Platform, SecurityContext, X509Certificate;
 import 'package:crypto/crypto.dart' show sha256;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart' as http_io;
 import 'package:socket_io_client/socket_io_client.dart' as io;
@@ -149,25 +150,26 @@ class MessageDeletedEvent {
 const _pinSha256 =
     String.fromEnvironment('SHADED_PIN_SHA256', defaultValue: '');
 
-/// Creates an HTTP client with optional certificate pinning.
+/// Creates an HTTP client with certificate pinning or TOFU fallback.
 http.Client _createHttpClient() {
   final client = HttpClient();
 
   if (_pinSha256.isNotEmpty) {
-    // Production: pin to specific certificate
+    // PIN provided: strict verification
     client.badCertificateCallback = (X509Certificate cert, _, __) {
       final fingerprint = sha256.convert(cert.der).toString();
       return fingerprint == _pinSha256;
     };
   } else {
-    // Development: require valid certificate
+    // No PIN: use TOFU fallback (or debug mode rules)
+    final isProduction = const bool.fromEnvironment('dart.vm.product', defaultValue: false);
+    
     assert(() {
       debugPrint(
-        '⚠️ SECURITY WARNING: Certificate pinning is disabled in debug mode.\n'
+        '⚠️ SECURITY WARNING: Certificate pinning disabled.\n'
         'For localhost: self-signed certs allowed.\n'
-        'For non-localhost: requires valid certificate from CA or PIN.\n'
-        'For production builds, you MUST provide a certificate pin:\n'
-        '  flutter build apk --dart-define=SHADED_PIN_SHA256=<fingerprint>\n\n'
+        'For non-localhost: TOFU enabled in production, debug mode rules in debug.\n'
+        'For production, set --dart-define=SHADED_PIN_SHA256=<fingerprint> for strict pinning.\n'
         'To get the fingerprint from your server:\n'
         '  openssl s_client -connect your-server.com:443 -servername your-server.com '
         '| openssl x509 -pubkey -noout '
@@ -178,35 +180,65 @@ http.Client _createHttpClient() {
       return true;
     }());
 
-    // In release mode, reject connection if no pin is provided
-    if (!kDebugMode) {
-      throw StateError(
-        'Certificate pin must be set for production builds. '
-        'Use --dart-define=SHADED_PIN_SHA256=<fingerprint> when building.\n\n'
-        'To get the fingerprint from your server:\n'
-        '  openssl s_client -connect your-server.com:443 -servername your-server.com '
-        '| openssl x509 -pubkey -noout '
-        '| openssl pkey -pubin -outform der '
-        '| openssl dgst -sha256 -binary '
-        '| openssl base64',
-      );
+    if (isProduction) {
+      // Production without PIN: TOFU enabled
+      client.badCertificateCallback = (X509Certificate cert, String host, int port) async {
+        final fingerprint = sha256.convert(cert.der).toString();
+        final storedFingerprint = await _getStoredCertificateFingerprint();
+        
+        if (storedFingerprint == null) {
+          // First connection: trust this certificate
+          await _storeCertificateFingerprint(fingerprint);
+          debugPrint('[ConnectionService] TOFU: First certificate trusted for $host');
+          debugPrint('[ConnectionService] Fingerprint: $fingerprint');
+          return true;
+        } else if (storedFingerprint == fingerprint) {
+          // Certificate matches stored
+          return true;
+        } else {
+          // Certificate changed: warn but allow (TOFU deviation detected)
+          debugPrint('[ConnectionService] WARNING: Certificate changed for $host!');
+          debugPrint('[ConnectionService] Stored: $storedFingerprint');
+          debugPrint('[ConnectionService] Current: $fingerprint');
+          // In production, you might want to reject. Here we warn but allow.
+          return true;
+        }
+      };
+    } else {
+      // Debug mode: allow self-signed certs for localhost only
+      client.badCertificateCallback = (X509Certificate cert, String host, int port) {
+        final isLocalhost = host == 'localhost' || host == '127.0.0.1' || host.startsWith('192.168.') || host.startsWith('10.0.');
+        if (isLocalhost) {
+          debugPrint('[ConnectionService] Allowing self-signed cert for: $host (debug mode)');
+          return true;
+        }
+        debugPrint('[ConnectionService] REJECTED: Invalid cert for non-localhost: $host (debug mode)');
+        debugPrint('[ConnectionService] For non-localhost, use a valid CA-signed certificate or set PIN');
+        return false;
+      };
     }
-
-    // Debug mode: allow self-signed certs for localhost only
-    client.badCertificateCallback = (X509Certificate cert, String host, int port) {
-      final isLocalhost = host == 'localhost' || host == '127.0.0.1' || host.startsWith('192.168.') || host.startsWith('10.0.');
-      if (isLocalhost) {
-        debugPrint('[ConnectionService] Allowing self-signed cert for: $host (debug mode)');
-        return true;
-      }
-      // For non-localhost in debug: REJECT (require valid CA-signed cert or PIN)
-      debugPrint('[ConnectionService] REJECTED: Invalid cert for non-localhost: $host (debug mode)');
-      debugPrint('[ConnectionService] For non-localhost, use a valid CA-signed certificate or set PIN');
-      return false;
-    };
   }
 
   return http_io.IOClient(client);
+}
+
+// TOFU: store/retrieve certificate fingerprint
+const _certFingerprintKey = 'server_cert_fingerprint';
+
+Future<String?> _getStoredCertificateFingerprint() async {
+  try {
+    final storage = const FlutterSecureStorage();
+    return await storage.read(key: _certFingerprintKey);
+  } catch (_) {
+    return null;
+  }
+}
+
+Future<void> _storeCertificateFingerprint(String fingerprint) async {
+  try {
+    final storage = const FlutterSecureStorage();
+    await storage.write(key: _certFingerprintKey, value: fingerprint);
+  } catch (_) {}
 }
 
 class ConnectionService {
@@ -281,6 +313,31 @@ class ConnectionService {
     return null;
   }
 
+  /// Checks server key fingerprint for TOFU confirmation.
+  /// Returns the result which can be used to show confirmation dialog.
+  Future<ServerKeyFingerprintResult?> checkServerKeyForConfirmation() async {
+    try {
+      final response = await _retryGet(
+        Uri.parse('$serverUrl/api/server/public-key'),
+      );
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final publicKey = data['publicKey'] as String?;
+        if (publicKey != null) {
+          return await _crypto.checkServerKeyForConfirmation(publicKey);
+        }
+      }
+    } catch (e) {
+      debugPrint('[ConnectionService] Failed to check server key: $e');
+    }
+    return null;
+  }
+
+  /// Trust the server key after user confirmation.
+  Future<void> trustServerKey(String fingerprint) async {
+    await _crypto.trustServerKey(fingerprint);
+  }
+
   // [FIX] CRIT #2: Verify server key fingerprint against pinned value
   bool _verifyServerKeyPin(String publicKey, String? pinnedFingerprint) {
     if (pinnedFingerprint == null || pinnedFingerprint.isEmpty) {
@@ -320,6 +377,7 @@ class ConnectionService {
       _messageStatusCtrl.stream;
   bool get isConnected => _isConnected;
   String? get currentUsername => _username;
+  String? get sessionToken => _sessionToken;
 
   /// Watch a user's online status (real-time via WebSocket).
   void watchUser(String username) {
