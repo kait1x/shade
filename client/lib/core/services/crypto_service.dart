@@ -24,21 +24,33 @@ class _SecureRandom {
   /// Инициализирует PRNG, собирая энтропию из нескольких источников.
   /// 
   /// Должно вызываться перед первым использованием для корректной инициализации.
+  /// [FIX] Используем минимум 256 бит (32 байта) качественной энтропии от Random.secure()
+  /// плюс дополнительные источники для усиления.
   static void _ensureSeeded() {
     if (_seeded) return;
     
-    // Собираем энтропию из нескольких источников
-    final entropySources = <Uint8List>[];
-    
-    // Источник 1: Текущее время с высокой точностью
-    final timeBytes = Uint8List(8);
-    final timeValue = DateTime.now().microsecondsSinceEpoch;
-    for (int i = 0; i < 8; i++) {
-      timeBytes[i] = (timeValue >> (i * 8)) & 0xFF;
+    // [FIX] Основной источник: Random.secure() - минимум 32 байта (256 бит) качественной энтропии
+    // Fortuna требует достаточного количества энтропии для безопасной работы
+    final secureRandom = Random.secure();
+    final mainEntropy = Uint8List(64); // 512 бит для запаса
+    for (int i = 0; i < 64; i++) {
+      mainEntropy[i] = secureRandom.nextInt(256) & 0xFF;
     }
-    entropySources.add(timeBytes);
     
-    // Источник 2: Счётчик производительности (если доступен)
+    // Дополнительные источники для смешивания
+    final entropySources = <Uint8List>[mainEntropy];
+    
+    // Источник 2: Текущее время с высокой точностью (дополнительное смешивание)
+    try {
+      final timeBytes = Uint8List(8);
+      final timeValue = DateTime.now().microsecondsSinceEpoch;
+      for (int i = 0; i < 8; i++) {
+        timeBytes[i] = (timeValue >> (i * 8)) & 0xFF;
+      }
+      entropySources.add(timeBytes);
+    } catch (_) {}
+    
+    // Источник 3: Счётчик производительности (если доступен)
     try {
       final perfBytes = Uint8List(8);
       final perfValue = Stopwatch.getTimestamp();
@@ -48,13 +60,14 @@ class _SecureRandom {
       entropySources.add(perfBytes);
     } catch (_) {}
     
-    // Источник 3: Random.secure() как дополнительная энтропия (не единственный источник)
+    // [FIX] Добавляем ещё один блок от Random.secure() для максимальной энтропии
     try {
-      final dartRandomBytes = Uint8List(32);
+      final extraSecure = Uint8List(32);
+      final extraRandom = Random.secure();
       for (int i = 0; i < 32; i++) {
-        dartRandomBytes[i] = (Random.secure().nextInt(256)) & 0xFF;
+        extraSecure[i] = extraRandom.nextInt(256) & 0xFF;
       }
-      entropySources.add(dartRandomBytes);
+      entropySources.add(extraSecure);
     } catch (_) {}
     
     // Объединяем все источники энтропии
@@ -68,6 +81,7 @@ class _SecureRandom {
     
     _random.seed(pc.KeyParameter(seed));
     _seeded = true;
+    debugPrint('[CryptoService] [_FIX] PRNG инициализирован с ${combinedLength} байтами энтропии');
   }
 
   /// Генерирует [length] криптографически стойких случайных байт.

@@ -164,7 +164,8 @@ const authLimiter = rateLimit({
 
 app.use('/api/', limiter);
 app.use('/register', limiter);
-app.use('/dashboard', authLimiter);
+// [FIX] Добавляем requireAuth для защиты админ-панели
+app.use('/dashboard', requireAuth, authLimiter);
 
 // ── In-memory stores ─────────────────────────────────────────
 
@@ -319,6 +320,15 @@ function requireUserAuth(req, res, next) {
   next();
 }
 
+// [FIX] Middleware для защиты админ-эндпоинтов (Basic Auth)
+function requireAuth(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth || auth !== 'Basic ' + Buffer.from('admin:' + DASHBOARD_PASS).toString('base64')) {
+    return res.status(401).send('Unauthorized');
+  }
+  next();
+}
+
 // ── REST endpoints ───────────────────────────────────────────
 
 app.get('/', (_req, res) => {
@@ -327,6 +337,31 @@ app.get('/', (_req, res) => {
     status: 'ok',
     users: users.size,
     online: onlineUsers.size,
+  });
+});
+
+// [FIX] Защищённый эндпоинт статистики (только для админа)
+app.get('/api/stats', requireAuth, (req, res) => {
+  const mem = process.memoryUsage();
+  const uptime = process.uptime();
+  const userList = [...users.entries()].map(([name, u]) => ({
+    name,
+    online: onlineUsers.has(name),
+    lastSeen: lastSeen.get(name) || 0,
+    registeredAt: u.registeredAt,
+  }));
+
+  res.json({
+    totalUsers: users.size,
+    online: onlineUsers.size,
+    uptime,
+    memory: {
+      used: Math.round(mem.heapUsed / 1024 / 1024),
+      total: Math.round(mem.heapTotal / 1024 / 1024),
+    },
+    groups: groups.size,
+    queuedMessages: [...offlineBuffer.values()].reduce((s, a) => s + a.length, 0),
+    users: userList.sort((a, b) => b.registeredAt - a.registeredAt),
   });
 });
 
@@ -382,6 +417,18 @@ app.post('/register', (req, res) => {
     return res.status(403).json({ error: 'Signature verification failed' });
   }
 
+  // [FIX] Validate public key is valid RSA key
+  try {
+    const pubKey = crypto.createPublicKey(publicKey);
+    // Try to use it for encryption (should not throw)
+    const testData = Buffer.from('test');
+    crypto.publicEncrypt(pubKey, testData);
+    console.log('[register] public key validated');
+  } catch (e) {
+    console.warn('[register] invalid public key:', e.message);
+    return res.status(400).json({ error: 'Invalid public key' });
+  }
+
   // Case-insensitive lookup (handles old mixed-case keys)
   let existingKey = null;
   let existing = null;
@@ -410,11 +457,20 @@ app.post('/register', (req, res) => {
     return res.json({ ok: true, username: username_norm, token });
   }
 
-  // Подписываем публичный ключ мастер-ключом сервера
+  // Подписываем публичный ключ мастер-ключом сервера используя RSA-PSS-SHA256
   let serverSignature = null;
   if (serverMasterKey && serverMasterKey.privateKey) {
     try {
-      serverSignature = crypto.sign('sha256', Buffer.from(publicKey), serverMasterKey.privateKey).toString('base64');
+      // [FIX] Используем RSA-PSS вместо PKCS#1 v1.5
+      const sign = crypto.createSign('sha256');
+      sign.update(publicKey);
+      sign.end();
+      const signature = sign.sign({
+        key: serverMasterKey.privateKey,
+        padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+        saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST, // salt = hash length (32 bytes for SHA-256)
+      });
+      serverSignature = signature.toString('base64');
     } catch (e) {
       console.error('[register] Ошибка подписи публичного ключа:', e.message);
     }
@@ -434,6 +490,19 @@ app.post('/register', (req, res) => {
 
   console.log('[register] new user');
   res.json({ ok: true, username: username_norm, token });
+});
+
+// [FIX] Logout endpoint - invalidates session token
+app.post('/logout', requireUserAuth, (req, res) => {
+  const username = req.params.username || req.body.username;
+  if (username) {
+    sessions.delete(username);
+    // Also clear FCM token
+    fcmTokens.delete(username);
+    saveMap('fcm_tokens.json', fcmTokens);
+    console.log('[logout] user logged out');
+  }
+  res.json({ ok: true });
 });
 
 // Register FCM token
@@ -597,7 +666,25 @@ io.on('connection', (socket) => {
     }
   });
 
+  // [FIX] Rate limiting for WebSocket events
+  const wsRateLimits = new Map(); // socketId -> { count: 0, resetTime: Date.now() + 60000 }
+  const WS_MAX_MESSAGES_PER_MINUTE = 60; // максимум 60 сообщений в минуту
+
   socket.on('message', (payload) => {
+    // [FIX] Проверка rate limiting для сообщений
+    const now = Date.now();
+    let rateInfo = wsRateLimits.get(socket.id);
+    if (!rateInfo || now > rateInfo.resetTime) {
+      rateInfo = { count: 0, resetTime: now + 60000 };
+    }
+    rateInfo.count++;
+    wsRateLimits.set(socket.id, rateInfo);
+    if (rateInfo.count > WS_MAX_MESSAGES_PER_MINUTE) {
+      socket.emit('error', { message: 'Too many messages, slow down' });
+      console.log('[ws] rate limit exceeded for', socket.id);
+      return;
+    }
+
     // Валидация размера данных
     const MAX_MESSAGE_SIZE = 1 * 1024 * 1024; // 1MB для текста
     const MAX_FILE_SIZE = 10 * 1024 * 1024;   // 10MB для файлов

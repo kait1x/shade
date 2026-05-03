@@ -39,21 +39,57 @@ class AppDelegate: FlutterAppDelegate {
     // На iOS нет прямого аналога FLAG_SECURE, но можно защитить приложение от скриншотов
     // и размыть контент в multitasking через UIScreenCaptureController
     
-    // Защита от скриншотов: используем приватный API для обнаружения скриншотов
-    // (не блокирует, но позволяет реагировать)
+    // [FIX] Защита от скриншотов: обнаружение через уведомления
     NotificationCenter.default.addObserver(
       forName: UIApplication.userDidTakeScreenshotNotification,
       object: nil,
       queue: .main
     ) { [weak self] _ in
       print("⚠️ Screenshot detected! User took a screenshot.")
-      // Можно добавить дополнительную логику (например, предупреждение пользователя)
+      // Показываем размытие при обнаружении скриншота
+      self?.showBlurForCapture()
+    }
+    
+    // [FIX] Обнаружение записи экрана (screen capture)
+    NotificationCenter.default.addObserver(
+      forName: UIScreen.capturedDidChangeNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      if UIScreen.main.isCaptured {
+        print("⚠️ Screen capture/recording detected!")
+        self?.showBlurForCapture()
+      } else {
+        self?.hideBlurForCapture()
+      }
     }
     
     // Размытие в multitasking: создаём overlay view который показывается при переходе в background
     self?.addBlurOverlay()
     
     print("Secure mode enabled")
+  }
+  
+  // [FIX] Мгновенное размытие при обнаружении захвата экрана
+  private func showBlurForCapture() {
+    guard let window = self?.window else { return }
+    if let blurView = window.viewWithTag(99999) {
+      blurView.alpha = 1.0
+    } else {
+      // Если размытия нет, создаём
+      self?.addBlurOverlay()
+      if let blurView = window.viewWithTag(99999) {
+        blurView.alpha = 1.0
+      }
+    }
+  }
+  
+  // Скрытие размытия
+  private func hideBlurForCapture() {
+    guard let window = self?.window else { return }
+    if let blurView = window.viewWithTag(99999) {
+      blurView.alpha = 0.0
+    }
   }
   
   private func disableSecureMode() {
