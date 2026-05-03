@@ -36,20 +36,86 @@ class AppDelegate: FlutterAppDelegate {
   }
   
   private func enableSecureMode() {
-    // На iOS нет прямого аналога FLAG_SECURE, но можно сделать скриншот размытым
-    // через UIScreenCaptureController (iOS 11+) или использовать приватные API
-    // Для базовой защиты просто предупреждаем пользователя
-    print("Secure mode enabled - screenshots will be detected")
+    // На iOS нет прямого аналога FLAG_SECURE, но можно защитить приложение от скриншотов
+    // и размыть контент в multitasking через UIScreenCaptureController
+    
+    // Защита от скриншотов: используем приватный API для обнаружения скриншотов
+    // (не блокирует, но позволяет реагировать)
+    NotificationCenter.default.addObserver(
+      forName: UIApplication.userDidTakeScreenshotNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      print("⚠️ Screenshot detected! User took a screenshot.")
+      // Можно добавить дополнительную логику (например, предупреждение пользователя)
+    }
+    
+    // Размытие в multitasking: создаём overlay view который показывается при переходе в background
+    self?.addBlurOverlay()
+    
+    print("Secure mode enabled")
   }
   
   private func disableSecureMode() {
+    // Удаляем blur overlay при отключении secure mode
+    self?.removeBlurOverlay()
     print("Secure mode disabled")
+  }
+  
+  private func addBlurOverlay() {
+    guard let window = self?.window else { return }
+    
+    // Создаём визуальный эффект размытия
+    let blurEffect = UIBlurEffect(style: .systemUltraThinMaterialDark)
+    let blurView = UIVisualEffectView(effect: blurEffect)
+    blurView.frame = window.bounds
+    blurView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+    blurView.tag = 99999 // Tag для последующего удаления
+    blurView.alpha = 0 // Скрыт по умолчанию
+    
+    window.addSubview(blurView)
+  }
+  
+  private func removeBlurOverlay() {
+    guard let window = self?.window else { return }
+    
+    // Находим и удаляем blur overlay по tag
+    if let blurView = window.viewWithTag(99999) {
+      blurView.removeFromSuperview()
+    }
   }
   
   private func excludeFromRecents() {
     // На iOS приложение всегда показывается в переключателе задач
     // Мы не можем полностью скрыть его, но можем сделать snapshot размытым
-    // Это делается через UIWindowSceneDelegate
-    print("Exclude from recents requested")
+    // Это достигается через show/hide blur overlay в AppDelegate lifecycle methods
+    print("Exclude from recents - blur overlay will be shown in app switcher")
+  }
+}
+
+// MARK: - Lifecycle extensions for secure mode
+extension AppDelegate {
+  override func applicationWillResignActive(_ application: UIApplication) {
+    // Показываем blur overlay когда приложение уходит в background
+    addBlurOverlay()
+  }
+  
+  override func applicationDidEnterBackground(_ application: UIApplication) {
+    // Убеждаемся что blur overlay виден в multitasking
+    if let window = window, let blurView = window.viewWithTag(99999) {
+      blurView.alpha = 1.0
+    }
+  }
+  
+  override func applicationWillEnterForeground(_ application: UIApplication) {
+    // Скрываем blur overlay когда приложение возвращается на передний план
+    if let window = window, let blurView = window.viewWithTag(99999) {
+      blurView.alpha = 0.0
+    }
+  }
+  
+  override func applicationDidBecomeActive(_ application: UIApplication) {
+    // Полностью удаляем blur overlay когда приложение активно
+    removeBlurOverlay()
   }
 }

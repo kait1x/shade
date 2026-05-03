@@ -1,6 +1,13 @@
 ```
+# Build artifacts
+build/
+dist/
+
 # Dependencies
 node_modules/
+.pub-cache/
+.dart_tool/
+build/
 
 # Logs and temp files
 *.log
@@ -9,14 +16,15 @@ node_modules/
 # Environment
 .env
 .env.local
-.env.*
+*.env.*
 
 # Editors
 .vscode/
 .idea/
+*.swp
+*.swo
 
-# Docker
-.dockerignore
-Dockerfile
-docker-compose.yml
+# OS generated files
+.DS_Store
+Thumbs.db
 ```

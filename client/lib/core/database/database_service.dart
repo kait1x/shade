@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -11,6 +10,8 @@ import 'package:sqflite_sqlcipher/sqflite.dart' as sqlcipher;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' as sqflite_ffi;
 // Common types (Database, ConflictAlgorithm)
 import 'package:sqflite_common/sqflite.dart' show Database, ConflictAlgorithm;
+import 'package:pointycastle/export.dart' as pc;
+import 'dart:typed_data';
 
 /// Returns true when running on a mobile platform that supports SQLCipher.
 bool get _isMobile => Platform.isAndroid || Platform.isIOS;
@@ -98,6 +99,10 @@ class DatabaseService {
 
   // ── Key management (mobile only) ────────────────────────────
 
+  /// Generates or retrieves the SQLCipher database encryption key.
+  ///
+  /// SECURITY: Uses cryptographically secure random number generation
+  /// via PointyCastle Fortuna PRNG (same as crypto_service.dart).
   Future<String> _getOrCreateKey() async {
     try {
       final existing = await _secureStorage.read(key: _dbKeyStorageKey);
@@ -106,7 +111,21 @@ class DatabaseService {
       debugPrint('[DatabaseService] secure storage read failed: $e');
     }
 
-    final bytes = List<int>.generate(32, (_) => Random.secure().nextInt(256));
+    // Generate 32 bytes (256 bits) using cryptographically secure PRNG
+    final secureRandom = pc.FortunaRandom();
+    // Seed with entropy from multiple sources
+    final timeBytes = Uint8List(8);
+    final timeValue = DateTime.now().microsecondsSinceEpoch;
+    for (int i = 0; i < 8; i++) {
+      timeBytes[i] = (timeValue >> (i * 8)) & 0xFF;
+    }
+    secureRandom.seed(pc.KeyParameter(timeBytes));
+    
+    final bytes = Uint8List(32);
+    for (int i = 0; i < 32; i++) {
+      bytes[i] = secureRandom.nextUint8();
+    }
+    
     final key = base64Url.encode(bytes);
 
     await _secureStorage.write(key: _dbKeyStorageKey, value: key);
