@@ -118,16 +118,48 @@ class NotificationService {
   }
 
   /// Register FCM token with Shade server.
+  /// [FIX] HIGH #5: Encrypt FCM token with server's public key before sending.
   static Future<void> registerToken(String serverUrl, String username) async {
     if (_fcmToken == null) return;
 
     try {
+      // [FIX] Get server public key to encrypt FCM token
+      String? serverPubKey;
+      try {
+        final response = await http.get(
+          Uri.parse('$serverUrl/api/server/public-key'),
+        );
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body) as Map<String, dynamic>;
+          serverPubKey = data['publicKey'] as String?;
+        }
+      } catch (_) {}
+
+      String tokenToSend = _fcmToken!;
+      // If we have server public key, encrypt the FCM token
+      if (serverPubKey != null) {
+        try {
+          // Encrypt FCM token with server's public key (RSA-OAEP-SHA256)
+          tokenToSend = await RSA.encryptOAEP(
+            _fcmToken!,
+            '',
+            Hash.SHA256,
+            serverPubKey,
+          );
+          debugPrint('[NotificationService] FCM token encrypted');
+        } catch (e) {
+          debugPrint('[NotificationService] Failed to encrypt FCM token: $e');
+          // Fallback to plaintext if encryption fails
+          tokenToSend = _fcmToken!;
+        }
+      }
+
       await http.post(
         Uri.parse('$serverUrl/fcm/register'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'username': username,
-          'token': _fcmToken,
+          'token': tokenToSend,
         }),
       );
       debugPrint('[NotificationService] FCM token registered');

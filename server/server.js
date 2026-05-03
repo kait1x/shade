@@ -308,12 +308,24 @@ const dbMutex = new Mutex();
 
 // SESSION_SECRET уже определён выше через loadSessionSecret()
 // SESSION_DURATION уже определён выше
+const REFRESH_TOKEN_DURATION = 7 * 24 * 60 * 60 * 1000; // 7 дней для refresh token
+
+// [FIX] CRIT #3: Store refresh tokens separately
+const refreshTokens = new Map(); // refreshToken → { username, expiresAt }
 
 function generateSessionToken(username) {
   const timestamp = Date.now();
   const base = `${username}:${timestamp}`;
   const signature = crypto.createHmac('sha256', SESSION_SECRET).update(base).digest('hex');
   return `${base}:${signature}`;
+}
+
+// [FIX] CRIT #3: Generate refresh token
+function generateRefreshToken(username) {
+  const token = crypto.randomBytes(64).toString('hex');
+  const expiresAt = Date.now() + REFRESH_TOKEN_DURATION;
+  refreshTokens.set(token, { username, expiresAt });
+  return token;
 }
 
 function validateSessionToken(username, token) {
@@ -346,6 +358,21 @@ function validateSessionToken(username, token) {
   } catch (e) {
     return false;
   }
+}
+
+// [FIX] CRIT #3: Validate refresh token
+function validateRefreshToken(token) {
+  if (!token) return null;
+  const data = refreshTokens.get(token);
+  if (!data) return null;
+  
+  // Check expiration
+  if (Date.now() > data.expiresAt) {
+    refreshTokens.delete(token);
+    return null;
+  }
+  
+  return data.username;
 }
 
 // Middleware для проверки сессии пользователя
@@ -677,6 +704,30 @@ app.post('/logout', requireUserAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+// [FIX] CRIT #3: Refresh token endpoint
+app.post('/refresh', (req, res) => {
+  const { refreshToken } = req.body;
+  
+  if (!refreshToken) {
+    return res.status(400).json({ error: 'Missing refresh token' });
+  }
+  
+  const data = validateRefreshToken(refreshToken);
+  if (!data) {
+    return res.status(403).json({ error: 'Invalid or expired refresh token' });
+  }
+  
+  // Generate new session token
+  const newSessionToken = generateSessionToken(data.username);
+  sessions.set(data.username, newSessionToken);
+  
+  // Generate new refresh token
+  const newRefreshToken = generateRefreshToken(data.username);
+  
+  console.log('[refresh] token refreshed for', data.username);
+  res.json({ ok: true, token: newSessionToken, refreshToken: newRefreshToken });
+});
+
 // [FIX] HIGH #7: Register FCM token with authentication
 app.post('/fcm/register', (req, res) => {
   const { username, token } = req.body;
@@ -824,8 +875,26 @@ app.get('/group/:id', (req, res) => {
 io.on('connection', (socket) => {
   console.log('[ws] connected:', socket.id);
 
+  // [FIX] HIGH #4: Add rate limiting for WebSocket register
+  const wsRegisterAttempts = new Map(); // socketId -> { count: 0, resetTime: Date.now() + 60000 }
+  const WS_MAX_REGISTER_PER_MINUTE = 5; // maximum 5 register attempts per minute
+
   socket.on('register', (payload) => {
     if (!payload || typeof payload.username !== 'string' || !payload.username) return;
+
+    // [FIX] HIGH #4: Check rate limiting for register
+    const now = Date.now();
+    let regInfo = wsRegisterAttempts.get(socket.id);
+    if (!regInfo || now > regInfo.resetTime) {
+      regInfo = { count: 0, resetTime: now + 60000 };
+    }
+    regInfo.count++;
+    wsRegisterAttempts.set(socket.id, regInfo);
+    if (regInfo.count > WS_MAX_REGISTER_PER_MINUTE) {
+      socket.emit('authError', { error: 'Too many register attempts' });
+      console.warn('[ws] register rate limit exceeded for', socket.id);
+      return;
+    }
 
     const username = payload.username.toLowerCase().trim();
     const token = payload.token;
@@ -970,9 +1039,10 @@ io.on('connection', (socket) => {
         msgIds: data.msgIds || [],
         status: 'read',
         from: socket.username,
-      });
-    }
   });
+}
+
+// [FIX] Logout endpoint - invalidates session token
 
   // Delete message
   socket.on('deleteMessage', (payload) => {

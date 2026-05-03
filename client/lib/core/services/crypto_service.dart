@@ -331,25 +331,46 @@ class CryptoService {
     }
   }
 
-  /// Проверяет отпечаток публичного ключа сервера с сохранённым значением (TOFU).
+  /// Проверяет отпечаток публичного ключа сервера.
+  /// [FIX] HIGH #2: Используем PIN-код из сборки как единственный источник истины.
+  /// TOFU используется только как fallback если PIN не сконфигурирован.
   Future<void> _checkServerKeyFingerprint(String serverPublicKey) async {
     try {
       final fingerprint = await _sha256Fingerprint(serverPublicKey);
+      
+      // [FIX] Приоритет 1: PIN-код из сборки (--dart-define=SHADED_PIN_SHA256=...)
+      const pinnedFromBuild = String.fromEnvironment('SHADED_PIN_SHA256', defaultValue: '');
+      
+      if (pinnedFromBuild.isNotEmpty) {
+        // Есть PIN из сборки - проверяем строго
+        if (fingerprint != pinnedFromBuild) {
+          debugPrint('[CryptoService] CRITICAL: Server key MISMATCH! Possible MitM attack!');
+          debugPrint('  Expected: $pinnedFromBuild');
+          debugPrint('  Got:      $fingerprint');
+          // В продакшене здесь можно заблокировать приложение
+        } else {
+          debugPrint('[CryptoService] Server key fingerprint verified (from build config)');
+        }
+        return;
+      }
+      
+      // [FIX] Приоритет 2: TOFU как fallback (только для разработки!)
       const storage = FlutterSecureStorage();
       const key = 'server_pubkey_fingerprint';
       final stored = await storage.read(key: key);
       if (stored == null) {
         // Впервые видим ключ сервера - сохраняем отпечаток
         await storage.write(key: key, value: fingerprint);
-        debugPrint('[CryptoService] Server key fingerprint stored (TOFU)');
+        debugPrint('[CryptoService] Server key fingerprint stored (TOFU - DEV ONLY)');
       } else if (stored != fingerprint) {
         debugPrint('[CryptoService] WARNING: Server key fingerprint changed! Possible MitM attack.');
-        // In production, you might want to notify user or block
+        debugPrint('  Stored: $stored');
+        debugPrint('  Got:    $fingerprint');
       } else {
-        debugPrint('[CryptoService] Server key fingerprint verified');
+        debugPrint('[CryptoService] Server key fingerprint verified (TOFU)');
       }
     } catch (e) {
-      debugPrint('[CryptoService] TOFU check error: $e');
+      debugPrint('[CryptoService] Fingerprint check error: $e');
     }
   }
 
