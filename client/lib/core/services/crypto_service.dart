@@ -105,6 +105,7 @@ class _SecureRandom {
 ///   RSA.verifyPSS(signature, message, hash, saltLength, publicKey)
 class CryptoService {
   final FlutterSecureStorage _secureStorage;
+  final String? _password;
 
   static const String _privKeyAlias = 'rsa_private_key';
   static const String _pubKeyAlias = 'rsa_public_key';
@@ -112,12 +113,14 @@ class CryptoService {
   static const int _aesKeyLen = 32;
   static const int _aesNonceLen = 12; // GCM nonce
   static const int _aesGcmTagBits = 128; // 16-byte auth tag
+  static const String _keysFileName = '.shade_keys.enc';
 
-  CryptoService({FlutterSecureStorage? storage})
+  CryptoService({FlutterSecureStorage? storage, String? password})
       : _secureStorage = storage ??
             const FlutterSecureStorage(
               aOptions: AndroidOptions(encryptedSharedPreferences: true),
-            );
+            ),
+        _password = password;
 
   // ══════════════════════════════════════════════════════════════
   //  KEY GENERATION
@@ -435,20 +438,34 @@ class CryptoService {
   Future<String?> _readKey(String alias) async {
     String? raw;
 
-    // Try secure storage ONLY - no plaintext file fallback
+    // Try secure storage
     try {
       raw = await _secureStorage.read(key: alias);
       if (raw != null && raw.isNotEmpty) {
         debugPrint('[CryptoService] readKey $alias from secure storage');
+        return _normalizePem(raw);
       }
     } catch (e) {
       debugPrint('[CryptoService] secure storage read failed: $e');
     }
 
-    if (raw == null || raw.isEmpty) return null;
+    // Fallback: password-encrypted file on desktop
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      if (_password != null) {
+        debugPrint('[CryptoService] Secure storage unavailable. Using password fallback.');
+        final encryptedData = await _readFromEncryptedFile();
+        if (encryptedData != null) {
+          final parts = encryptedData.split('|||SHADE_SEP|||');
+          if (parts.length == 2) {
+            final keys = alias == _privKeyAlias ? parts[0] : parts[1];
+            debugPrint('[CryptoService] readKey $alias from encrypted file');
+            return _normalizePem(keys);
+          }
+        }
+      }
+    }
 
-    // Normalize PEM: fix line endings, strip extra whitespace
-    return _normalizePem(raw);
+    return null;
   }
 
   /// Fixes common PEM corruption from secure storage on Windows:
@@ -478,10 +495,7 @@ class CryptoService {
   /// Writes a key to secure storage and file fallback.
   ///
   /// SECURITY: On desktop platforms (Windows/macOS/Linux), private keys are
-  /// NOT written to files in plain text. They are ONLY stored in secure storage.
-  /// If secure storage fails on desktop, the key is lost (safer than plaintext).
   Future<void> _writeKey(String alias, String value) async {
-    // Normalize before writing
     final normalized = _normalizePem(value);
 
     try {
@@ -489,22 +503,110 @@ class CryptoService {
       debugPrint('[CryptoService] writeKey $alias to secure storage');
     } catch (e) {
       debugPrint('[CryptoService] secure storage write failed: $e');
-      // On desktop, if secure storage fails, we do NOT fall back to plaintext files
       if (!Platform.isAndroid && !Platform.isIOS) {
-        throw Exception(
-          'Secure storage unavailable on desktop. Cannot safely store keys. '
-          'Please ensure your OS keychain/keystore is accessible.',
-        );
+        await _writeToPasswordFallback(alias, normalized);
+        return;
       }
     }
 
-    // REMOVED: Desktop plaintext file fallback (security vulnerability)
-    // Private keys must NEVER be stored in plaintext on disk.
-    // On desktop, secure storage (Keychain/DPAPI/libsecret) is mandatory.
+    // Also write to encrypted file as backup if password provided
+    if (!Platform.isAndroid && !Platform.isIOS && _password != null) {
+      await _writeToPasswordFallback(alias, normalized);
+    }
+  }
+
+  Future<void> _writeToPasswordFallback(String alias, String value) async {
+    if (_password == null) {
+      throw Exception(
+        'Secure storage unavailable on desktop. Cannot safely store keys. '
+        'Please ensure your OS keychain/keystore is accessible.',
+      );
+    }
+    debugPrint('[CryptoService] Secure storage unavailable. Using password fallback.');
+    final existing = await _readFromEncryptedFile();
+    String privKey = value;
+    String pubKey = value;
+    if (existing != null) {
+      final parts = existing.split('|||SHADE_SEP|||');
+      if (parts.length == 2) {
+        privKey = alias == _privKeyAlias ? value : parts[0];
+        pubKey = alias == _pubKeyAlias ? value : parts[1];
+      }
+    } else {
+      privKey = alias == _privKeyAlias ? value : '';
+      pubKey = alias == _pubKeyAlias ? value : '';
+    }
+    await _writeToEncryptedFile(privKey, pubKey);
   }
 
   /// Generates cryptographically secure random bytes using PointyCastle Fortuna.
   static Uint8List _randomBytes(int length) {
     return _SecureRandom.nextBytes(length);
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  PASSWORD FALLBACK (PBKDF2 + AES-256-GCM)
+  // ══════════════════════════════════════════════════════════════
+
+  Future<String?> _readFromEncryptedFile() async {
+    if (_password == null) return null;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$_keysFileName');
+      if (!await file.exists()) return null;
+      final encryptedData = await file.readAsBytes();
+      return _decryptWithPassword(encryptedData, _password!);
+    } catch (e) {
+      debugPrint('[CryptoService] Failed to read encrypted keys file: $e');
+      return null;
+    }
+  }
+
+  Future<void> _writeToEncryptedFile(String privateKey, String publicKey) async {
+    if (_password == null) return;
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$_keysFileName');
+      final data = '$privateKey|||SHADE_SEP|||$$publicKey';
+      final encrypted = _encryptWithPassword(data, _password!);
+      await file.writeAsBytes(encrypted);
+      debugPrint('[CryptoService] Keys written to encrypted file');
+    } catch (e) {
+      debugPrint('[CryptoService] Failed to write encrypted keys file: $e');
+    }
+  }
+
+  Uint8List _encryptWithPassword(String plaintext, String password) {
+    final salt = _randomBytes(32);
+    final key = _deriveKeyPBKDF2(password, salt);
+    final nonce = _randomBytes(_aesNonceLen);
+    final iv = enc.IV(nonce);
+    final keyObj = enc.Key(key);
+    final encrypter = enc.Encrypter(enc.AES(keyObj, mode: enc.AESMode.gcm));
+    final encrypted = encrypter.encrypt(plaintext, iv: iv);
+    final result = Uint8List(salt.length + nonce.length + encrypted.bytes.length);
+    result.setRange(0, salt.length, salt);
+    result.setRange(salt.length, salt.length + nonce.length, nonce);
+    result.setRange(salt.length + nonce.length, result.length, encrypted.bytes);
+    return result;
+  }
+
+  String _decryptWithPassword(Uint8List ciphertext, String password) {
+    final salt = ciphertext.sublist(0, 32);
+    final nonce = ciphertext.sublist(32, 32 + _aesNonceLen);
+    final encrypted = ciphertext.sublist(32 + _aesNonceLen);
+    final key = _deriveKeyPBKDF2(password, salt);
+    final iv = enc.IV(nonce);
+    final keyObj = enc.Key(key);
+    final encrypter = enc.Encrypter(enc.AES(keyObj, mode: enc.AESMode.gcm));
+    return encrypter.decrypt(enc.Encrypted(encrypted), iv: iv);
+  }
+
+  Uint8List _deriveKeyPBKDF2(String password, Uint8List salt) {
+    const iterations = 100000;
+    const keyLength = 32;
+    final pbkdf2 = pc.PBKDF2KeyDerivator(pc.HMac(pc.SHA256Digest(), 64));
+    pbkdf2.init(pc.Pbkdf2Parameters(salt, iterations, keyLength));
+    return pbkdf2.process(Uint8List.fromList(utf8.encode(password)));
   }
 }

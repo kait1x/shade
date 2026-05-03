@@ -184,12 +184,15 @@ if (!fs.existsSync(DATA_DIR)) {
 
 // ── SESSION_SECRET Management ─────────────────────────────────
 const SESSION_SECRET_FILE = path.join(DATA_DIR, 'session_secret');
+let sessionSecretSource = 'unknown';
 
 function loadSessionSecret() {
+  const isProduction = process.env.NODE_ENV === 'production' || process.env.PRODUCTION === 'true';
+  
   // Priority 1: Environment variable
   if (process.env.SESSION_SECRET) {
+    sessionSecretSource = 'environment';
     console.log('[session] SESSION_SECRET loaded from environment variable');
-    // Save to file for persistence if env var is removed later
     try {
       fs.writeFileSync(SESSION_SECRET_FILE, process.env.SESSION_SECRET, { mode: 0o600 });
       console.log('[session] SESSION_SECRET saved to file for persistence');
@@ -203,6 +206,7 @@ function loadSessionSecret() {
     try {
       const secret = fs.readFileSync(SESSION_SECRET_FILE, 'utf8').trim();
       if (secret) {
+        sessionSecretSource = 'file';
         console.log('[session] SESSION_SECRET loaded from file');
         return secret;
       }
@@ -210,8 +214,14 @@ function loadSessionSecret() {
       console.error('[session] Error reading session secret file:', e.message);
     }
   }
-  // Priority 3: Generate new
+  // Priority 3: Generate new (DANGEROUS in production!)
+  if (isProduction) {
+    console.error('[session] FATAL: Set SESSION_SECRET in production.');
+    process.exit(1);
+  }
   const newSecret = crypto.randomBytes(64).toString('hex');
+  sessionSecretSource = 'generated';
+  console.warn('[session] WARNING: SESSION_SECRET generated at runtime. This is insecure for production!');
   try {
     fs.writeFileSync(SESSION_SECRET_FILE, newSecret, { mode: 0o600 });
     console.log('[session] SESSION_SECRET generated and saved to file (mode 600)');
@@ -303,6 +313,7 @@ class Mutex {
 }
 
 const dbMutex = new Mutex();
+const refreshTokenMutex = new Mutex();
 
 // ── Token functions ─────────────────────────────────────────
 function generateSessionToken(username) {
@@ -312,11 +323,16 @@ function generateSessionToken(username) {
   return `${base}:${signature}`;
 }
 
-function generateRefreshToken(username) {
-  const token = crypto.randomBytes(64).toString('hex');
-  const expiresAt = Date.now() + REFRESH_TOKEN_DURATION;
-  refreshTokens.set(token, { username, expiresAt });
-  return token;
+async function generateRefreshToken(username) {
+  const release = await refreshTokenMutex.acquire();
+  try {
+    const token = crypto.randomBytes(64).toString('hex');
+    const expiresAt = Date.now() + REFRESH_TOKEN_DURATION;
+    refreshTokens.set(token, { username, expiresAt });
+    return token;
+  } finally {
+    release();
+  }
 }
 
 function validateSessionToken(username, token) {
@@ -342,15 +358,20 @@ function validateSessionToken(username, token) {
   }
 }
 
-function validateRefreshToken(token) {
-  if (!token) return null;
-  const data = refreshTokens.get(token);
-  if (!data) return null;
-  if (Date.now() > data.expiresAt) {
-    refreshTokens.delete(token);
-    return null;
+async function validateRefreshToken(token) {
+  const release = await refreshTokenMutex.acquire();
+  try {
+    if (!token) return null;
+    const data = refreshTokens.get(token);
+    if (!data) return null;
+    if (Date.now() > data.expiresAt) {
+      refreshTokens.delete(token);
+      return null;
+    }
+    return data.username;
+  } finally {
+    release();
   }
-  return data.username;
 }
 
 // ── Middleware ──────────────────────────────────────────────
@@ -405,6 +426,14 @@ app.get('/api/stats', requireAuth, (req, res) => {
     groups: groups.size,
     queuedMessages: [...offlineBuffer.values()].reduce((s, a) => s + a.length, 0),
     users: userList.sort((a, b) => b.registeredAt - a.registeredAt),
+  });
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({
+    ok: true,
+    timestamp: Date.now(),
+    sessionSecretSource: sessionSecretSource,
   });
 });
 
@@ -540,18 +569,24 @@ app.post('/logout', requireUserAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/refresh', (req, res) => {
+app.post('/refresh', async (req, res) => {
   const { refreshToken } = req.body;
   if (!refreshToken) {
     return res.status(400).json({ error: 'Missing refresh token' });
   }
-  const data = validateRefreshToken(refreshToken);
+  const data = await validateRefreshToken(refreshToken);
   if (!data) {
     return res.status(403).json({ error: 'Invalid or expired refresh token' });
   }
+  const release = await refreshTokenMutex.acquire();
+  try {
+    refreshTokens.delete(refreshToken);
+  } finally {
+    release();
+  }
   const newSessionToken = generateSessionToken(data.username);
   sessions.set(data.username, newSessionToken);
-  const newRefreshToken = generateRefreshToken(data.username);
+  const newRefreshToken = await generateRefreshToken(data.username);
   console.log('[refresh] token refreshed for', data.username);
   res.json({ ok: true, token: newSessionToken, refreshToken: newRefreshToken });
 });

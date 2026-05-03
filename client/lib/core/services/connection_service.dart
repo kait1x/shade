@@ -233,7 +233,6 @@ class ConnectionService {
 
   // ── Server public key (cached) ─────────────────────────
   Future<String?> _getServerPublicKey() async {
-    if (_serverPublicKey != null) return _serverPublicKey;
     try {
       final response = await _retryGet(
         Uri.parse('$serverUrl/api/server/public-key'),
@@ -242,19 +241,29 @@ class ConnectionService {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         final publicKey = data['publicKey'] as String?;
         
-        // [FIX] CRIT #2: Verify server key fingerprint
         const pinnedFingerprint = String.fromEnvironment('SHADED_PIN_SHA256', defaultValue: '');
-        if (publicKey != null && _verifyServerKeyPin(publicKey, pinnedFingerprint)) {
+        final isProduction = const bool.fromEnvironment('dart.vm.product', defaultValue: false);
+        
+        if (pinnedFingerprint.isEmpty) {
+          if (isProduction) {
+            throw Exception(
+              'Certificate pin required for production. '
+              'Set --dart-define=SHADED_PIN_SHA256=<sha256-fingerprint>',
+            );
+          } else {
+            debugPrint('[ConnectionService] WARNING: No certificate pin configured in debug mode');
+            debugPrint('[ConnectionService] Set --dart-define=SHADED_PIN_SHA256=... for production');
+          }
+        }
+        
+        if (publicKey != null) {
+          final verified = _verifyServerKeyPin(publicKey, pinnedFingerprint);
+          if (!verified) {
+            debugPrint('[ConnectionService] Server key fingerprint MISMATCH - possible MitM!');
+            return null;
+          }
           _serverPublicKey = publicKey;
           debugPrint('[ConnectionService] Server public key cached and verified');
-          return _serverPublicKey;
-        } else if (publicKey != null && pinnedFingerprint.isNotEmpty) {
-          debugPrint('[ConnectionService] Server key fingerprint MISMATCH - possible MitM!');
-          return null;
-        } else {
-          // No pin configured - use key anyway (with warning)
-          _serverPublicKey = publicKey;
-          debugPrint('[ConnectionService] Server public key cached (no pin verification)');
           return _serverPublicKey;
         }
       }
