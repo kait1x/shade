@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
+const cookieParser = require('cookie-parser');
 require('dotenv').config();
 
 // ── Firebase Admin SDK (optional) ─────────────────────────────
@@ -153,6 +154,7 @@ const io = new Server(server || http.createServer(app), {
 
 app.set('trust proxy', 1);
 app.use(cors(corsOptions));
+app.use(cookieParser());
 app.use(express.json({ limit: '1mb' }));
 
 // ── Security Headers ───────────────────────────────────────
@@ -211,7 +213,7 @@ function loadSessionSecret() {
     }
     return process.env.SESSION_SECRET;
   }
-  // Priority 2: File exists
+  // Priority 2: File exists (read existing or generate new and save for next run)
   if (fs.existsSync(SESSION_SECRET_FILE)) {
     try {
       const secret = fs.readFileSync(SESSION_SECRET_FILE, 'utf8').trim();
@@ -220,21 +222,22 @@ function loadSessionSecret() {
         console.log('[session] SESSION_SECRET loaded from file');
         return secret;
       }
+      // Empty file - generate new and save (for backward compatibility)
     } catch (e) {
       console.error('[session] Error reading session secret file:', e.message);
     }
   }
-  // Priority 3: Generate new (DANGEROUS in production!)
+  // Priority 3: Generate new and save to file for next run
   if (isProduction) {
     console.error('[session] FATAL: Set SESSION_SECRET in production.');
     process.exit(1);
   }
   const newSecret = crypto.randomBytes(64).toString('hex');
   sessionSecretSource = 'generated';
-  console.warn('[session] WARNING: SESSION_SECRET generated at runtime. This is insecure for production!');
+  console.warn('[session] WARNING: SESSION_SECRET generated at runtime. Saved to file for next run.');
   try {
     fs.writeFileSync(SESSION_SECRET_FILE, newSecret, { mode: 0o600 });
-    console.log('[session] SESSION_SECRET generated and saved to file (mode 600)');
+    console.log('[session] SESSION_SECRET saved to file for persistence');
   } catch (e) {
     console.error('[session] FATAL: Cannot write session secret to data/session_secret. Check permissions.');
     process.exit(1);
@@ -317,11 +320,51 @@ function loadOrGenerateMasterKey() {
 
 loadOrGenerateMasterKey();
 
+// AES-256-GCM encryption for sensitive files (fcm_tokens.json)
+function _encryptData(data, secret) {
+  const key = crypto.createHash('sha256').update(secret).digest();
+  const nonce = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce);
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify(data), 'utf8'),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+  return JSON.stringify({
+    nonce: nonce.toString('hex'),
+    tag: tag.toString('hex'),
+    data: encrypted.toString('hex'),
+  });
+}
+
+function _decryptData(encryptedStr, secret) {
+  const key = crypto.createHash('sha256').update(secret).digest();
+  const { nonce, tag, data } = JSON.parse(encryptedStr);
+  const decipher = crypto.createDecipheriv(
+    'aes-256-gcm',
+    key,
+    Buffer.from(nonce, 'hex'),
+  );
+  decipher.setAuthTag(Buffer.from(tag, 'hex'));
+  const decrypted = Buffer.concat([
+    decipher.update(Buffer.from(data, 'hex')),
+    decipher.final(),
+  ]);
+  return JSON.parse(decrypted.toString('utf8'));
+}
+
 function loadMap(filename) {
   const file = path.join(DATA_DIR, filename);
   try {
     if (fs.existsSync(file)) {
-      const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+      let data;
+      // fcm_tokens.json is encrypted
+      if (filename === 'fcm_tokens.json') {
+        const encryptedData = fs.readFileSync(file, 'utf8');
+        data = _decryptData(encryptedData, SESSION_SECRET);
+      } else {
+        data = JSON.parse(fs.readFileSync(file, 'utf8'));
+      }
       const m = new Map(data);
       if (filename === 'groups.json') {
         for (const [k, v] of m) {
@@ -348,7 +391,13 @@ function saveMap(filename, map) {
       } else {
         data = [...map.entries()];
       }
-      fs.writeFileSync(file, JSON.stringify(data));
+      // fcm_tokens.json is encrypted
+      if (filename === 'fcm_tokens.json') {
+        const encrypted = _encryptData(data, SESSION_SECRET);
+        fs.writeFileSync(file, encrypted);
+      } else {
+        fs.writeFileSync(file, JSON.stringify(data));
+      }
     } catch (e) {
       console.error('[db] save error:', filename, e.message);
     } finally {
@@ -398,10 +447,33 @@ class Mutex {
 const dbMutex = new Mutex();
 const refreshTokenMutex = new Mutex();
 
+// ── Session token nonce tracking (prevent replay attacks) ──────────────────
+const usedSessionNonces = new Set();
+const SESSION_NONCE_TTL_MS = 24 * 60 * 60 * 1000;
+let nonceCleanupScheduled = false;
+
+function scheduleNonceCleanup() {
+  if (nonceCleanupScheduled) return;
+  nonceCleanupScheduled = true;
+  setInterval(() => {
+    const now = Date.now();
+    for (const nonce of usedSessionNonces) {
+      const [ts] = nonce.split(':');
+      if (now - parseInt(ts, 10) > SESSION_NONCE_TTL_MS) {
+        usedSessionNonces.delete(nonce);
+      }
+    }
+  }, 60 * 60 * 1000); // Cleanup every hour
+}
+
 // ── Token functions ─────────────────────────────────────────
 function generateSessionToken(username) {
   const timestamp = Date.now();
-  const base = `${username}:${timestamp}`;
+  const nonce = crypto.randomBytes(16).toString('hex');
+  const usedNonceKey = `${timestamp}:${nonce}`;
+  usedSessionNonces.add(usedNonceKey);
+  scheduleNonceCleanup();
+  const base = `${username}:${timestamp}:${nonce}`;
   const signature = crypto.createHmac('sha256', SESSION_SECRET).update(base).digest('hex');
   return `${base}:${signature}`;
 }
@@ -421,15 +493,22 @@ async function generateRefreshToken(username) {
 function validateSessionToken(username, token) {
   if (!token) return false;
   const parts = token.split(':');
-  if (parts.length !== 3) return false;
-  const [tokenUsername, timestampStr, signature] = parts;
+  if (parts.length !== 4) return false;
+  const [tokenUsername, timestampStr, nonce, signature] = parts;
   const timestamp = parseInt(timestampStr, 10);
   if (tokenUsername !== username) return false;
   if (Date.now() - timestamp > SESSION_DURATION) {
     console.log('[session] expired for', username);
     return false;
   }
-  const base = `${username}:${timestamp}`;
+  // Check nonce not already used
+  const nonceKey = `${timestamp}:${nonce}`;
+  if (usedSessionNonces.has(nonceKey)) {
+    console.log('[session] nonce already used for', username, '- possible replay attack');
+    return false;
+  }
+  usedSessionNonces.add(nonceKey);
+  const base = `${username}:${timestamp}:${nonce}`;
   const expectedSignature = crypto.createHmac('sha256', SESSION_SECRET).update(base).digest('hex');
   try {
     return crypto.timingSafeEqual(
@@ -470,13 +549,61 @@ function requireUserAuth(req, res, next) {
   next();
 }
 
+// Admin session cookie management
+const adminSessions = new Map();
+const ADMIN_SESSION_DURATION = 60 * 60 * 1000; // 1 hour
+const ADMIN_COOKIE_NAME = 'shade_admin_sess';
+
 function requireAuth(req, res, next) {
+  // Check for session cookie first
+  const sessionCookie = req.cookies?.[ADMIN_COOKIE_NAME];
+  if (sessionCookie) {
+    const sessionData = adminSessions.get(sessionCookie);
+    if (sessionData && Date.now() < sessionData.expiresAt) {
+      // Extend session on activity
+      sessionData.expiresAt = Date.now() + ADMIN_SESSION_DURATION;
+      return next();
+    }
+    adminSessions.delete(sessionCookie);
+  }
+  
+  // Fall back to Basic Auth
   const auth = req.headers.authorization;
   if (!auth || auth !== 'Basic ' + Buffer.from('admin:' + DASHBOARD_PASS).toString('base64')) {
     return res.status(401).send('Unauthorized');
   }
   next();
 }
+
+// Endpoint to set session cookie after successful Basic Auth
+app.post('/admin/login', (req, res) => {
+  const auth = req.headers.authorization;
+  if (!auth || auth !== 'Basic ' + Buffer.from('admin:' + DASHBOARD_PASS).toString('base64')) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+  const sessionToken = crypto.randomBytes(32).toString('hex');
+  adminSessions.set(sessionToken, {
+    createdAt: Date.now(),
+    expiresAt: Date.now() + ADMIN_SESSION_DURATION,
+  });
+  res.cookie(ADMIN_COOKIE_NAME, sessionToken, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'strict',
+    maxAge: ADMIN_SESSION_DURATION,
+  });
+  res.json({ ok: true, message: 'Session created' });
+});
+
+// Endpoint to logout and clear cookie
+app.post('/admin/logout', (req, res) => {
+  const sessionCookie = req.cookies?.[ADMIN_COOKIE_NAME];
+  if (sessionCookie) {
+    adminSessions.delete(sessionCookie);
+  }
+  res.clearCookie(ADMIN_COOKIE_NAME);
+  res.json({ ok: true });
+});
 
 // ── REST endpoints ───────────────────────────────────────────
 
@@ -863,9 +990,10 @@ io.on('connection', (socket) => {
   });
 
   const wsRateLimits = new Map();
-  const WS_MAX_MESSAGES_PER_MINUTE = 60;
+  const WS_MAX_EVENTS_PER_MINUTE = 60;
 
-  socket.on('message', (payload) => {
+  // Generic rate limiter for ALL socket events
+  socket.use((packet, next) => {
     const now = Date.now();
     let rateInfo = wsRateLimits.get(socket.id);
     if (!rateInfo || now > rateInfo.resetTime) {
@@ -873,11 +1001,15 @@ io.on('connection', (socket) => {
     }
     rateInfo.count++;
     wsRateLimits.set(socket.id, rateInfo);
-    if (rateInfo.count > WS_MAX_MESSAGES_PER_MINUTE) {
-      socket.emit('error', { message: 'Too many messages, slow down' });
-      console.log('[ws] rate limit exceeded for', socket.id);
+    if (rateInfo.count > WS_MAX_EVENTS_PER_MINUTE) {
+      socket.emit('error', { message: 'Rate limit exceeded, slow down' });
+      console.log('[ws] rate limit exceeded for', socket.id, 'event:', packet[0]);
       return;
     }
+    next();
+  });
+
+  socket.on('message', (payload) => {
     const MAX_FILE_SIZE = 10 * 1024 * 1024;
     if (!payload || !payload.to || !payload.data) return;
     const dataSize = Buffer.byteLength(JSON.stringify(payload.data), 'utf8');

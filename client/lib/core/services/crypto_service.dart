@@ -328,19 +328,51 @@ class CryptoService {
         debugPrint('[CryptoService] Server signature INVALID - possible MitM!');
         return false;
       }
-      // TOFU: verify server public key fingerprint
-      await _checkServerKeyFingerprint(serverPublicKey);
-      return true;
+      // TOFU: verify server public key fingerprint - throws if confirmation needed
+      final fpResult = await _checkServerKeyFingerprint(serverPublicKey);
+      return fpResult.status == ServerKeyTrustStatus.trusted;
     } catch (e) {
       debugPrint('[CryptoService] Server signature verification error: $e');
       return false;
     }
   }
 
+  /// Проверяет ключ сервера и возвращает результат для UI (диалог подтверждения)
+  Future<ServerKeyFingerprintResult> checkServerKeyForConfirmation(String serverPublicKey) async {
+    try {
+      final fpResult = await _checkServerKeyFingerprint(serverPublicKey);
+      return fpResult;
+    } catch (e) {
+      return ServerKeyFingerprintResult(
+        status: ServerKeyTrustStatus.mismatchDetected,
+        fingerprint: '',
+      );
+    }
+  }
+
+enum ServerKeyTrustStatus {
+  trusted,
+  newKeyRequiresConfirmation,
+  mismatchDetected,
+}
+
+class ServerKeyFingerprintResult {
+  final ServerKeyTrustStatus status;
+  final String fingerprint;
+  final String? storedFingerprint;
+
+  ServerKeyFingerprintResult({
+    required this.status,
+    required this.fingerprint,
+    this.storedFingerprint,
+  });
+}
+
   /// Проверяет отпечаток публичного ключа сервера.
   /// [FIX] HIGH #2: Используем PIN-код из сборки как единственный источник истины.
   /// TOFU используется только как fallback если PIN не сконфигурирован.
-  Future<void> _checkServerKeyFingerprint(String serverPublicKey) async {
+  /// Возвращает результат с статусом проверки для показа диалога подтверждения.
+  Future<ServerKeyFingerprintResult> _checkServerKeyFingerprint(String serverPublicKey) async {
     try {
       final fingerprint = await _sha256Fingerprint(serverPublicKey);
       
@@ -353,10 +385,62 @@ class CryptoService {
           debugPrint('[CryptoService] CRITICAL: Server key MISMATCH! Possible MitM attack!');
           debugPrint('  Expected: $pinnedFromBuild');
           debugPrint('  Got:      $fingerprint');
-          // В продакшене здесь можно заблокировать приложение
+          return ServerKeyFingerprintResult(
+            status: ServerKeyTrustStatus.mismatchDetected,
+            fingerprint: fingerprint,
+          );
         } else {
           debugPrint('[CryptoService] Server key fingerprint verified (from build config)');
+          return ServerKeyFingerprintResult(
+            status: ServerKeyTrustStatus.trusted,
+            fingerprint: fingerprint,
+          );
         }
+      }
+      
+      // [FIX] Приоритет 2: TOFU как fallback (только для разработки!)
+      const storage = FlutterSecureStorage();
+      const key = 'server_pubkey_fingerprint';
+      final stored = await storage.read(key: key);
+      if (stored == null) {
+        // Впервые видим ключ сервера - требуется подтверждение пользователя
+        debugPrint('[CryptoService] NEW server key detected - user confirmation required');
+        return ServerKeyFingerprintResult(
+          status: ServerKeyTrustStatus.newKeyRequiresConfirmation,
+          fingerprint: fingerprint,
+        );
+      } else if (stored != fingerprint) {
+        debugPrint('[CryptoService] WARNING: Server key fingerprint changed! Possible MitM attack.');
+        debugPrint('  Stored: $stored');
+        debugPrint('  Got:    $fingerprint');
+        return ServerKeyFingerprintResult(
+          status: ServerKeyTrustStatus.mismatchDetected,
+          fingerprint: fingerprint,
+          storedFingerprint: stored,
+        );
+      } else {
+        debugPrint('[CryptoService] Server key fingerprint verified (TOFU)');
+        return ServerKeyFingerprintResult(
+          status: ServerKeyTrustStatus.trusted,
+          fingerprint: fingerprint,
+        );
+      }
+    } catch (e) {
+      debugPrint('[CryptoService] Fingerprint check error: $e');
+      return ServerKeyFingerprintResult(
+        status: ServerKeyTrustStatus.mismatchDetected,
+        fingerprint: '',
+      );
+    }
+  }
+
+  /// Подтверждает доверие к ключу сервера (сохраняет fingerprint)
+  Future<void> trustServerKey(String fingerprint) async {
+    const storage = FlutterSecureStorage();
+    const key = 'server_pubkey_fingerprint';
+    await storage.write(key: key, value: fingerprint);
+    debugPrint('[CryptoService] Server key fingerprint trusted and saved');
+  }
         return;
       }
       
@@ -554,7 +638,7 @@ class CryptoService {
   Future<String?> _readFromEncryptedFile() async {
     if (_password == null) return null;
     try {
-      final dir = await getApplicationDocumentsDirectory();
+      final dir = await _getSecureStorageDir();
       final file = File('${dir.path}/$_keysFileName');
       if (!await file.exists()) return null;
       final encryptedData = await file.readAsBytes();
@@ -565,10 +649,32 @@ class CryptoService {
     }
   }
 
+  Future<Directory> _getSecureStorageDir() async {
+    if (Platform.isMacOS) {
+      final appSupport = await getApplicationSupportDirectory();
+      final dir = Directory('${appSupport.path}/shade');
+      if (!await dir.exists()) await dir.create(recursive: true);
+      return dir;
+    } else if (Platform.isWindows) {
+      final appData = await getApplicationDocumentsDirectory();
+      final dir = Directory('${appData.path}/shade');
+      if (!await dir.exists()) await dir.create(recursive: true);
+      return dir;
+    } else if (Platform.isLinux) {
+      final dataDir = await getApplicationSupportDirectory();
+      final dir = Directory('${dataDir.path}/shade');
+      if (!await dir.exists()) await dir.create(recursive: true);
+      return dir;
+    } else {
+      final dir = await getApplicationDocumentsDirectory();
+      return dir;
+    }
+  }
+
   Future<void> _writeToEncryptedFile(String privateKey, String publicKey) async {
     if (_password == null) return;
     try {
-      final dir = await getApplicationDocumentsDirectory();
+      final dir = await _getSecureStorageDir();
       final file = File('${dir.path}/$_keysFileName');
       final data = '$privateKey|||SHADE_SEP|||$$publicKey';
       final encrypted = _encryptWithPassword(data, _password!);
