@@ -107,35 +107,6 @@ class DatabaseService {
     }
   }
 
-    final filePath = p.join(dir, _dbName);
-
-    if (_isMobile) {
-      // ── Mobile: SQLCipher ────────────────────────────────────
-      final key = await _getOrCreateKey();
-      return sqlcipher.openDatabase(
-        filePath,
-        version: _dbVersion,
-        password: key,
-        onConfigure: (db) async {
-          // Foreign keys managed in application code
-        },
-        onCreate: _onCreate,
-        onUpgrade: _onUpgrade,
-      );
-    } else {
-      // ── Desktop: sqflite_common_ffi ──────────────────────────
-      return sqflite_ffi.openDatabase(
-        filePath,
-        version: _dbVersion,
-        onConfigure: (db) async {
-          // Foreign keys managed in application code
-        },
-        onCreate: _onCreate,
-        onUpgrade: _onUpgrade,
-      );
-    }
-  }
-
   /// One-time initialisation of the FFI database factory (desktop only).
   Future<void> _initFfi() async {
     if (_ffiInitialised) return;

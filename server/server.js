@@ -186,10 +186,19 @@ if (!fs.existsSync(DATA_DIR)) {
 const SESSION_SECRET_FILE = path.join(DATA_DIR, 'session_secret');
 
 function loadSessionSecret() {
+  // Priority 1: Environment variable
   if (process.env.SESSION_SECRET) {
     console.log('[session] SESSION_SECRET loaded from environment variable');
+    // Save to file for persistence if env var is removed later
+    try {
+      fs.writeFileSync(SESSION_SECRET_FILE, process.env.SESSION_SECRET, { mode: 0o600 });
+      console.log('[session] SESSION_SECRET saved to file for persistence');
+    } catch (e) {
+      console.error('[session] Warning: Cannot save env secret to file:', e.message);
+    }
     return process.env.SESSION_SECRET;
   }
+  // Priority 2: File exists
   if (fs.existsSync(SESSION_SECRET_FILE)) {
     try {
       const secret = fs.readFileSync(SESSION_SECRET_FILE, 'utf8').trim();
@@ -201,6 +210,7 @@ function loadSessionSecret() {
       console.error('[session] Error reading session secret file:', e.message);
     }
   }
+  // Priority 3: Generate new
   const newSecret = crypto.randomBytes(64).toString('hex');
   try {
     fs.writeFileSync(SESSION_SECRET_FILE, newSecret, { mode: 0o600 });
