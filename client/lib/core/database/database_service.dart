@@ -537,6 +537,14 @@ class DatabaseService {
     );
   }
 
+  /// Deletes the entire database and all its data.
+  /// 
+  /// This should be called during logout to remove all local message history
+  /// and cryptographic material from the device.
+  Future<void> deleteDatabase() async {
+    await nuke();
+  }
+
   Future<void> nuke() async {
     await close();
 

@@ -190,7 +190,62 @@ class AuthNotifier extends StateNotifier<AuthState> {
     return false;
   }
 
-  /// Account is permanently bound to device — logout is disabled.
+  /// Performs a complete logout:
+  /// 1. Clears all keys from FlutterSecureStorage
+  /// 2. Deletes the local SQLCipher database
+  /// 3. Disconnects WebSocket
+  /// 4. Unregisters FCM token from server (optional)
+  /// 5. Resets authentication state
+  /// 6. Redirects user to login screen (via state change)
+  Future<void> logout() async {
+    try {
+      debugPrint('[Auth] Starting logout...');
+
+      // 1. Disconnect WebSocket first to stop incoming messages
+      _connectionService.disconnect();
+      debugPrint('[Auth] WebSocket disconnected');
+
+      // 2. Unregister FCM token from server (best effort, ignore errors)
+      try {
+        await NotificationService.unregisterToken(
+          _connectionService.serverUrl,
+          state.nickname,
+        );
+        debugPrint('[Auth] FCM token unregistered');
+      } catch (e) {
+        debugPrint('[Auth] FCM unregister failed (non-fatal): $e');
+      }
+
+      // 3. Clear all cryptographic keys from secure storage
+      await _cryptoService.clearIdentityKeys();
+      debugPrint('[Auth] Crypto keys cleared');
+
+      // 4. Delete the entire local database (SQLCipher encrypted)
+      await _databaseService.deleteDatabase();
+      debugPrint('[Auth] Database deleted');
+
+      // 5. Clear SharedPreferences (has_profile flag and any cached data)
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear();
+      debugPrint('[Auth] SharedPreferences cleared');
+
+      // 6. Reset notification service
+      await NotificationService.dispose();
+      debugPrint('[Auth] Notification service disposed');
+
+      // 7. Reset authentication state to initial
+      state = const AuthState(status: AuthStatus.initial);
+      debugPrint('[Auth] Logout completed successfully');
+    } catch (e) {
+      debugPrint('[Auth] Logout error: $e');
+      // Even if logout fails partially, reset state to allow retry
+      state = const AuthState(
+        status: AuthStatus.error,
+        error: 'Ошибка выхода. Попробуйте перезапустить приложение.',
+      );
+      rethrow;
+    }
+  }
 }
 
 /// Provider for CryptoService

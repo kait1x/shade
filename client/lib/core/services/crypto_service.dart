@@ -121,6 +121,19 @@ class CryptoService {
     return {'publicKey': kp.publicKey, 'privateKey': kp.privateKey};
   }
 
+  /// Clears all identity keys from secure storage.
+  /// 
+  /// This should be called during logout to ensure cryptographic material
+  /// is removed from the device. After calling this, the user must generate
+  /// new keys to use the app again.
+  Future<void> clearIdentityKeys() async {
+    await Future.wait([
+      _secureStorage.delete(key: _privKeyAlias),
+      _secureStorage.delete(key: _pubKeyAlias),
+    ]);
+    debugPrint('[CryptoService] Identity keys cleared from secure storage');
+  }
+
   // ══════════════════════════════════════════════════════════════
   //  HYBRID ENCRYPTION  —  encryptData / decryptData
   // ══════════════════════════════════════════════════════════════

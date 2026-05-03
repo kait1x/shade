@@ -131,7 +131,15 @@ class MessageDeletedEvent {
 
 /// SHA-256 fingerprint of the server's TLS certificate (DER format, base64).
 /// Pass via: --dart-define=SHADED_PIN_SHA256=<base64>
-/// If empty, self-signed certs are allowed (development only).
+/// 
+/// To obtain the fingerprint from your server:
+/// ```bash
+/// openssl s_client -connect your-server.com:443 -servername your-server.com \
+///   | openssl x509 -pubkey -noout \
+///   | openssl pkey -pubin -outform der \
+///   | openssl dgst -sha256 -binary \
+///   | openssl base64
+/// ```
 const _pinSha256 =
     String.fromEnvironment('SHADED_PIN_SHA256', defaultValue: '');
 
@@ -147,6 +155,40 @@ http.Client _createHttpClient() {
     };
   } else {
     // Development: allow any certificate (self-signed)
+    // WARNING: This is only safe for local development!
+    
+    // In debug mode, warn developer about missing pin
+    assert(() {
+      debugPrint(
+        '⚠️ SECURITY WARNING: Certificate pinning is disabled! '
+        'Accepting any TLS certificate.\n'
+        'For production builds, you MUST provide a certificate pin:\n'
+        '  flutter build apk --dart-define=SHADED_PIN_SHA256=<fingerprint>\n\n'
+        'To get the fingerprint from your server:\n'
+        '  openssl s_client -connect your-server.com:443 -servername your-server.com '
+        '| openssl x509 -pubkey -noout '
+        '| openssl pkey -pubin -outform der '
+        '| openssl dgst -sha256 -binary '
+        '| openssl base64',
+      );
+      return true;
+    }());
+
+    // In release mode, reject connection if no pin is provided
+    if (!kDebugMode) {
+      throw StateError(
+        'Certificate pin must be set for production builds. '
+        'Use --dart-define=SHADED_PIN_SHA256=<fingerprint> when building.\n\n'
+        'To get the fingerprint from your server:\n'
+        '  openssl s_client -connect your-server.com:443 -servername your-server.com '
+        '| openssl x509 -pubkey -noout '
+        '| openssl pkey -pubin -outform der '
+        '| openssl dgst -sha256 -binary '
+        '| openssl base64',
+      );
+    }
+
+    // Debug mode only: allow self-signed certs for development
     client.badCertificateCallback = (_, __, ___) => true;
   }
 
