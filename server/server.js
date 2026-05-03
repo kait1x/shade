@@ -24,37 +24,7 @@ try {
   console.log('[firebase] disabled — push notifications unavailable');
 }
 
-// ── Server master key (for signing user public keys) ─────────────────────
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
-const MASTER_KEY_FILE = path.join(DATA_DIR, 'server_master_key');
-let serverMasterKey = null;
-let serverPublicKey = null;
-
-function loadOrGenerateMasterKey() {
-  if (fs.existsSync(MASTER_KEY_FILE)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(MASTER_KEY_FILE, 'utf8'));
-      serverMasterKey = data;
-      serverPublicKey = data.publicKey;
-      console.log('[server] Master key loaded');
-      return;
-    } catch (e) {
-      console.error('[server] Error reading master key:', e.message);
-    }
-  }
-  console.log('[server] Generating new master key...');
-  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
-    modulusLength: 4096,
-    publicKeyEncoding: { type: 'spki', format: 'pem' },
-    privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
-  });
-  serverMasterKey = { publicKey, privateKey };
-  serverPublicKey = publicKey;
-  fs.writeFileSync(MASTER_KEY_FILE, JSON.stringify({ publicKey, privateKey }), { mode: 0o600 });
-  console.log('[server] Master key generated and saved');
-}
-
-loadOrGenerateMasterKey();
 
 // [FIX] HIGH #4: Validate DASHBOARD_PASS at startup
 const DASHBOARD_PASS = process.env.DASHBOARD_PASS || '<SET_YOUR_STRONG_PASSWORD_HERE>';
@@ -74,6 +44,23 @@ const app = express();
 const CERT_DIR = process.env.CERT_DIR || path.join(__dirname, 'certs');
 let httpsServer = null;
 let httpServer = null;
+
+function generateSelfSignedCerts() {
+  const keyPath = path.join(CERT_DIR, 'key.pem');
+  const certPath = path.join(CERT_DIR, 'cert.pem');
+  const key = crypto.generateKeySync('rsa', { modulusLength: 2048 });
+  const cert = crypto.createSelfSignedSubject({
+    keys: [
+      { key: key.export({ type: 'pkcs8', format: 'pem' }) },
+    ],
+    days: 365,
+    subject: { commonName: 'localhost' },
+  });
+  fs.mkdirSync(CERT_DIR, { recursive: true });
+  fs.writeFileSync(keyPath, key.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
+  fs.writeFileSync(certPath, cert, { mode: 0o644 });
+  console.log('[tls] Self-signed certificates generated in', CERT_DIR);
+}
 
 try {
   const keyPath = path.join(CERT_DIR, 'key.pem');
@@ -104,7 +91,30 @@ try {
 
     console.log('[tls] HTTPS certificates loaded');
   } else {
-    console.log('[tls] No certificates found — running HTTP only (development mode)');
+    console.log('[tls] No certificates found — generating self-signed...');
+    generateSelfSignedCerts();
+    const tlsOptions = {
+      key: fs.readFileSync(keyPath),
+      cert: fs.readFileSync(certPath),
+      minVersion: 'TLSv1.2',
+      ciphers: 'ECDHE+AESGCM:ECDHE+CHACHA20:DHE+AESGCM:DHE+CHACHA20:!aNULL:!MD5:!DSS',
+    };
+    httpsServer = https.createServer(tlsOptions, app);
+
+    const HTTP_PORT = process.env.HTTP_PORT || 3000;
+    const HTTPS_PORT = process.env.HTTPS_PORT || 3443;
+
+    httpServer = http.createServer((req, res) => {
+      const host = req.headers.host ? req.headers.host.replace(/:\d+$/, '') : 'localhost';
+      res.writeHead(301, { Location: `https://${host}:${HTTPS_PORT}${req.url}` });
+      res.end();
+    });
+
+    httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
+      console.log(`[tls] HTTP redirect on :${HTTP_PORT} → :${HTTPS_PORT}`);
+    });
+
+    console.log('[tls] HTTPS (self-signed) enabled');
   }
 } catch (e) {
   console.log('[tls] Cert load failed — running HTTP only:', e.message);
@@ -126,10 +136,10 @@ const corsOptions = {
   credentials: true,
 };
 
-// Use HTTPS if available, otherwise HTTP
-const server = httpsServer || (process.env.NODE_ENV === 'production' ? null : httpServer);
-if (!server && process.env.NODE_ENV === 'production') {
-  console.error('[FATAL] Cannot start without TLS in production');
+// TLS is required in all modes
+const server = httpsServer;
+if (!server) {
+  console.error('[FATAL] TLS is required in all modes. Run gen-certs.sh to generate certificates.');
   process.exit(1);
 }
 
@@ -236,6 +246,77 @@ const SESSION_SECRET = loadSessionSecret();
 const SESSION_DURATION = 24 * 60 * 60 * 1000;
 const REFRESH_TOKEN_DURATION = 7 * 24 * 60 * 60 * 1000;
 
+// ── AES-256-GCM helpers for master key encryption ──────────────────
+function _deriveEncryptionKey(secret) {
+  return crypto.createHash('sha256').update(secret).digest();
+}
+
+function _encryptMasterKey(privateKey, publicKey, secret) {
+  const key = _deriveEncryptionKey(secret);
+  const nonce = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, nonce);
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify({ privateKey, publicKey }), 'utf8'),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+  return JSON.stringify({
+    nonce: nonce.toString('hex'),
+    tag: tag.toString('hex'),
+    data: encrypted.toString('hex'),
+  });
+}
+
+function _decryptMasterKey(encryptedData, secret) {
+  const key = _deriveEncryptionKey(secret);
+  const { nonce, tag, data } = JSON.parse(encryptedData);
+  const decipher = crypto.createDecipheriv(
+    'aes-256-gcm',
+    key,
+    Buffer.from(nonce, 'hex'),
+  );
+  decipher.setAuthTag(Buffer.from(tag, 'hex'));
+  const decrypted = Buffer.concat([
+    decipher.update(Buffer.from(data, 'hex')),
+    decipher.final(),
+  ]);
+  return JSON.parse(decrypted.toString('utf8'));
+}
+
+// ── Server master key (for signing user public keys) ─────────────────────
+// Master key encrypted at rest with key derived from SESSION_SECRET
+const MASTER_KEY_FILE = path.join(DATA_DIR, 'server_master_key');
+let serverMasterKey = null;
+let serverPublicKey = null;
+
+function loadOrGenerateMasterKey() {
+  if (fs.existsSync(MASTER_KEY_FILE)) {
+    try {
+      const encryptedData = fs.readFileSync(MASTER_KEY_FILE, 'utf8');
+      const decrypted = _decryptMasterKey(encryptedData, SESSION_SECRET);
+      serverMasterKey = decrypted;
+      serverPublicKey = decrypted.publicKey;
+      console.log('[server] Master key loaded and decrypted');
+      return;
+    } catch (e) {
+      console.error('[server] Error reading/decrypting master key:', e.message);
+    }
+  }
+  console.log('[server] Generating new master key...');
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('rsa', {
+    modulusLength: 4096,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
+  });
+  serverMasterKey = { publicKey, privateKey };
+  serverPublicKey = publicKey;
+  const encrypted = _encryptMasterKey(privateKey, publicKey, SESSION_SECRET);
+  fs.writeFileSync(MASTER_KEY_FILE, encrypted, { mode: 0o600 });
+  console.log('[server] Master key generated and encrypted at rest');
+}
+
+loadOrGenerateMasterKey();
+
 function loadMap(filename) {
   const file = path.join(DATA_DIR, filename);
   try {
@@ -286,7 +367,7 @@ const sessions = new Map();
 const watchers = new Map();
 const refreshTokens = new Map();
 const gracePeriodSessions = new Map();
-const GRACE_PERIOD_MS = 60000;
+const GRACE_PERIOD_MS = 5000;
 
 // ── Mutex for race condition protection ─────────────────────
 class Mutex {
@@ -737,21 +818,25 @@ io.on('connection', (socket) => {
     const token = payload.token;
     let expected = sessions.get(username);
     
+    let gracePeriodReconnect = false;
     if (!expected || token !== expected) {
       const graceData = gracePeriodSessions.get(username);
       if (graceData && token === graceData.sessionToken) {
         const elapsed = Date.now() - graceData.timestamp;
         if (elapsed < GRACE_PERIOD_MS) {
-          sessions.set(username, token);
+          const newToken = generateSessionToken(username);
+          sessions.set(username, newToken);
           gracePeriodSessions.delete(username);
-          console.log('[ws] Reconnected during grace period for:', username);
+          console.log('[ws] Reconnected during grace period for:', username, '- issued new token');
+          socket.emit('sessionRefreshed', { token: newToken });
+          gracePeriodReconnect = true;
         } else {
           expected = null;
         }
       }
     }
     
-    if (!expected || token !== expected) {
+    if (!gracePeriodReconnect && (!expected || token !== expected)) {
       console.warn('[ws] auth failed');
       socket.emit('authError', { error: 'Invalid session token' });
       setTimeout(() => socket.disconnect(true), 1000);
