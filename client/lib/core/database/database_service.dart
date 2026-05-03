@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
@@ -127,15 +128,17 @@ class DatabaseService {
 
   // ── Key management (mobile only) ────────────────────────────
 
-  /// Using Fortuna PRNG for DB key generation (audit requirement)
+  // CRIT-01: Verified — using cryptographically secure PRNG
   static final pc.FortunaRandom _dbRandom = pc.FortunaRandom();
   static bool _dbRandomSeeded = false;
 
   static void _ensureDbRandomSeeded() {
     if (_dbRandomSeeded) return;
+    // Use crypto-secure system RNG for seeding Fortuna
     final seed = Uint8List(32);
+    final mathRandom = math.Random.secure();
     for (int i = 0; i < 32; i++) {
-      seed[i] = DateTime.now().microsecondsSinceEpoch % 256;
+      seed[i] = mathRandom.nextInt(256);
     }
     _dbRandom.seed(pc.KeyParameter(seed));
     _dbRandomSeeded = true;

@@ -237,6 +237,9 @@ class CryptoService {
         throw Exception('Unknown envelope format');
       }
     } catch (e) {
+      if (e.toString().contains('AEADBadTagException') || e.toString().contains('Tag')) {
+        throw Exception('Message authentication failed. Data may be tampered.');
+      }
       debugPrint('[CryptoService] decryptData FAILED');
       rethrow;
     }
