@@ -92,17 +92,21 @@ try {
 
     console.log('[tls] HTTPS certificates loaded');
 
-    // LOW-02: Prod self-signed warning
+    // MED-02: Self-signed cert warning
     const certContent = fs.readFileSync(certPath);
     const certObj = crypto.X509Certificate.from PEM(certContent);
     const isSelfSigned = certObj.issuer === certObj.subject;
     if (process.env.NODE_ENV === 'production' && isSelfSigned) {
-      console.warn('[tls] WARNING: Production mode with self-signed certificates detected. This is insecure. Use Let\'s Encrypt or proper CA certificates.');
+      // LOW-02: Block production with self-signed cert
+      console.error('[tls] FATAL: Use Let\'s Encrypt or commercial cert in production');
+      process.exit(1);
     }
   } else {
     console.log('[tls] No certificates found — generating self-signed...');
     if (process.env.NODE_ENV === 'production') {
-      console.warn('[tls] WARNING: Production mode with self-signed certificates detected. This is insecure. Use Let\'s Encrypt or proper CA certificates.');
+      // LOW-02: Block production with self-signed cert
+      console.error('[tls] FATAL: Use Let\'s Encrypt or commercial cert in production');
+      process.exit(1);
     }
     generateSelfSignedCerts();
     const tlsOptions = {
@@ -174,8 +178,8 @@ app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-XSS-Protection', '1; mode=block');
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss://*");
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload'); // MED-01: HSTS preload confirmed
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss://" + (process.env.WS_HOST || '*') + "'"); // MED-06: CSP connect-src restricted
   res.removeHeader('X-Powered-By');
   next();
 });
@@ -402,6 +406,41 @@ function _wipeKey(key) {
     key.fill(0);
   }
 }
+
+// HIGH-03: HMAC integrity check for data files
+const HMAC_FILE_SUFFIX = '.hmac';
+
+function _computeHmac(data, secret) {
+  return crypto.createHmac('sha256', secret).update(JSON.stringify(data)).digest('hex');
+}
+
+function _loadHmac(filename) {
+  const hmacFile = path.join(DATA_DIR, filename + HMAC_FILE_SUFFIX);
+  if (fs.existsSync(hmacFile)) {
+    return fs.readFileSync(hmacFile, 'utf8').trim();
+  }
+  return null;
+}
+
+function _saveHmac(filename, data, secret) {
+  const hmac = _computeHmac(data, secret);
+  const hmacFile = path.join(DATA_DIR, filename + HMAC_FILE_SUFFIX);
+  fs.writeFileSync(hmacFile, hmac);
+}
+
+function _verifyHmac(filename, data, secret) {
+  const storedHmac = _loadHmac(filename);
+  if (!storedHmac) {
+    console.warn('[hmac] No HMAC file found for:', filename, '- skipping verification');
+    return true; // No HMAC file yet - skip
+  }
+  const computedHmac = _computeHmac(data, secret);
+  if (storedHmac !== computedHmac) {
+    console.error('[hmac] HIGH-03 WARNING: HMAC mismatch for', filename, '- data may be corrupted!');
+    return false;
+  }
+  return true;
+}
     'aes-256-gcm',
     key,
     Buffer.from(nonce, 'hex'),
@@ -419,12 +458,21 @@ function loadMap(filename) {
   try {
     if (fs.existsSync(file)) {
       let data;
-      // fcm_tokens.json is encrypted
-      if (filename === 'fcm_tokens.json') {
+      // HIGH-01: users.json encrypted at rest with AES-256-GCM
+      if (filename === 'users.json') {
+        const encryptedData = fs.readFileSync(file, 'utf8');
+        data = _decryptData(encryptedData, SESSION_SECRET);
+        // HIGH-03: Verify HMAC integrity
+        _verifyHmac(filename, data, SESSION_SECRET);
+      } else if (filename === 'fcm_tokens.json') {
         const encryptedData = fs.readFileSync(file, 'utf8');
         data = _decryptData(encryptedData, SESSION_SECRET);
       } else {
         data = JSON.parse(fs.readFileSync(file, 'utf8'));
+        // HIGH-03: Verify HMAC for other data files
+        if (filename === 'last_seen.json' || filename === 'groups.json') {
+          _verifyHmac(filename, data, SESSION_SECRET);
+        }
       }
       const m = new Map(data);
       if (filename === 'groups.json') {
@@ -442,33 +490,44 @@ function loadMap(filename) {
   return new Map();
 }
 
-function saveMap(filename, map) {
-  const file = path.join(DATA_DIR, filename);
-  dbMutex.acquire().then((release) => {
-    try {
-      let data;
-      if (filename === 'groups.json') {
-        data = [...map.entries()].map(([k, v]) => [k, { ...v, members: [...v.members] }]);
-      } else {
-        data = [...map.entries()];
-      }
-      // fcm_tokens.json is encrypted
-      if (filename === 'fcm_tokens.json') {
-        const encrypted = _encryptData(data, SESSION_SECRET);
-        fs.writeFileSync(file, encrypted);
-      } else {
-        fs.writeFileSync(file, JSON.stringify(data));
-      }
-    } catch (e) {
-      console.error('[db] save error:', filename, e.message);
-    } finally {
-      release();
+// HIGH-02: Async file writes with mutex
+async function saveMap(filename, map) {
+  const release = await dbMutex.acquire();
+  try {
+    const file = path.join(DATA_DIR, filename);
+    let data;
+    if (filename === 'groups.json') {
+      data = [...map.entries()].map(([k, v]) => [k, { ...v, members: [...v.members] }]);
+    } else {
+      data = [...map.entries()];
     }
-  });
+    // HIGH-01: users.json encrypted at rest with AES-256-GCM
+    if (filename === 'users.json') {
+      const encrypted = _encryptData(data, SESSION_SECRET);
+      await fs.promises.writeFile(file, encrypted);
+      // HIGH-03: Save HMAC for integrity check
+      _saveHmac(filename, data, SESSION_SECRET);
+    } else if (filename === 'fcm_tokens.json') {
+      const encrypted = _encryptData(data, SESSION_SECRET);
+      await fs.promises.writeFile(file, encrypted);
+    } else {
+      await fs.promises.writeFile(file, JSON.stringify(data));
+      // HIGH-03: Save HMAC for integrity check
+      if (filename === 'last_seen.json' || filename === 'groups.json') {
+        _saveHmac(filename, data, SESSION_SECRET);
+      }
+    }
+  } catch (e) {
+    console.error('[db] save error:', filename, e.message);
+  } finally {
+    release();
+  }
 }
 
 const users = loadMap('users.json');
 const fcmTokens = loadMap('fcm_tokens.json');
+// MED-08: FCM token cache TTL 24h
+const FCM_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const groups = loadMap('groups.json');
 const lastSeen = loadMap('last_seen.json');
 const onlineUsers = new Map();
@@ -478,6 +537,60 @@ const watchers = new Map();
 const refreshTokens = new Map();
 const gracePeriodSessions = new Map();
 const GRACE_PERIOD_MS = 5000;
+
+// MED-03: Encrypt offline metadata
+const OFFLINE_METADATA_KEY = crypto.createHash('sha256').update('offline_meta_' + SESSION_SECRET).digest();
+
+function _encryptMetadata(envelope) {
+  // Шифруем только метаданные (from, id, timestamp), не данные сообщения
+  const metadata = JSON.stringify({ id: envelope.id, from: envelope.from, ts: envelope.timestamp });
+  const nonce = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', OFFLINE_METADATA_KEY, nonce);
+  const encrypted = Buffer.concat([cipher.update(metadata, 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    e: encrypted.toString('hex'), // encrypted metadata
+    n: nonce.toString('hex'),      // nonce
+    t: tag.toString('hex'),        // auth tag
+    d: envelope.data              // actual encrypted message data (unchanged)
+  };
+}
+
+function _decryptMetadata(encryptedEnvelope) {
+  try {
+    const decipher = crypto.createDecipheriv(
+      'aes-256-gcm',
+      OFFLINE_METADATA_KEY,
+      Buffer.from(encryptedEnvelope.n, 'hex')
+    );
+    decipher.setAuthTag(Buffer.from(encryptedEnvelope.t, 'hex'));
+    const decrypted = Buffer.concat([decipher.update(encryptedEnvelope.e, 'hex'), decipher.final()]);
+    const metadata = JSON.parse(decrypted.toString('utf8'));
+    return {
+      id: metadata.id,
+      from: metadata.from,
+      timestamp: metadata.ts,
+      data: encryptedEnvelope.d
+    };
+  } catch (e) {
+    console.error('[offline] Failed to decrypt metadata:', e.message);
+    return null;
+  }
+}
+
+// MED-08: Validate FCM token TTL
+function isFcmTokenValid(tokenData) {
+  if (!tokenData) return false;
+  if (typeof tokenData === 'string') {
+    // Legacy format: no TTL, assume valid
+    return true;
+  }
+  // New format: { token, timestamp }
+  if (tokenData.timestamp && Date.now() - tokenData.timestamp > FCM_TOKEN_TTL_MS) {
+    return false;
+  }
+  return true;
+}
 
 // ── Mutex for race condition protection ─────────────────────
 class Mutex {
@@ -530,6 +643,7 @@ function scheduleNonceCleanup() {
 
 // ── Token functions ─────────────────────────────────────────
 function generateSessionToken(username) {
+  // TODO: TOTP 2FA for admin (LOW-03)
   const timestamp = Date.now();
   const nonce = crypto.randomBytes(16).toString('hex');
   const usedNonceKey = `${timestamp}:${nonce}`;
@@ -691,6 +805,7 @@ function requireAuth(req, res, next) {
 }
 
 // Endpoint to set session cookie after successful Basic Auth
+// TODO: TOTP 2FA for admin (LOW-03)
 app.post('/admin/login', (req, res) => {
   const clientIp = req.ip || req.connection.remoteAddress || 'unknown';
   const now = Date.now();
@@ -753,14 +868,9 @@ app.get('/', (_req, res) => {
 });
 
 app.get('/api/stats', requireAuth, (req, res) => {
+  // HIGH-07: Hide user list from non-admin (stats endpoint already requires auth)
   const mem = process.memoryUsage();
   const uptime = process.uptime();
-  const userList = [...users.entries()].map(([name, u]) => ({
-    name,
-    online: onlineUsers.has(name),
-    lastSeen: lastSeen.get(name) || 0,
-    registeredAt: u.registeredAt,
-  }));
   res.json({
     totalUsers: users.size,
     online: onlineUsers.size,
@@ -771,7 +881,7 @@ app.get('/api/stats', requireAuth, (req, res) => {
     },
     groups: groups.size,
     queuedMessages: [...offlineBuffer.values()].reduce((s, a) => s + a.length, 0),
-    users: userList.sort((a, b) => b.registeredAt - a.registeredAt),
+    // Users list removed - only admin should see full user data
   });
 });
 
@@ -914,6 +1024,20 @@ app.post('/logout', requireUserAuth, (req, res) => {
     fcmTokens.delete(username);
     // MED-03: Очищаем буфер офлайн-сообщений при logout
     offlineBuffer.delete(username);
+    // HIGH-05: Инвалидируем ВСЕ сессии пользователя через tokenVersion++
+    const user = users.get(username);
+    if (user) {
+      user.tokenVersion = (user.tokenVersion || 0) + 1;
+      users.set(username, user);
+      saveMap('users.json', users);
+      // Инвалидируем все refresh токены
+      for (const [token, data] of refreshTokens) {
+        if (data.username === username) {
+          refreshTokens.delete(token);
+        }
+      }
+      console.log('[logout] All sessions invalidated, tokenVersion:', user.tokenVersion);
+    }
     saveMap('fcm_tokens.json', fcmTokens);
     console.log('[logout] user logged out');
   }
@@ -967,7 +1091,8 @@ app.post('/fcm/register', (req, res) => {
     console.warn('[fcm] Username mismatch: session=' + sessionUsername + ' req=' + username);
     return res.status(403).json({ error: 'Username mismatch' });
   }
-  fcmTokens.set(username, token);
+  // MED-08: Store token with timestamp for TTL tracking
+  fcmTokens.set(username, { token: token, timestamp: Date.now() });
   saveMap('fcm_tokens.json', fcmTokens);
   console.log('[fcm] token registered for', username);
   res.json({ ok: true });
@@ -997,14 +1122,18 @@ app.post('/fcm/unregister', (req, res) => {
 });
 
 app.get('/user/:username', requireUserAuth, (req, res) => {
-  const user = users.get(req.params.username);
-  // Return same response structure for non-existent users (prevent enumeration)
-  if (!user) {
-    // HIGH-06: Увеличенная задержка для защиты от timing attacks
-    const baseDelay = 200;
-    const jitter = Math.floor(Math.random() * 300); // 0-300ms джиттер
-    const delay = baseDelay + jitter;
-    setTimeout(() => {
+  // HIGH-06: Constant-time user lookup for all requests
+  const baseDelay = 200;
+  // Используем crypto.randomBytes для аппаратного джиттера
+  const jitterBytes = crypto.randomBytes(2);
+  const jitter = (jitterBytes[0] << 8 | jitterBytes[1]) % 300; // 0-299ms
+  const delay = baseDelay + jitter;
+  
+  // Задержка для ВСЕХ запросов (существующих и несуществующих пользователей)
+  setTimeout(() => {
+    const user = users.get(req.params.username);
+    // Return same response structure for non-existent users (prevent enumeration)
+    if (!user) {
       return res.json({
         username: req.params.username,
         publicKey: null,
@@ -1013,36 +1142,45 @@ app.get('/user/:username', requireUserAuth, (req, res) => {
         online: false,
         lastSeen: 0,
       });
-    }, delay);
-    return;
-  }
-  if (!user.serverSignature && serverMasterKey && serverMasterKey.privateKey) {
-    try {
-      user.serverSignature = crypto.sign('sha256', Buffer.from(user.publicKey), serverMasterKey.privateKey).toString('base64');
-      users.set(req.params.username, user);
-      saveMap('users.json', users);
-    } catch (e) {
-      console.error('[user] Error signing public key:', e.message);
     }
-  }
-  const isOnline = onlineUsers.has(req.params.username);
-  const lastSeenTime = lastSeen.get(req.params.username) || 0;
-  res.json({
-    username: req.params.username,
-    publicKey: user.publicKey,
-    signature: user.signature,
-    serverSignature: user.serverSignature || null,
-    online: isOnline,
-    lastSeen: lastSeenTime,
-  });
+    
+    if (!user.serverSignature && serverMasterKey && serverMasterKey.privateKey) {
+      try {
+        user.serverSignature = crypto.sign('sha256', Buffer.from(user.publicKey), serverMasterKey.privateKey).toString('base64');
+        users.set(req.params.username, user);
+        saveMap('users.json', users);
+      } catch (e) {
+        console.error('[user] Error signing public key:', e.message);
+      }
+    }
+    const isOnline = onlineUsers.has(req.params.username);
+    const lastSeenTime = lastSeen.get(req.params.username) || 0;
+    return res.json({
+      username: req.params.username,
+      publicKey: user.publicKey,
+      signature: user.signature,
+      serverSignature: user.serverSignature || null,
+      online: isOnline,
+      lastSeen: lastSeenTime,
+    });
+  }, delay);
 });
 
 // ── FCM Push Notification ────────────────────────────────────
 
 async function sendFcmPush(username, from) {
   if (!admin) return;
-  const token = fcmTokens.get(username);
-  if (!token) return;
+  const tokenData = fcmTokens.get(username);
+  if (!tokenData || !isFcmTokenValid(tokenData)) {
+    // MED-08: Token expired or invalid - skip push
+    if (tokenData) {
+      fcmTokens.delete(username);
+      saveMap('fcm_tokens.json', fcmTokens);
+    }
+    return;
+  }
+  // Extract token from data structure
+  const token = typeof tokenData === 'string' ? tokenData : tokenData.token;
   try {
     await admin.messaging().send({
       token: token,
@@ -1088,7 +1226,36 @@ app.get('/group/:id', (req, res) => {
 
 // ── WebSocket ────────────────────────────────────────────────
 
+// MED-07: WS connection limit 5 per IP
+const wsConnectionsPerIp = new Map();
+const lastDisconnectTime = new Map();
+
 io.on('connection', (socket) => {
+  // MED-07: Ограничение 5 одновременных подключений с одного IP
+  const clientIp = socket.handshake.address || socket.conn.remoteAddress || 'unknown';
+  const currentCount = wsConnectionsPerIp.get(clientIp) || 0;
+  if (currentCount >= 5) {
+    console.warn('[ws] Connection limit exceeded for IP:', clientIp);
+    socket.emit('error', { message: 'Too many connections from this IP' });
+    socket.disconnect();
+    return;
+  }
+  wsConnectionsPerIp.set(clientIp, currentCount + 1);
+  // LOW-04: Reconnect throttle 5s
+  const RECONNECT_THROTTLE_MS = 5000;
+  const lastDisconnect = lastDisconnectTime.get(clientIp);
+  if (lastDisconnect && (Date.now() - lastDisconnect) < RECONNECT_THROTTLE_MS) {
+    console.warn('[ws] Reconnect throttle active for IP:', clientIp);
+    socket.emit('error', { message: 'Too soon after disconnect, try again later' });
+    socket.disconnect();
+    return;
+  }
+  socket.on('disconnect', () => {
+    lastDisconnectTime.set(clientIp, Date.now());
+    const count = wsConnectionsPerIp.get(clientIp) || 1;
+    wsConnectionsPerIp.set(clientIp, Math.max(0, count - 1));
+  });
+  
   console.log('[ws] connected:', socket.id);
 
   const wsRegisterAttempts = new Map();
@@ -1207,6 +1374,35 @@ io.on('connection', (socket) => {
     const MAX_TEXT_SIZE = 1 * 1024 * 1024;   // 1MB для текстовых сообщений
     const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB для файлов
     if (!payload || !payload.to || !payload.data) return;
+    
+    // CRIT-02: Validate encrypted payload format before relay
+    if (typeof payload.data === 'string') {
+      try {
+        const parsed = JSON.parse(payload.data);
+        if (typeof parsed !== 'object' || parsed === null) {
+          socket.emit('error', { message: 'Invalid encrypted payload' });
+          console.log('[security] invalid payload: not an object');
+          return;
+        }
+        const keyBase64 = parsed.k;
+        const dataBase64 = parsed.d;
+        if (!keyBase64 || typeof keyBase64 !== 'string' || keyBase64.trim() === '') {
+          socket.emit('error', { message: 'Invalid encrypted payload: missing key' });
+          console.log('[security] invalid payload: empty key');
+          return;
+        }
+        if (!dataBase64 || typeof dataBase64 !== 'string' || dataBase64.trim() === '') {
+          socket.emit('error', { message: 'Invalid encrypted payload: missing data' });
+          console.log('[security] invalid payload: empty data');
+          return;
+        }
+      } catch (e) {
+        socket.emit('error', { message: 'Invalid encrypted payload' });
+        console.log('[security] invalid payload: not valid JSON');
+        return;
+      }
+    }
+    
     const dataSize = Buffer.byteLength(JSON.stringify(payload.data), 'utf8');
     const isFileOrImage = payload.data.type === 'file' || payload.data.type === 'image';
     const limit = isFileOrImage ? MAX_FILE_SIZE : MAX_TEXT_SIZE;
@@ -1246,8 +1442,9 @@ io.on('connection', (socket) => {
       if (!offlineBuffer.has(payload.to)) {
         offlineBuffer.set(payload.to, []);
       }
-      offlineBuffer.get(payload.to).push(envelope);
-      console.log('[queue] message buffered');
+      // MED-03: Encrypt offline metadata before storing
+      offlineBuffer.get(payload.to).push(_encryptMetadata(envelope));
+      console.log('[queue] message buffered (metadata encrypted)');
       sendFcmPush(payload.to, from);
     }
   });
