@@ -91,8 +91,19 @@ try {
     });
 
     console.log('[tls] HTTPS certificates loaded');
+
+    // LOW-02: Prod self-signed warning
+    const certContent = fs.readFileSync(certPath);
+    const certObj = crypto.X509Certificate.from PEM(certContent);
+    const isSelfSigned = certObj.issuer === certObj.subject;
+    if (process.env.NODE_ENV === 'production' && isSelfSigned) {
+      console.warn('[tls] WARNING: Production mode with self-signed certificates detected. This is insecure. Use Let\'s Encrypt or proper CA certificates.');
+    }
   } else {
     console.log('[tls] No certificates found — generating self-signed...');
+    if (process.env.NODE_ENV === 'production') {
+      console.warn('[tls] WARNING: Production mode with self-signed certificates detected. This is insecure. Use Let\'s Encrypt or proper CA certificates.');
+    }
     generateSelfSignedCerts();
     const tlsOptions = {
       key: fs.readFileSync(keyPath),
@@ -156,13 +167,14 @@ app.set('trust proxy', 1);
 app.use(cors(corsOptions));
 app.use(cookieParser());
 app.use(express.json({ limit: '1mb' }));
+app.use(express.raw({ limit: '10mb', type: 'application/octet-stream' }));
 
 // ── Security Headers ───────────────────────────────────────
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-XSS-Protection', '1; mode=block');
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
   res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'");
   res.removeHeader('X-Powered-By');
   next();
@@ -893,20 +905,25 @@ app.post('/logout', requireUserAuth, (req, res) => {
 });
 
 app.post('/refresh', async (req, res) => {
-  const { refreshToken } = req.body;
-  if (!refreshToken) {
-    return res.status(400).json({ error: 'Missing refresh token' });
+  const release = await refreshTokenMutex.acquire();
+  try {
+    const { refreshToken } = req.body;
+    if (!refreshToken) {
+      return res.status(400).json({ error: 'Missing refresh token' });
+    }
+    const data = await validateRefreshToken(refreshToken);
+    if (!data) {
+      return res.status(403).json({ error: 'Invalid or expired refresh token' });
+    }
+    // Token rotation: delete old and generate new with family tracking
+    const newSessionToken = generateSessionToken(data.username);
+    sessions.set(data.username, newSessionToken);
+    const newRefreshToken = await generateRefreshToken(data.username, refreshToken);
+    console.log('[refresh] token refreshed for', data.username);
+    res.json({ ok: true, token: newSessionToken, refreshToken: newRefreshToken });
+  } finally {
+    release();
   }
-  const data = await validateRefreshToken(refreshToken);
-  if (!data) {
-    return res.status(403).json({ error: 'Invalid or expired refresh token' });
-  }
-  // Token rotation: delete old and generate new with family tracking
-  const newSessionToken = generateSessionToken(data.username);
-  sessions.set(data.username, newSessionToken);
-  const newRefreshToken = await generateRefreshToken(data.username, refreshToken);
-  console.log('[refresh] token refreshed for', data.username);
-  res.json({ ok: true, token: newSessionToken, refreshToken: newRefreshToken });
 });
 
 app.post('/fcm/register', (req, res) => {
@@ -961,8 +978,21 @@ app.post('/fcm/unregister', (req, res) => {
 
 app.get('/user/:username', requireUserAuth, (req, res) => {
   const user = users.get(req.params.username);
+  // Return same response structure for non-existent users (prevent enumeration)
   if (!user) {
-    return res.status(404).json({ error: 'Not found' });
+    // Add delay to prevent timing attacks
+    const delay = Math.floor(Math.random() * 50) + 50;
+    setTimeout(() => {
+      return res.json({
+        username: req.params.username,
+        publicKey: null,
+        signature: null,
+        serverSignature: null,
+        online: false,
+        lastSeen: 0,
+      });
+    }, delay);
+    return;
   }
   if (!user.serverSignature && serverMasterKey && serverMasterKey.privateKey) {
     try {
@@ -1042,25 +1072,28 @@ io.on('connection', (socket) => {
   const wsRegisterAttempts = new Map();
   const WS_MAX_REGISTER_PER_MINUTE = 5;
 
-  // Per-event rate limiter for WebSocket events
+  // Per-event rate limiter for WebSocket events with exponential backoff
   const wsRateLimits = new Map();
-  const WS_MAX_MESSAGE_PER_MINUTE = 60;
-  const WS_MAX_TYPING_PER_MINUTE = 120;
-  const WS_MAX_OTHER_PER_MINUTE = 60;
+  const WS_MAX_MESSAGE_PER_MINUTE = 30;
+  const WS_MAX_TYPING_PER_MINUTE = 60;
+  const WS_MAX_OTHER_PER_MINUTE = 30;
   socket.use((packet, next) => {
     const eventName = packet[0];
     const now = Date.now();
     let rateInfo = wsRateLimits.get(socket.id);
     if (!rateInfo || now > rateInfo.resetTime) {
-      rateInfo = { message: 0, typing: 0, other: 0, resetTime: now + 60000 };
+      rateInfo = { message: 0, typing: 0, other: 0, resetTime: now + 60000, backoff: 0 };
     }
     let limit;
     if (eventName === 'message') {
       rateInfo.message++;
       limit = WS_MAX_MESSAGE_PER_MINUTE;
       if (rateInfo.message > limit) {
-        socket.emit('error', { message: 'Too many messages, slow down' });
-        console.log('[ws] message rate limit exceeded for', socket.id);
+        // Exponential backoff: delay response
+        const delay = Math.min(1000 * Math.pow(2, rateInfo.backoff), 10000);
+        rateInfo.backoff++;
+        socket.emit('error', { message: 'Too many messages, slow down', retryAfter: delay });
+        console.log('[ws] message rate limit exceeded for', socket.id, 'backoff:', delay);
         return;
       }
     } else if (eventName === 'typing') {
@@ -1342,8 +1375,13 @@ function _filterLog(msg) {
   msg = msg.replace(/for\s+([a-zA-Z0-9_]+)(?:\s|$|,|\.)/gi, 'for [user]$2');
   msg = msg.replace(/user:\s*([a-zA-Z0-9_]+)/gi, 'user: [user]');
   
-  // Filter IPs: 192.168.x.x, 10.x.x.x, localhost -> [ip]
-  msg = msg.replace(/\b(?:192\.168|10\.|172\.(?:1[6-9]|2\d|3[01]))\.\d+\.\d+\b/g, '[ip]');
+  // Filter IPv4: 192.168.x.x, 10.x.x.x, 172.16-31.x.x
+  msg = msg.replace(/\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b/g, '[ip]');
+  // Filter IPv6
+  msg = msg.replace(/\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b/g, '[ip]');
+  msg = msg.replace(/\b(?:[0-9a-fA-F]{1,4}:){1,7}:/g, '[ip]');
+  msg = msg.replace(/\b::(?:[0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}\b/g, '[ip]');
+  // Filter localhost variants
   msg = msg.replace(/\b(?:localhost|127\.0\.0\.1)\b/g, '[ip]');
   
   // Filter tokens: long hex strings are likely tokens

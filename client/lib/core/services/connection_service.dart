@@ -164,6 +164,19 @@ http.Client _createHttpClient() {
     // No PIN: use TOFU fallback (or debug mode rules)
     final isProduction = const bool.fromEnvironment('dart.vm.product', defaultValue: false);
     
+    // FATAL: Certificate pin required in production
+    if (isProduction) {
+      throw StateError(
+        'FATAL: Certificate pin required. Set --dart-define=SHADED_PIN_SHA256=<sha256-fingerprint>\n\n'
+        'To get the fingerprint from your server:\n'
+        '  openssl s_client -connect your-server.com:443 -servername your-server.com '
+        '| openssl x509 -pubkey -noout '
+        '| openssl pkey -pubin -outform der '
+        '| openssl dgst -sha256 -binary '
+        '| openssl base64',
+      );
+    }
+    
     assert(() {
       debugPrint(
         '⚠️ SECURITY WARNING: Certificate pinning disabled.\n'
@@ -180,43 +193,17 @@ http.Client _createHttpClient() {
       return true;
     }());
 
-    if (isProduction) {
-      // Production without PIN: TOFU enabled
-      client.badCertificateCallback = (X509Certificate cert, String host, int port) async {
-        final fingerprint = sha256.convert(cert.der).toString();
-        final storedFingerprint = await _getStoredCertificateFingerprint();
-        
-        if (storedFingerprint == null) {
-          // First connection: trust this certificate
-          await _storeCertificateFingerprint(fingerprint);
-          debugPrint('[ConnectionService] TOFU: First certificate trusted for $host');
-          debugPrint('[ConnectionService] Fingerprint: $fingerprint');
-          return true;
-        } else if (storedFingerprint == fingerprint) {
-          // Certificate matches stored
-          return true;
-        } else {
-          // Certificate changed: warn but allow (TOFU deviation detected)
-          debugPrint('[ConnectionService] WARNING: Certificate changed for $host!');
-          debugPrint('[ConnectionService] Stored: $storedFingerprint');
-          debugPrint('[ConnectionService] Current: $fingerprint');
-          // In production, you might want to reject. Here we warn but allow.
-          return true;
-        }
-      };
-    } else {
-      // Debug mode: allow self-signed certs for localhost only
-      client.badCertificateCallback = (X509Certificate cert, String host, int port) {
-        final isLocalhost = host == 'localhost' || host == '127.0.0.1' || host.startsWith('192.168.') || host.startsWith('10.0.');
-        if (isLocalhost) {
-          debugPrint('[ConnectionService] Allowing self-signed cert for: $host (debug mode)');
-          return true;
-        }
-        debugPrint('[ConnectionService] REJECTED: Invalid cert for non-localhost: $host (debug mode)');
-        debugPrint('[ConnectionService] For non-localhost, use a valid CA-signed certificate or set PIN');
-        return false;
-      };
-    }
+    // Debug mode: allow self-signed certs for localhost only
+    client.badCertificateCallback = (X509Certificate cert, String host, int port) {
+      final isLocalhost = host == 'localhost' || host == '127.0.0.1' || host.startsWith('192.168.') || host.startsWith('10.0.');
+      if (isLocalhost) {
+        debugPrint('[ConnectionService] Allowing self-signed cert for: $host (debug mode)');
+        return true;
+      }
+      debugPrint('[ConnectionService] REJECTED: Invalid cert for non-localhost: $host (debug mode)');
+      debugPrint('[ConnectionService] For non-localhost, use a valid CA-signed certificate or set PIN');
+      return false;
+    };
   }
 
   return http_io.IOClient(client);

@@ -128,27 +128,10 @@ class DatabaseService {
 
   // ── Key management (mobile only) ────────────────────────────
 
-  // CRIT-01: Verified — using cryptographically secure PRNG
-  static final pc.FortunaRandom _dbRandom = pc.FortunaRandom();
-  static bool _dbRandomSeeded = false;
-
-  static void _ensureDbRandomSeeded() {
-    if (_dbRandomSeeded) return;
-    // Use crypto-secure system RNG for seeding Fortuna
-    final seed = Uint8List(32);
-    final mathRandom = math.Random.secure();
-    for (int i = 0; i < 32; i++) {
-      seed[i] = mathRandom.nextInt(256);
-    }
-    _dbRandom.seed(pc.KeyParameter(seed));
-    _dbRandomSeeded = true;
-  }
-
   /// Generates or retrieves the SQLCipher database encryption key.
-  ///
-  /// SECURITY: Uses cryptographically secure random number generation
-  /// via PointyCastle Fortuna PRNG (same as crypto_service.dart).
   Future<String> _getOrCreateKey() async {
+    const deviceIdKey = 'shade_device_id';
+    
     try {
       final existing = await _secureStorage.read(key: _dbKeyStorageKey);
       if (existing != null && existing.isNotEmpty) return existing;
@@ -156,13 +139,35 @@ class DatabaseService {
       debugPrint('[DatabaseService] secure storage read failed: $e');
     }
 
-    // [FIX] CRIT #1: Using Fortuna PRNG for DB key generation (audit requirement)
-    _ensureDbRandomSeeded();
-    final bytes = _dbRandom.nextBytes(32);
-    final key = base64Url.encode(bytes);
+    // CRIT-01: Direct Random.secure() instead of Fortuna wrapper
+    final random = math.Random.secure();
+    final masterKey = Uint8List(32);
+    for (int i = 0; i < 32; i++) {
+      masterKey[i] = random.nextInt(256);
+    }
+
+    // Get or create device_id for PBKDF2 salt
+    String? deviceId;
+    try {
+      deviceId = await _secureStorage.read(key: deviceIdKey);
+      if (deviceId == null || deviceId.isEmpty) {
+        deviceId = base64Url.encode(Uint8List(16).map((_) => random.nextInt(256)).toList());
+        await _secureStorage.write(key: deviceIdKey, value: deviceId);
+      }
+    } catch (e) {
+      deviceId = base64Url.encode(Uint8List(16).map((_) => random.nextInt(256)).toList());
+    }
+
+    // MED-05: PBKDF2 with device_id salt
+    final salt = utf8.encode(deviceId);
+    const iterations = 100000;
+    final pbkdf2 = pc.PBKDF2KeyDerivator(pc.HMac(pc.SHA256Digest(), 64));
+    pbkdf2.init(pc.Pbkdf2Parameters(Uint8List.fromList(salt), iterations, 32));
+    final derivedKey = pbkdf2.process(masterKey);
+    final key = base64Url.encode(derivedKey);
 
     await _secureStorage.write(key: _dbKeyStorageKey, value: key);
-    debugPrint('[DatabaseService] Generated new DB encryption key (Fortuna PRNG)');
+    debugPrint('[DatabaseService] Generated new DB encryption key (PBKDF2 with device_id salt)');
     return key;
   }
 
