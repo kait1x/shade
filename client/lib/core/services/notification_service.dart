@@ -119,12 +119,12 @@ class NotificationService {
   }
 
   /// Register FCM token with Shade server.
-  /// [FIX] HIGH #5: Encrypt FCM token with server's public key before sending.
+  /// HIGH-05: Encrypt FCM token with server's public key before sending.
   static Future<void> registerToken(String serverUrl, String username, [String? sessionToken]) async {
     if (_fcmToken == null) return;
 
     try {
-      // [FIX] Get server public key to encrypt FCM token
+      // HIGH-05: Get server public key to encrypt FCM token
       String? serverPubKey;
       try {
         final response = await http.get(
@@ -157,6 +157,7 @@ class NotificationService {
         return;
       }
 
+      // HIGH-05: Sign FCM request with session token
       final headers = <String, String>{'Content-Type': 'application/json'};
       if (sessionToken != null && sessionToken.isNotEmpty) {
         headers['Authorization'] = 'Bearer $sessionToken';

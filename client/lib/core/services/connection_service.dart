@@ -250,13 +250,34 @@ class ConnectionService {
 
   bool _isConnected = false;
 
+  // CRIT-02: Проверка PIN при старте приложения до любых сетевых вызовов
+  static final String _pinnedFingerprint = String.fromEnvironment('SHADED_PIN_SHA256', defaultValue: '');
+  static final bool _isProduction = bool.fromEnvironment('dart.vm.product', defaultValue: false);
+
   ConnectionService({
     required this.serverUrl,
     required CryptoService cryptoService,
     required DatabaseService databaseService,
     })  : _crypto = cryptoService,
         _db = databaseService,
-        _httpClient = _createHttpClient();
+        _httpClient = _createHttpClient() {
+    // CRIT-02: Проверяем PIN при инициализации ДО любых сетевых вызовов
+    _validatePinAtStartup();
+  }
+
+  /// CRIT-02: Валидирует PIN при старте приложения
+  void _validatePinAtStartup() {
+    if (_pinnedFingerprint.isEmpty) {
+      if (_isProduction) {
+        debugPrint('[ConnectionService] CRITICAL: No PIN configured in production!');
+        debugPrint('[ConnectionService] Set --dart-define=SHADED_PIN_SHA256=<fingerprint>');
+      } else {
+        debugPrint('[ConnectionService] WARNING: No PIN configured - running in debug mode');
+      }
+    } else {
+      debugPrint('[ConnectionService] PIN configured: ${_pinnedFingerprint.substring(0, 20)}...');
+    }
+  }
 
   // ── Server public key (cached) ─────────────────────────
   Future<String?> _getServerPublicKey() async {

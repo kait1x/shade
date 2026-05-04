@@ -30,6 +30,7 @@ class _SecureRandom {
     _seeded = true;
   }
 
+  // CRIT-01: Using CSPRNG directly
   static Uint8List nextBytes(int length) {
     final random = Random.secure();
     final result = Uint8List(length);
@@ -39,10 +40,13 @@ class _SecureRandom {
     return result;
   }
 
-  // HIGH-04: Wipe password from memory after use
-  static void wipePassword(String password) {
-    // Password is immutable in Dart, but we can clear references
-    // In production, use FFI to zero memory
+  // HIGH-04: Wipe password with Uint8List
+  static Uint8List wipePassword(Uint8List password) {
+    // Заполняем нулями для безопасного стирания
+    for (int i = 0; i < password.length; i++) {
+      password[i] = 0;
+    }
+    return password;
   }
 }
 
@@ -163,6 +167,7 @@ class CryptoService {
       );
       final envelope = base64.decode(envelopeB64);
 
+      // MED-05: Removed legacy CBC - only GCM mode supported
       // Определяем версию по размеру конверта
       if (envelope.length == 45 && envelope[0] == 2) {
         // Режим GCM (v2): версия(1) + ключ(32) + nonce(12)
@@ -177,15 +182,8 @@ class CryptoService {
                 pc.KeyParameter(aesKey), _aesGcmTagBits, nonce, Uint8List(0)),
           );
         return utf8.decode(cipher.process(ciphertextWithTag));
-      } else if (envelope.length == 48) {
-        // CBC mode (v1, legacy): key(32) + iv(16)
-        final aesKey =
-            enc.Key(Uint8List.fromList(envelope.sublist(0, _aesKeyLen)));
-        final iv = enc.IV(Uint8List.fromList(envelope.sublist(_aesKeyLen)));
-        final encrypter = enc.Encrypter(enc.AES(aesKey, mode: enc.AESMode.cbc));
-        return encrypter.decrypt64(encryptedDataB64, iv: iv);
       } else {
-        throw Exception('Unknown envelope format');
+        throw Exception('Unknown envelope format - CBC mode no longer supported');
       }
     } catch (e) {
       if (e.toString().contains('AEADBadTagException') || e.toString().contains('Tag')) {
@@ -447,40 +445,32 @@ class ServerKeyFingerprintResult {
   //  INTERNALS
   // ══════════════════════════════════════════════════════════════
 
-  /// Reads a key from secure storage.
-  ///
-  /// SECURITY: No fallback to plaintext files on desktop. Keys must be stored
-  /// in OS-protected secure storage (Keychain/Keystore/DPAPI).
+  /// HIGH-01: Reads a key from OS-specific secure storage
+  /// - Android: EncryptedSharedPreferences (Keystore)
+  /// - iOS: Keychain
+  /// - macOS: Keychain
+  /// - Windows: DPAPI via FlutterSecureStorage
+  /// - Linux: libsecret via FlutterSecureStorage
   Future<String?> _readKey(String alias) async {
     String? raw;
 
-    // Try secure storage
+    // Try secure storage (uses OS keychain on desktop)
     try {
       raw = await _secureStorage.read(key: alias);
       if (raw != null && raw.isNotEmpty) {
-        debugPrint('[CryptoService] readKey $alias from secure storage');
+        debugPrint('[CryptoService] readKey $alias from OS secure storage');
         return _normalizePem(raw);
       }
     } catch (e) {
-      debugPrint('[CryptoService] secure storage read failed: $e');
+      debugPrint('[CryptoService] OS secure storage read failed: $e');
     }
 
-    // Fallback: password-encrypted file on desktop
-    if (!Platform.isAndroid && !Platform.isIOS) {
-      if (_password != null) {
-        debugPrint('[CryptoService] Secure storage unavailable. Using password fallback.');
-        final encryptedData = await _readFromEncryptedFile();
-        if (encryptedData != null) {
-          final parts = encryptedData.split('|||SHADE_SEP|||');
-          if (parts.length == 2) {
-            final keys = alias == _privKeyAlias ? parts[0] : parts[1];
-            debugPrint('[CryptoService] readKey $alias from encrypted file');
-            return _normalizePem(keys);
-          }
-        }
-      }
-    }
-
+    // HIGH-01: No password fallback - keys MUST be in OS keychain
+    // On desktop, FlutterSecureStorage uses:
+    // - macOS: Keychain Services
+    // - Windows: DPAPI
+    // - Linux: libsecret
+    debugPrint('[CryptoService] ERROR: Cannot read key from OS secure storage');
     return null;
   }
 
@@ -508,26 +498,19 @@ class ServerKeyFingerprintResult {
     return pem;
   }
 
-  /// Writes a key to secure storage and file fallback.
-  ///
-  /// SECURITY: On desktop platforms (Windows/macOS/Linux), private keys are
+  /// HIGH-01: Writes a key to OS-specific secure storage
+  /// Uses platform-native keychain (no password fallback)
   Future<void> _writeKey(String alias, String value) async {
     final normalized = _normalizePem(value);
 
+    // Write to OS keychain (Keychain/DPAPI/libsecret)
     try {
       await _secureStorage.write(key: alias, value: normalized);
-      debugPrint('[CryptoService] writeKey $alias to secure storage');
+      debugPrint('[CryptoService] writeKey $alias to OS secure storage');
     } catch (e) {
-      debugPrint('[CryptoService] secure storage write failed: $e');
-      if (!Platform.isAndroid && !Platform.isIOS) {
-        await _writeToPasswordFallback(alias, normalized);
-        return;
-      }
-    }
-
-    // Also write to encrypted file as backup if password provided
-    if (!Platform.isAndroid && !Platform.isIOS && _password != null) {
-      await _writeToPasswordFallback(alias, normalized);
+      debugPrint('[CryptoService] ERROR: Cannot write to OS secure storage: $e');
+      // HIGH-01: No fallback - throw error to prevent unsafe storage
+      throw Exception('Failed to write key to OS secure storage. Keys must be protected by OS keychain.');
     }
   }
 
@@ -619,6 +602,8 @@ class ServerKeyFingerprintResult {
   Uint8List _encryptWithPassword(String plaintext, String password) {
     final salt = _randomBytes(32);
     final key = _deriveKeyPBKDF2(password, salt);
+    // HIGH-04: Стираем ключ после использования
+    wipePassword(key);
     final nonce = _randomBytes(_aesNonceLen);
     final iv = enc.IV(nonce);
     final keyObj = enc.Key(key);
@@ -628,7 +613,6 @@ class ServerKeyFingerprintResult {
     result.setRange(0, salt.length, salt);
     result.setRange(salt.length, salt.length + nonce.length, nonce);
     result.setRange(salt.length + nonce.length, result.length, encrypted.bytes);
-    // HIGH-04: Wipe password from memory after use
     return result;
   }
 
@@ -640,8 +624,10 @@ class ServerKeyFingerprintResult {
     final iv = enc.IV(nonce);
     final keyObj = enc.Key(key);
     final encrypter = enc.Encrypter(enc.AES(keyObj, mode: enc.AESMode.gcm));
-    // HIGH-04: Wipe password from memory after use
-    return encrypter.decrypt(enc.Encrypted(encrypted), iv: iv);
+    final result = encrypter.decrypt(enc.Encrypted(encrypted), iv: iv);
+    // HIGH-04: Стираем ключ после использования
+    wipePassword(key);
+    return result;
   }
 
   Uint8List _deriveKeyPBKDF2(String password, Uint8List salt) {

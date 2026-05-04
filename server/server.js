@@ -175,7 +175,7 @@ app.use((req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'");
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss://*");
   res.removeHeader('X-Powered-By');
   next();
 });
@@ -195,8 +195,25 @@ const authLimiter = rateLimit({
   message: { error: 'Too many authentication attempts' },
 });
 
+// HIGH-02: Лимиты регистрации - 3 в минуту, 10 в час
+const registerLimiterMinute = rateLimit({
+  windowMs: 60 * 1000,
+  max: 3,
+  message: { error: 'Too many registration attempts, please wait' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const registerLimiterHour = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: { error: 'Registration limit exceeded, try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 app.use('/api/', limiter);
-app.use('/register', limiter);
+app.use('/register', registerLimiterMinute, registerLimiterHour);
 app.use('/dashboard', requireAuth, authLimiter);
 
 // ── In-memory stores ─────────────────────────────────────────
@@ -490,6 +507,7 @@ class Mutex {
 
 const dbMutex = new Mutex();
 const refreshTokenMutex = new Mutex();
+const sessionNonceMutex = new Mutex();
 
 // ── Session token nonce tracking (prevent replay attacks) ──────────────────
 const usedSessionNonces = new Set();
@@ -562,7 +580,6 @@ function validateSessionToken(username, token) {
     console.log('[session] expired for', username);
     return false;
   }
-  // Check nonce not already used
   const nonceKey = `${timestamp}:${nonce}`;
   if (usedSessionNonces.has(nonceKey)) {
     console.log('[session] nonce already used for', username, '- possible replay attack');
@@ -599,7 +616,7 @@ async function validateRefreshToken(token) {
       console.log('[refresh] token invalidated due to tokenVersion mismatch for', data.username);
       return null;
     }
-    // Check family reuse (if this family was already used, invalidate entire family)
+    // HIGH-07: Check family reuse (if this family was already used, invalidate entire family)
     if (data.familyId && usedRefreshNonces.has(data.familyId)) {
       // Family reuse detected - invalidate all tokens for this user
       for (const [t, d] of refreshTokens) {
@@ -608,7 +625,8 @@ async function validateRefreshToken(token) {
         }
       }
       console.log('[refresh] Family reuse detected - invalidated all tokens for', data.username);
-      return null;
+      // Возвращаем объект с кодом ошибки вместо null для обработки на клиенте
+      return { error: 'TOKEN_FAMILY_REUSE_DETECTED', message: 'Security violation: token reuse detected' };
     }
     return { username: data.username, tokenVersion: data.tokenVersion };
   } finally {
@@ -651,7 +669,7 @@ function _verifyAdminToken(token, signature) {
 }
 
 function requireAuth(req, res, next) {
-  // Check for session cookie first
+  // HIGH-08: Только cookie-сессии, без Basic Auth fallback
   const sessionCookie = req.cookies?.[ADMIN_COOKIE_NAME];
   if (sessionCookie) {
     const parts = sessionCookie.split('.');
@@ -668,12 +686,8 @@ function requireAuth(req, res, next) {
     adminSessions.delete(sessionCookie);
   }
   
-  // Fall back to Basic Auth
-  const auth = req.headers.authorization;
-  if (!auth || auth !== 'Basic ' + Buffer.from('admin:' + DASHBOARD_PASS).toString('base64')) {
-    return res.status(401).send('Unauthorized');
-  }
-  next();
+  // Только cookie-аутентификация, без Basic Auth
+  return res.status(401).send('Unauthorized');
 }
 
 // Endpoint to set session cookie after successful Basic Auth
@@ -898,6 +912,8 @@ app.post('/logout', requireUserAuth, (req, res) => {
   if (username) {
     sessions.delete(username);
     fcmTokens.delete(username);
+    // MED-03: Очищаем буфер офлайн-сообщений при logout
+    offlineBuffer.delete(username);
     saveMap('fcm_tokens.json', fcmTokens);
     console.log('[logout] user logged out');
   }
@@ -914,6 +930,10 @@ app.post('/refresh', async (req, res) => {
     const data = await validateRefreshToken(refreshToken);
     if (!data) {
       return res.status(403).json({ error: 'Invalid or expired refresh token' });
+    }
+    // HIGH-07: Handle family reuse detection
+    if (data.error && data.error === 'TOKEN_FAMILY_REUSE_DETECTED') {
+      return res.status(403).json({ error: data.message, code: 'TOKEN_FAMILY_REUSE_DETECTED' });
     }
     // Token rotation: delete old and generate new with family tracking
     const newSessionToken = generateSessionToken(data.username);
@@ -980,8 +1000,10 @@ app.get('/user/:username', requireUserAuth, (req, res) => {
   const user = users.get(req.params.username);
   // Return same response structure for non-existent users (prevent enumeration)
   if (!user) {
-    // Add delay to prevent timing attacks
-    const delay = Math.floor(Math.random() * 50) + 50;
+    // HIGH-06: Увеличенная задержка для защиты от timing attacks
+    const baseDelay = 200;
+    const jitter = Math.floor(Math.random() * 300); // 0-300ms джиттер
+    const delay = baseDelay + jitter;
     setTimeout(() => {
       return res.json({
         username: req.params.username,
@@ -1119,6 +1141,7 @@ io.on('connection', (socket) => {
 
   socket.on('register', (payload) => {
     if (!payload || typeof payload.username !== 'string' || !payload.username) return;
+    // HIGH-02: Rate limiting для register - 3 попытки в минуту
     const now = Date.now();
     let regInfo = wsRegisterAttempts.get(socket.id);
     if (!regInfo || now > regInfo.resetTime) {
@@ -1126,8 +1149,8 @@ io.on('connection', (socket) => {
     }
     regInfo.count++;
     wsRegisterAttempts.set(socket.id, regInfo);
-    if (regInfo.count > WS_MAX_REGISTER_PER_MINUTE) {
-      socket.emit('authError', { error: 'Too many register attempts' });
+    if (regInfo.count > 3) {
+      socket.emit('authError', { error: 'Too many register attempts (max 3/min)' });
       console.warn('[ws] register rate limit exceeded for', socket.id);
       return;
     }
@@ -1180,12 +1203,16 @@ io.on('connection', (socket) => {
   });
 
   socket.on('message', (payload) => {
-    const MAX_FILE_SIZE = 10 * 1024 * 1024;
+    // MED-04: Раздельные лимиты для текста и файлов
+    const MAX_TEXT_SIZE = 1 * 1024 * 1024;   // 1MB для текстовых сообщений
+    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB для файлов
     if (!payload || !payload.to || !payload.data) return;
     const dataSize = Buffer.byteLength(JSON.stringify(payload.data), 'utf8');
-    if (dataSize > MAX_FILE_SIZE) {
-      socket.emit('error', { message: 'Message too large' });
-      console.log('[security] oversized message rejected');
+    const isFileOrImage = payload.data.type === 'file' || payload.data.type === 'image';
+    const limit = isFileOrImage ? MAX_FILE_SIZE : MAX_TEXT_SIZE;
+    if (dataSize > limit) {
+      socket.emit('error', { message: isFileOrImage ? 'File too large (max 10MB)' : 'Message too large (max 1MB)' });
+      console.log('[security] oversized message rejected, type:', isFileOrImage ? 'file' : 'text');
       return;
     }
     if (payload.data.type === 'file' || payload.data.type === 'image') {
@@ -1368,7 +1395,7 @@ io.on('connection', (socket) => {
 const recentLogs = [];
 const MAX_LOGS = 100;
 
-// Log filter for sensitive data
+// HIGH-03: Log filter для чувствительных данных
 function _filterLog(msg) {
   // Filter usernames: word:word → [user]:[user]
   msg = msg.replace(/username[=:]?\s*([a-zA-Z0-9_]+)/gi, 'username=[user]');
@@ -1390,6 +1417,12 @@ function _filterLog(msg) {
   
   // Filter session tokens (format: user:timestamp:nonce:signature)
   msg = msg.replace(/[a-zA-Z0-9_]+:\d+:[a-f0-9]+:[a-f0-9]+/g, '[token]');
+  
+  // HIGH-03: Фильтрация base64-строк (типичные ключи и токены)
+  msg = msg.replace(/\b[A-Za-z0-9+/]{40,}={0,2}\b/g, '[base64]');
+  
+  // HIGH-03: Фильтрация UUID
+  msg = msg.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '[uuid]');
   
   return msg;
 }
@@ -1486,9 +1519,15 @@ app.get('/logs', requireAuth, (_req, res) => {
   res.json(recentLogs.slice(-50));
 });
 
-// ── Error Handler ──────────────────────────────────────────
+// MED-07: Error Handler с санитизацией сообщений
 app.use((err, req, res, next) => {
-  console.error('[ERROR]', err.message);
+  // Санитизация сообщения об ошибке - убираем потенциально опасные символы
+  const sanitizeMessage = (msg) => {
+    if (!msg) return 'Unknown error';
+    return msg.replace(/[<>'"&;]/g, '').substring(0, 200);
+  };
+  
+  console.error('[ERROR]', sanitizeMessage(err.message));
   if (process.env.NODE_ENV === 'production') {
     res.status(err.status || 500).json({
       error: 'Internal server error',
@@ -1496,7 +1535,7 @@ app.use((err, req, res, next) => {
     });
   } else {
     res.status(err.status || 500).json({
-      error: err.message,
+      error: sanitizeMessage(err.message),
       stack: err.stack
     });
   }
