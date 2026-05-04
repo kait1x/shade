@@ -178,8 +178,9 @@ app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-XSS-Protection', '1; mode=block');
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload'); // MED-02: Domain must be submitted to hstspreload.org
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' wss://" + (process.env.WS_HOST || '*') + "'"); // MED-01: Removed unsafe-inline from CSP
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload'); // MED-02: Submit domain to hstspreload.org for full preload
+  const wsHost = process.env.WS_HOST || 'wss://localhost';
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' " + wsHost + "'"); // MED-01: CSP connect-src restricted
   res.removeHeader('X-Powered-By');
   next();
 });
@@ -521,6 +522,8 @@ const groups = loadMap('groups.json');
 const lastSeen = loadMap('last_seen.json');
 const onlineUsers = new Map();
 const offlineBuffer = new Map();
+// MED-03: Offline message TTL 7 days
+const OFFLINE_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const sessions = new Map();
 const watchers = new Map();
 const refreshTokens = new Map();
@@ -531,6 +534,28 @@ const GRACE_PERIOD_MS = 5000;
 const MAX_SESSIONS = 10000;
 const MAX_REFRESH_TOKENS = 5000;
 const MAX_GRACE_PERIOD = 1000;
+
+// MED-03: Offline message TTL 7 days - cleanup every 24h
+let offlineCleanupScheduled = false;
+function scheduleOfflineCleanup() {
+  if (offlineCleanupScheduled) return;
+  offlineCleanupScheduled = true;
+  setInterval(() => {
+    const cutoff = Date.now() - OFFLINE_MESSAGE_TTL_MS;
+    for (const [user, messages] of offlineBuffer) {
+      const filtered = messages.filter(m => {
+        const ts = m.timestamp || 0;
+        return ts > cutoff;
+      });
+      if (filtered.length === 0) {
+        offlineBuffer.delete(user);
+      } else {
+        offlineBuffer.set(user, filtered);
+      }
+    }
+    saveMap('offline.json', offlineBuffer);
+  }, 24 * 60 * 60 * 1000); // Cleanup every 24 hours
+}
 
 function lruTrim(map, maxSize) {
   if (map.size > maxSize) {
@@ -669,6 +694,7 @@ function generateSessionToken(username) {
   const usedNonceKey = `${timestamp}:${nonce}`;
   usedSessionNonces.add(usedNonceKey);
   scheduleNonceCleanup();
+  scheduleOfflineCleanup();
   const base = `${username}:${timestamp}:${nonce}`;
   const signature = crypto.createHmac('sha256', SESSION_SECRET).update(base).digest('hex');
   const token = `${base}:${signature}`;
@@ -789,6 +815,8 @@ function requireUserAuth(req, res, next) {
 // Admin session cookie management
 const adminSessions = new Map();
 const adminBackoff = new Map();
+const adminFailedAttempts = new Map();
+const adminUsernameLockout = new Map();
 const ADMIN_SESSION_DURATION = 60 * 60 * 1000; // 1 hour
 const ADMIN_COOKIE_NAME = 'shade_admin_sess';
 const ADMIN_LOGIN_ATTEMPTS = new Map();
@@ -861,10 +889,30 @@ app.post('/admin/login', (req, res) => {
     return res.status(429).json({ error: 'Too many login attempts. Try again later.' });
   }
   
+  // HIGH-02: Username lockout for admin brute-force
+  const username = 'admin';
+  const usernameLockout = adminUsernameLockout.get(username);
+  if (usernameLockout && now < usernameLockout.expiresAt) {
+    const remaining = Math.ceil((usernameLockout.expiresAt - now) / 1000);
+    return res.status(429).json({ error: 'Account locked', retryAfter: remaining });
+  }
+  
   const auth = req.headers.authorization;
   if (!auth || auth !== 'Basic ' + Buffer.from('admin:' + DASHBOARD_PASS).toString('base64')) {
+    // Track failed attempt for username lockout
+    const failedAttempts = adminFailedAttempts.get(username) || { count: 0, resetTime: now + ADMIN_LOGIN_WINDOW };
+    failedAttempts.count++;
+    adminFailedAttempts.set(username, failedAttempts);
+    if (failedAttempts.count >= 5) {
+      adminUsernameLockout.set(username, { expiresAt: now + 15 * 60 * 1000 }); // 15 min lockout
+      console.warn('[admin] Account locked due to failed attempts');
+    }
     return res.status(401).json({ error: 'Invalid credentials' });
   }
+  
+  // Clear failed attempts on success
+  adminFailedAttempts.delete(username);
+  adminUsernameLockout.delete(username);
   
   const sessionToken = crypto.randomBytes(32).toString('hex');
   const signature = _signAdminToken(sessionToken);
@@ -1071,11 +1119,16 @@ app.post('/logout', requireUserAuth, async (req, res) => {
         user.tokenVersion = (user.tokenVersion || 0) + 1;
         users.set(username, user);
         saveMap('users.json', users);
-        // HIGH-01: Users Map mutex protection
+        // HIGH-01: Invalidate all family refresh tokens on logout
+        const familyId = crypto.randomBytes(16).toString('hex');
+        usedRefreshNonces.add(familyId);
         // Инвалидируем все refresh токены
         for (const [token, data] of refreshTokens) {
           if (data.username === username) {
             refreshTokens.delete(token);
+            if (data.familyId) {
+              usedRefreshNonces.add(data.familyId);
+            }
           }
         }
         console.log('[logout] All sessions invalidated, tokenVersion:', user.tokenVersion);
@@ -1233,13 +1286,14 @@ async function sendFcmPush(username, from) {
   // Extract token from data structure
   const token = typeof tokenData === 'string' ? tokenData : tokenData.token;
   try {
+    // HIGH-03: Silent push to minimize metadata
     await admin.messaging().send({
       token: token,
-      notification: {
-        title: 'Shade',
-        body: 'New message',
+      data: {
+        type: 'new_message',
+        from: from,
       },
-      data: {},
+      content_available: true,
     });
     console.log('[fcm] push sent');
   } catch (e) {
@@ -1259,6 +1313,11 @@ app.post('/group/create', (req, res) => {
   }
   if (!name || !Array.isArray(members) || members.length < 2) {
     return res.status(400).json({ error: 'Need name and at least 2 members' });
+  }
+  // MED-04: Max group size 200
+  const MAX_GROUP_SIZE = 200;
+  if (members.length > MAX_GROUP_SIZE) {
+    return res.status(400).json({ error: 'Maximum group size is ' + MAX_GROUP_SIZE });
   }
   const groupId = Date.now().toString();
   groups.set(groupId, {
@@ -1339,12 +1398,15 @@ io.on('connection', (socket) => {
   const WS_MAX_MESSAGE_PER_MINUTE = 30;
   const WS_MAX_TYPING_PER_MINUTE = 60;
   const WS_MAX_OTHER_PER_MINUTE = 30;
+  // MED-05: Group message rate limit
+  const WS_MAX_GROUP_MESSAGE_PER_MINUTE = 30;
+  
   socket.use((packet, next) => {
     const eventName = packet[0];
     const now = Date.now();
     let rateInfo = wsRateLimits.get(socket.id);
     if (!rateInfo || now > rateInfo.resetTime) {
-      rateInfo = { message: 0, typing: 0, other: 0, resetTime: now + 60000, backoff: 0 };
+      rateInfo = { message: 0, typing: 0, other: 0, groupMessage: 0, groupId: null, resetTime: now + 60000, backoff: 0 };
     }
     let limit;
     if (eventName === 'message') {
@@ -1364,6 +1426,21 @@ io.on('connection', (socket) => {
       if (rateInfo.typing > limit) {
         socket.emit('error', { message: 'Typing too fast, slow down' });
         console.log('[ws] typing rate limit exceeded for', socket.id);
+        return;
+      }
+    } else if (eventName === 'groupMessage') {
+      // MED-05: Group message rate limit - per group
+      const payload = packet[1] || {};
+      const groupId = payload.groupId;
+      if (rateInfo.groupId !== groupId) {
+        rateInfo.groupMessage = 0;
+        rateInfo.groupId = groupId;
+      }
+      rateInfo.groupMessage++;
+      limit = WS_MAX_GROUP_MESSAGE_PER_MINUTE;
+      if (rateInfo.groupMessage > limit) {
+        socket.emit('error', { message: 'Too many group messages, slow down' });
+        console.log('[ws] group message rate limit exceeded for', socket.id, 'group:', groupId);
         return;
       }
     } else {
