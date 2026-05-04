@@ -94,7 +94,7 @@ try {
 
     // MED-02: Self-signed cert warning
     const certContent = fs.readFileSync(certPath);
-    const certObj = crypto.X509Certificate.from PEM(certContent);
+    const certObj = crypto.X509Certificate.fromPEM(certContent);
     const isSelfSigned = certObj.issuer === certObj.subject;
     if (process.env.NODE_ENV === 'production' && isSelfSigned) {
       // LOW-02: Block production with self-signed cert
@@ -178,8 +178,8 @@ app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-XSS-Protection', '1; mode=block');
-  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload'); // MED-01: HSTS preload confirmed
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' wss://" + (process.env.WS_HOST || '*') + "'"); // MED-06: CSP connect-src restricted
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload'); // MED-02: Domain must be submitted to hstspreload.org
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' wss://" + (process.env.WS_HOST || '*') + "'"); // MED-01: Removed unsafe-inline from CSP
   res.removeHeader('X-Powered-By');
   next();
 });
@@ -441,17 +441,6 @@ function _verifyHmac(filename, data, secret) {
   }
   return true;
 }
-    'aes-256-gcm',
-    key,
-    Buffer.from(nonce, 'hex'),
-  );
-  decipher.setAuthTag(Buffer.from(tag, 'hex'));
-  const decrypted = Buffer.concat([
-    decipher.update(Buffer.from(data, 'hex')),
-    decipher.final(),
-  ]);
-  return JSON.parse(decrypted.toString('utf8'));
-}
 
 function loadMap(filename) {
   const file = path.join(DATA_DIR, filename);
@@ -526,8 +515,8 @@ async function saveMap(filename, map) {
 
 const users = loadMap('users.json');
 const fcmTokens = loadMap('fcm_tokens.json');
-// MED-08: FCM token cache TTL 24h
-const FCM_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+// MED-03: FCM TTL 7 days
+const FCM_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const groups = loadMap('groups.json');
 const lastSeen = loadMap('last_seen.json');
 const onlineUsers = new Map();
@@ -538,12 +527,30 @@ const refreshTokens = new Map();
 const gracePeriodSessions = new Map();
 const GRACE_PERIOD_MS = 5000;
 
+// HIGH-04: LRU cache for token maps
+const MAX_SESSIONS = 10000;
+const MAX_REFRESH_TOKENS = 5000;
+const MAX_GRACE_PERIOD = 1000;
+
+function lruTrim(map, maxSize) {
+  if (map.size > maxSize) {
+    const keys = Array.from(map.keys()).slice(0, map.size - maxSize);
+    for (const k of keys) map.delete(k);
+  }
+}
+
 // MED-03: Encrypt offline metadata
-const OFFLINE_METADATA_KEY = crypto.createHash('sha256').update('offline_meta_' + SESSION_SECRET).digest();
+function _getOfflineMetadataKey(salt) {
+  // HIGH-03: Unique salt per offline message
+  return crypto.createHash('sha256').update('offline_meta_' + SESSION_SECRET + salt).digest();
+}
 
 function _encryptMetadata(envelope) {
+  // HIGH-03: Unique salt per offline message
+  const salt = crypto.randomBytes(16).toString('hex');
+  const OFFLINE_METADATA_KEY = _getOfflineMetadataKey(salt);
   // Шифруем только метаданные (from, id, timestamp), не данные сообщения
-  const metadata = JSON.stringify({ id: envelope.id, from: envelope.from, ts: envelope.timestamp });
+  const metadata = JSON.stringify({ id: envelope.id, from: envelope.from, ts: envelope.timestamp, s: salt });
   const nonce = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', OFFLINE_METADATA_KEY, nonce);
   const encrypted = Buffer.concat([cipher.update(metadata, 'utf8'), cipher.final()]);
@@ -558,18 +565,30 @@ function _encryptMetadata(envelope) {
 
 function _decryptMetadata(encryptedEnvelope) {
   try {
+    // HIGH-03: Unique salt per offline message - extract salt from metadata after decrypting with base key
+    const baseKey = _getOfflineMetadataKey('');
     const decipher = crypto.createDecipheriv(
       'aes-256-gcm',
-      OFFLINE_METADATA_KEY,
+      baseKey,
       Buffer.from(encryptedEnvelope.n, 'hex')
     );
     decipher.setAuthTag(Buffer.from(encryptedEnvelope.t, 'hex'));
     const decrypted = Buffer.concat([decipher.update(encryptedEnvelope.e, 'hex'), decipher.final()]);
     const metadata = JSON.parse(decrypted.toString('utf8'));
+    // Re-decrypt with correct salt
+    const OFFLINE_METADATA_KEY = _getOfflineMetadataKey(metadata.s || '');
+    const decipher2 = crypto.createDecipheriv(
+      'aes-256-gcm',
+      OFFLINE_METADATA_KEY,
+      Buffer.from(encryptedEnvelope.n, 'hex')
+    );
+    decipher2.setAuthTag(Buffer.from(encryptedEnvelope.t, 'hex'));
+    const decrypted2 = Buffer.concat([decipher2.update(encryptedEnvelope.e, 'hex'), decipher2.final()]);
+    const metadata2 = JSON.parse(decrypted2.toString('utf8'));
     return {
-      id: metadata.id,
-      from: metadata.from,
-      timestamp: metadata.ts,
+      id: metadata2.id,
+      from: metadata2.from,
+      timestamp: metadata2.ts,
       data: encryptedEnvelope.d
     };
   } catch (e) {
@@ -621,6 +640,7 @@ class Mutex {
 const dbMutex = new Mutex();
 const refreshTokenMutex = new Mutex();
 const sessionNonceMutex = new Mutex();
+const usersMutex = new Mutex();
 
 // ── Session token nonce tracking (prevent replay attacks) ──────────────────
 const usedSessionNonces = new Set();
@@ -651,7 +671,10 @@ function generateSessionToken(username) {
   scheduleNonceCleanup();
   const base = `${username}:${timestamp}:${nonce}`;
   const signature = crypto.createHmac('sha256', SESSION_SECRET).update(base).digest('hex');
-  return `${base}:${signature}`;
+  const token = `${base}:${signature}`;
+  // HIGH-04: LRU cache for token maps
+  lruTrim(sessions, MAX_SESSIONS);
+  return token;
 }
 
 // Track used refresh token nonces to detect family reuse
@@ -677,6 +700,8 @@ async function generateRefreshToken(username, oldToken = null) {
     }
     
     refreshTokens.set(token, { username, expiresAt, tokenVersion, familyId });
+    // HIGH-04: LRU cache for token maps
+    lruTrim(refreshTokens, MAX_REFRESH_TOKENS);
     return token;
   } finally {
     release();
@@ -763,6 +788,7 @@ function requireUserAuth(req, res, next) {
 
 // Admin session cookie management
 const adminSessions = new Map();
+const adminBackoff = new Map();
 const ADMIN_SESSION_DURATION = 60 * 60 * 1000; // 1 hour
 const ADMIN_COOKIE_NAME = 'shade_admin_sess';
 const ADMIN_LOGIN_ATTEMPTS = new Map();
@@ -783,6 +809,15 @@ function _verifyAdminToken(token, signature) {
 }
 
 function requireAuth(req, res, next) {
+  // MED-07: Username-based backoff for admin
+  const username = req.params.username || req.body.username || 'admin';
+  const userBackoff = adminBackoff.get(username) || { backoff: 0 };
+  if (userBackoff.backoff > 0) {
+    const waitTime = Math.min(1000 * Math.pow(2, userBackoff.backoff), 30000);
+    if (Date.now() < userBackoff.lastAttempt + waitTime) {
+      return res.status(429).json({ error: 'Too many requests, try again later', retryAfter: waitTime });
+    }
+  }
   // HIGH-08: Только cookie-сессии, без Basic Auth fallback
   const sessionCookie = req.cookies?.[ADMIN_COOKIE_NAME];
   if (sessionCookie) {
@@ -793,6 +828,7 @@ function requireAuth(req, res, next) {
         const sessionData = adminSessions.get(token);
         if (sessionData && Date.now() < sessionData.expiresAt) {
           sessionData.expiresAt = Date.now() + ADMIN_SESSION_DURATION;
+          adminBackoff.set(username, { backoff: 0, lastAttempt: 0 });
           return next();
         }
       }
@@ -800,6 +836,8 @@ function requireAuth(req, res, next) {
     adminSessions.delete(sessionCookie);
   }
   
+  // Update backoff on failure
+  adminBackoff.set(username, { backoff: (userBackoff.backoff || 0) + 1, lastAttempt: Date.now() });
   // Только cookie-аутентификация, без Basic Auth
   return res.status(401).send('Unauthorized');
 }
@@ -1017,31 +1055,38 @@ app.post('/register', (req, res) => {
   });
 });
 
-app.post('/logout', requireUserAuth, (req, res) => {
-  const username = req.params.username || req.body.username;
-  if (username) {
-    sessions.delete(username);
-    fcmTokens.delete(username);
-    // MED-03: Очищаем буфер офлайн-сообщений при logout
-    offlineBuffer.delete(username);
-    // HIGH-05: Инвалидируем ВСЕ сессии пользователя через tokenVersion++
-    const user = users.get(username);
-    if (user) {
-      user.tokenVersion = (user.tokenVersion || 0) + 1;
-      users.set(username, user);
-      saveMap('users.json', users);
-      // Инвалидируем все refresh токены
-      for (const [token, data] of refreshTokens) {
-        if (data.username === username) {
-          refreshTokens.delete(token);
+app.post('/logout', requireUserAuth, async (req, res) => {
+  const release = await usersMutex.acquire();
+  try {
+    const username = req.params.username || req.body.username;
+    if (username) {
+      sessions.delete(username);
+      fcmTokens.delete(username);
+      // MED-03: Очищаем буфер офлайн-сообщений при logout
+      offlineBuffer.delete(username);
+      // HIGH-05: Инвалидируем ВСЕ сессии пользователя через tokenVersion++
+      // HIGH-01: Users Map mutex protection
+      const user = users.get(username);
+      if (user) {
+        user.tokenVersion = (user.tokenVersion || 0) + 1;
+        users.set(username, user);
+        saveMap('users.json', users);
+        // HIGH-01: Users Map mutex protection
+        // Инвалидируем все refresh токены
+        for (const [token, data] of refreshTokens) {
+          if (data.username === username) {
+            refreshTokens.delete(token);
+          }
         }
+        console.log('[logout] All sessions invalidated, tokenVersion:', user.tokenVersion);
       }
-      console.log('[logout] All sessions invalidated, tokenVersion:', user.tokenVersion);
+      saveMap('fcm_tokens.json', fcmTokens);
+      console.log('[logout] user logged out');
     }
-    saveMap('fcm_tokens.json', fcmTokens);
-    console.log('[logout] user logged out');
+    res.json({ ok: true });
+  } finally {
+    release();
   }
-  res.json({ ok: true });
 });
 
 app.post('/refresh', async (req, res) => {
@@ -1130,11 +1175,14 @@ app.get('/user/:username', requireUserAuth, (req, res) => {
   const delay = baseDelay + jitter;
   
   // Задержка для ВСЕХ запросов (существующих и несуществующих пользователей)
-  setTimeout(() => {
-    const user = users.get(req.params.username);
-    // Return same response structure for non-existent users (prevent enumeration)
-    if (!user) {
-      return res.json({
+  setTimeout(async () => {
+    const release = await usersMutex.acquire();
+    try {
+      // HIGH-01: Users Map mutex protection
+      const user = users.get(req.params.username);
+      // HIGH-05: Uniform response for all users
+      if (!user) {
+        return res.json({
         username: req.params.username,
         publicKey: null,
         signature: null,
@@ -1163,6 +1211,9 @@ app.get('/user/:username', requireUserAuth, (req, res) => {
       online: isOnline,
       lastSeen: lastSeenTime,
     });
+    } finally {
+      release();
+    }
   }, delay);
 });
 
@@ -1200,6 +1251,12 @@ async function sendFcmPush(username, from) {
 
 app.post('/group/create', (req, res) => {
   const { name, members } = req.body;
+  const sessionToken = req.headers['x-session-token'];
+  const username = req.headers['x-username'];
+  // HIGH-02: Auth required for group creation
+  if (!sessionToken || !username || !validateSessionToken(username, sessionToken)) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
   if (!name || !Array.isArray(members) || members.length < 2) {
     return res.status(400).json({ error: 'Need name and at least 2 members' });
   }
@@ -1230,7 +1287,23 @@ app.get('/group/:id', (req, res) => {
 const wsConnectionsPerIp = new Map();
 const lastDisconnectTime = new Map();
 
+// MED-06: Global WS rate limit 10/sec
+const globalWsRateLimit = new Map();
+const GLOBAL_WS_MAX_PER_SEC = 10;
+
 io.on('connection', (socket) => {
+  // MED-06: Global WS rate limit 10/sec
+  const now = Date.now();
+  const globalCount = globalWsRateLimit.get(now) || 0;
+  if (globalCount >= GLOBAL_WS_MAX_PER_SEC) {
+    console.warn('[ws] Global rate limit exceeded');
+    socket.emit('error', { message: 'Too many connections, please try again later' });
+    socket.disconnect();
+    return;
+  }
+  globalWsRateLimit.set(now, globalCount + 1);
+  setTimeout(() => globalWsRateLimit.delete(now), 1000);
+  
   // MED-07: Ограничение 5 одновременных подключений с одного IP
   const clientIp = socket.handshake.address || socket.conn.remoteAddress || 'unknown';
   const currentCount = wsConnectionsPerIp.get(clientIp) || 0;
@@ -1482,6 +1555,10 @@ io.on('connection', (socket) => {
   });
 
   socket.on('groupMessage', (payload) => {
+    if (!socket.username) {
+      socket.emit('error', { message: 'Authentication required' });
+      return;
+    }
     if (!payload || !payload.groupId || !payload.data) return;
     const from = socket.username || 'unknown';
     const group = groups.get(payload.groupId);
@@ -1509,6 +1586,31 @@ io.on('connection', (socket) => {
       }
     }
     console.log('[group] message delivered');
+  });
+
+  // MED-08: Explicit WS logout handler
+  socket.on('logout', () => {
+    if (!socket.username) return;
+    const username = socket.username;
+    sessions.delete(username);
+    gracePeriodSessions.delete(username);
+    onlineUsers.delete(username);
+    lastSeen.set(username, Date.now());
+    saveMap('last_seen.json', lastSeen);
+    const user = users.get(username);
+    if (user) {
+      user.tokenVersion = (user.tokenVersion || 0) + 1;
+      users.set(username, user);
+      saveMap('users.json', users);
+    }
+    for (const [token, data] of refreshTokens) {
+      if (data.username === username) {
+        refreshTokens.delete(token);
+      }
+    }
+    console.log('[ws] Explicit logout for:', username);
+    socket.emit('loggedOut', { ok: true });
+    socket.disconnect();
   });
 
   socket.on('typing', (payload) => {
@@ -1557,6 +1659,8 @@ io.on('connection', (socket) => {
           timestamp: Date.now(),
         });
         sessions.delete(username);
+        // HIGH-04: LRU cache for token maps
+        lruTrim(gracePeriodSessions, MAX_GRACE_PERIOD);
         setTimeout(() => {
           const graceData = gracePeriodSessions.get(username);
           if (graceData && Date.now() - graceData.timestamp >= GRACE_PERIOD_MS) {
@@ -1648,68 +1752,80 @@ console.error = (...args) => {
 };
 
 // ── Admin: revoke all tokens (token versioning) ───────────────────────
-app.post('/admin/revoke/:username', requireAuth, (req, res) => {
-  const targetUser = req.params.username;
-  let foundKey = null;
-  for (const [key] of users) {
-    if (key.toLowerCase() === targetUser.toLowerCase()) {
-      foundKey = key;
-      break;
+app.post('/admin/revoke/:username', requireAuth, async (req, res) => {
+  const release = await usersMutex.acquire();
+  try {
+    const targetUser = req.params.username;
+    let foundKey = null;
+    for (const [key] of users) {
+      if (key.toLowerCase() === targetUser.toLowerCase()) {
+        foundKey = key;
+        break;
+      }
     }
-  }
-  if (!foundKey) {
-    return res.status(404).json({ error: 'User not found' });
-  }
-  const user = users.get(foundKey);
-  const newVersion = (user?.tokenVersion || 0) + 1;
-  users.set(foundKey, { ...user, tokenVersion: newVersion });
-  saveMap('users.json', users);
-  
-  // Invalidate all existing refresh tokens for this user
-  for (const [token, data] of refreshTokens) {
-    if (data.username === foundKey) {
-      refreshTokens.delete(token);
+    if (!foundKey) {
+      return res.status(404).json({ error: 'User not found' });
     }
+    const user = users.get(foundKey);
+    const newVersion = (user?.tokenVersion || 0) + 1;
+    users.set(foundKey, { ...user, tokenVersion: newVersion });
+    saveMap('users.json', users);
+    // HIGH-01: Users Map mutex protection
+    
+    // Invalidate all existing refresh tokens for this user
+    for (const [token, data] of refreshTokens) {
+      if (data.username === foundKey) {
+        refreshTokens.delete(token);
+      }
+    }
+    sessions.delete(foundKey);
+    console.log(`[AUDIT] Admin revoked tokens for: ${foundKey} (tokenVersion=${newVersion})`);
+    res.json({ ok: true, message: `All tokens revoked. New tokenVersion: ${newVersion}` });
+  } finally {
+    release();
   }
-  sessions.delete(foundKey);
-  console.log(`[AUDIT] Admin revoked tokens for: ${foundKey} (tokenVersion=${newVersion})`);
-  res.json({ ok: true, message: `All tokens revoked. New tokenVersion: ${newVersion}` });
 });
 
 // ── Admin: delete user ────────────────────────────────────
 
-app.delete('/admin/user/:username', requireAuth, (req, res) => {
-  const targetUser = req.params.username;
-  if (targetUser.toLowerCase() === 'admin') {
-    return res.status(403).json({ error: 'Cannot delete admin account' });
-  }
-  let foundKey = null;
-  for (const [key] of users) {
-    if (key.toLowerCase() === targetUser.toLowerCase()) {
-      foundKey = key;
-      break;
+app.delete('/admin/user/:username', requireAuth, async (req, res) => {
+  const release = await usersMutex.acquire();
+  try {
+    const targetUser = req.params.username;
+    if (targetUser.toLowerCase() === 'admin') {
+      return res.status(403).json({ error: 'Cannot delete admin account' });
     }
+    let foundKey = null;
+    for (const [key] of users) {
+      if (key.toLowerCase() === targetUser.toLowerCase()) {
+        foundKey = key;
+        break;
+      }
+    }
+    if (!foundKey) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    console.log(`[AUDIT] Admin deleted user: ${foundKey}`);
+    users.delete(foundKey);
+    // HIGH-01: Users Map mutex protection
+    onlineUsers.delete(foundKey);
+    sessions.delete(foundKey);
+    lastSeen.delete(foundKey);
+    fcmTokens.delete(foundKey);
+    saveMap('users.json', users);
+    saveMap('fcm_tokens.json', fcmTokens);
+    saveMap('last_seen.json', lastSeen);
+    const socketId = onlineUsers.get(foundKey);
+    if (socketId) {
+      io.to(socketId).emit('kicked', { reason: 'Account deleted by admin' });
+      const sock = io.sockets.sockets.get(socketId);
+      if (sock) sock.disconnect();
+    }
+    console.log('[admin] user deleted');
+    res.json({ ok: true, deleted: foundKey });
+  } finally {
+    release();
   }
-  if (!foundKey) {
-    return res.status(404).json({ error: 'User not found' });
-  }
-  console.log(`[AUDIT] Admin deleted user: ${foundKey}`);
-  users.delete(foundKey);
-  onlineUsers.delete(foundKey);
-  sessions.delete(foundKey);
-  lastSeen.delete(foundKey);
-  fcmTokens.delete(foundKey);
-  saveMap('users.json', users);
-  saveMap('fcm_tokens.json', fcmTokens);
-  saveMap('last_seen.json', lastSeen);
-  const socketId = onlineUsers.get(foundKey);
-  if (socketId) {
-    io.to(socketId).emit('kicked', { reason: 'Account deleted by admin' });
-    const sock = io.sockets.sockets.get(socketId);
-    if (sock) sock.disconnect();
-  }
-  console.log('[admin] user deleted');
-  res.json({ ok: true, deleted: foundKey });
 });
 
 app.get('/logs', requireAuth, (_req, res) => {

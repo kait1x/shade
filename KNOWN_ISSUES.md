@@ -29,6 +29,12 @@ This document describes known limitations of the Shade messaging system.
 - **Mitigation:** Best effort implementation; not guaranteed to work on all iOS versions.
 - **Note:** This is an inherent platform limitation.
 
+### MED-09: Firebase Messaging Metadata Exposure
+- **Status:** Platform Limitation (Documented in Privacy Policy)
+- **Description:** Firebase Cloud Messaging (FCM) may expose metadata to Google.
+- **Mitigation:** Documented in privacy policy. Consider self-hosted push or alternative notification services for enhanced privacy.
+- **Note:** Messages are encrypted end-to-end; only metadata (sender/recipient IDs) may be visible to Google.
+
 ---
 
 ## Other Limitations

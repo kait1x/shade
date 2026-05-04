@@ -537,7 +537,12 @@ class ServerKeyFingerprintResult {
 
   // FEATURE: Password fallback is a last resort when OS Keychain is unavailable on desktop.
   // Keys are encrypted with PBKDF2+ AES-256-GCM before writing to disk.
+  // HIGH-07: No password fallback in production
   Future<void> _writeToPasswordFallback(String alias, String value) async {
+    final isProduction = const bool.fromEnvironment('dart.vm.product', defaultValue: false);
+    if (isProduction) {
+      throw Exception('FATAL: OS Keychain required in production. Cannot use password fallback.');
+    }
     if (_password == null) {
       throw Exception(
         'Secure storage unavailable on desktop. Cannot safely store keys. '
@@ -567,10 +572,12 @@ class ServerKeyFingerprintResult {
   }
 
   // ══════════════════════════════════════════════════════════════
-  //  PASSWORD FALLBACK (PBKDF2 + AES-256-GCM)
-  // ══════════════════════════════════════════════════════════════
-
+  // HIGH-07: No password fallback in production
   Future<String?> _readFromEncryptedFile() async {
+    final isProduction = const bool.fromEnvironment('dart.vm.product', defaultValue: false);
+    if (isProduction) {
+      throw Exception('FATAL: OS Keychain required in production. Cannot use password fallback.');
+    }
     if (_password == null) return null;
     try {
       final dir = await _getSecureStorageDir();

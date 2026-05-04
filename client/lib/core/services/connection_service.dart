@@ -194,17 +194,19 @@ http.Client _createHttpClient() {
     }());
 
     // Debug mode: allow self-signed certs for localhost only
-    client.badCertificateCallback = (X509Certificate cert, String host, int port) {
-      final isLocalhost = host == 'localhost' || host == '127.0.0.1' || host.startsWith('192.168.') || host.startsWith('10.0.');
-      if (isLocalhost) {
-        debugPrint('[ConnectionService] Allowing self-signed cert for: $host (debug mode)');
-        return true;
-      }
-      debugPrint('[ConnectionService] REJECTED: Invalid cert for non-localhost: $host (debug mode)');
-      debugPrint('[ConnectionService] For non-localhost, use a valid CA-signed certificate or set PIN');
-      return false;
-    };
-  }
+    final isLocalhost = host == 'localhost' || host == '127.0.0.1';
+    // HIGH-06: Require PIN in debug for non-localhost
+    if (!isLocalhost) {
+      debugPrint('[ConnectionService] REJECTED: PIN required for non-localhost: $host (debug mode)');
+      debugPrint('[ConnectionService] For non-localhost, set --dart-define=SHADED_PIN_SHA256=<fingerprint>');
+      throw StateError(
+        'FATAL: PIN required for non-localhost in debug mode. '
+        'Set --dart-define=SHADED_PIN_SHA256=<sha256-fingerprint>',
+      );
+    }
+    debugPrint('[ConnectionService] Allowing self-signed cert for: $host (debug mode)');
+    return true;
+  };
 
   return http_io.IOClient(client);
 }
@@ -617,6 +619,13 @@ class ConnectionService {
 
   /// Sends an encrypted payload to [to] via WebSocket.
   void sendMessage(String to, String encryptedPayload) {
+    // MED-05: Client-side size validation
+    final payloadBytes = encryptedPayload.length;
+    const MAX_TEXT_SIZE = 1 * 1024 * 1024; // 1MB for text
+    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB for files
+    if (payloadBytes > MAX_FILE_SIZE) {
+      throw RangeError('Payload too large: $payloadBytes bytes (max $MAX_FILE_SIZE)');
+    }
     if (_socket == null || !_isConnected) {
       throw StateError('Not connected');
     }

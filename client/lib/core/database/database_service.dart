@@ -160,9 +160,9 @@ class DatabaseService {
       deviceId = base64Url.encode(Uint8List(16).map((_) => random.nextInt(256)).toList());
     }
 
-    // MED-01: PBKDF2 600K for mobile (OWASP 2026), 1M for desktop
+    // MED-01: PBKDF2 (now 1M for all platforms per HIGH-08)
     final salt = utf8.encode(deviceId);
-    const iterations = _isMobile ? 600000 : 1000000; // 600K mobile, 1M desktop
+    const iterations = 1000000; // HIGH-08: PBKDF2 1M for all platforms
     final pbkdf2 = pc.PBKDF2KeyDerivator(pc.HMac(pc.SHA256Digest(), 64));
     pbkdf2.init(pc.Pbkdf2Parameters(Uint8List.fromList(salt), iterations, 32));
     final derivedKey = pbkdf2.process(masterKey);
@@ -364,11 +364,13 @@ class DatabaseService {
   }
 
   Future<List<Map<String, dynamic>>> searchContacts(String query) async {
+    // MED-04: Escape LIKE special chars
+    final escaped = query.replaceAll('%', r'\%').replaceAll('_', '\_');
     final db = await database;
     return db.query(
       'contacts',
-      where: 'nickname LIKE ?',
-      whereArgs: ['%$query%'],
+      where: 'nickname LIKE ? ESCAPE "\\"',
+      whereArgs: ['%$escaped%'],
       orderBy: 'created_at DESC',
       limit: 20,
     );
