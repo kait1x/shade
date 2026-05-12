@@ -27,16 +27,6 @@ try {
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 
-// [FIX] HIGH #4: Validate DASHBOARD_PASS at startup
-const DASHBOARD_PASS = process.env.DASHBOARD_PASS || '<SET_YOUR_STRONG_PASSWORD_HERE>';
-if (!DASHBOARD_PASS || DASHBOARD_PASS === '<SET_YOUR_STRONG_PASSWORD_HERE>') {
-  console.error('[FATAL] DASHBOARD_PASS is not configured!');
-  console.error('[FATAL] Please set a strong password:');
-  console.error('[FATAL]   export DASHBOARD_PASS="your_secure_password"');
-  console.error('[FATAL] Or update server/.env with a real password');
-  process.exit(1);
-}
-
 // ── App Setup ────────────────────────────────────────────
 
 const app = express();
@@ -434,7 +424,10 @@ function _verifyHmac(filename, data, secret) {
     return true; // No HMAC file yet - skip
   }
   const computedHmac = _computeHmac(data, secret);
-  if (storedHmac !== computedHmac) {
+  // HIGH-03: Constant-time HMAC comparison
+  const storedBuf = Buffer.from(storedHmac, 'hex');
+  const computedBuf = Buffer.from(computedHmac, 'hex');
+  if (storedBuf.length !== computedBuf.length || !crypto.timingSafeEqual(storedBuf, computedBuf)) {
     console.error('[hmac] HIGH-03 WARNING: HMAC mismatch for', filename, '- data may be corrupted!');
     return false;
   }
@@ -489,17 +482,23 @@ async function saveMap(filename, map) {
     } else {
       data = [...map.entries()];
     }
-    // HIGH-01: users.json encrypted at rest with AES-256-GCM
+    // HIGH-01: Atomic file write via rename
     if (filename === 'users.json') {
       const encrypted = _encryptData(data, SESSION_SECRET);
-      await fs.promises.writeFile(file, encrypted);
+      const tmpFile = file + '.tmp';
+      await fs.promises.writeFile(tmpFile, encrypted);
+      await fs.promises.rename(tmpFile, file);
       // HIGH-03: Save HMAC for integrity check
       _saveHmac(filename, data, SESSION_SECRET);
     } else if (filename === 'fcm_tokens.json') {
       const encrypted = _encryptData(data, SESSION_SECRET);
-      await fs.promises.writeFile(file, encrypted);
+      const tmpFile = file + '.tmp';
+      await fs.promises.writeFile(tmpFile, encrypted);
+      await fs.promises.rename(tmpFile, file);
     } else {
-      await fs.promises.writeFile(file, JSON.stringify(data));
+      const tmpFile = file + '.tmp';
+      await fs.promises.writeFile(tmpFile, JSON.stringify(data));
+      await fs.promises.rename(tmpFile, file);
       // HIGH-03: Save HMAC for integrity check
       if (filename === 'last_seen.json' || filename === 'groups.json') {
         _saveHmac(filename, data, SESSION_SECRET);
@@ -570,49 +569,42 @@ function _getOfflineMetadataKey(salt) {
 
 function _encryptMetadata(envelope) {
   // HIGH-03: Unique salt per offline message
-  const salt = crypto.randomBytes(16).toString('hex');
-  const OFFLINE_METADATA_KEY = _getOfflineMetadataKey(salt);
-  // Шифруем только метаданные (from, id, timestamp), не данные сообщения
-  const metadata = JSON.stringify({ id: envelope.id, from: envelope.from, ts: envelope.timestamp, s: salt });
+  const salt = crypto.randomBytes(16);
+  const OFFLINE_METADATA_KEY = _getOfflineMetadataKey(salt.toString('hex'));
+  // Шифруем метаданные: from, id, timestamp
+  const metadata = JSON.stringify({ id: envelope.id, from: envelope.from, ts: envelope.timestamp });
   const nonce = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', OFFLINE_METADATA_KEY, nonce);
   const encrypted = Buffer.concat([cipher.update(metadata, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
+  // CRIT-03: Salt in clear for offline metadata
+  const combined = Buffer.concat([nonce, tag, encrypted]);
   return {
-    e: encrypted.toString('hex'), // encrypted metadata
-    n: nonce.toString('hex'),      // nonce
-    t: tag.toString('hex'),        // auth tag
-    d: envelope.data              // actual encrypted message data (unchanged)
+    s: salt.toString('base64'),
+    d: combined.toString('base64'),
+    m: envelope.data // actual encrypted message data preserved
   };
 }
 
 function _decryptMetadata(encryptedEnvelope) {
   try {
-    // HIGH-03: Unique salt per offline message - extract salt from metadata after decrypting with base key
-    const baseKey = _getOfflineMetadataKey('');
-    const decipher = crypto.createDecipheriv(
-      'aes-256-gcm',
-      baseKey,
-      Buffer.from(encryptedEnvelope.n, 'hex')
-    );
-    decipher.setAuthTag(Buffer.from(encryptedEnvelope.t, 'hex'));
-    const decrypted = Buffer.concat([decipher.update(encryptedEnvelope.e, 'hex'), decipher.final()]);
+    // CRIT-03: Salt in clear — single decryption
+    const salt = Buffer.from(encryptedEnvelope.s, 'base64');
+    const combined = Buffer.from(encryptedEnvelope.d, 'base64');
+    const nonce = combined.subarray(0, 12);
+    const tag = combined.subarray(12, 28);
+    const encrypted = combined.subarray(28);
+    
+    const OFFLINE_METADATA_KEY = _getOfflineMetadataKey(salt.toString('hex'));
+    const decipher = crypto.createDecipheriv('aes-256-gcm', OFFLINE_METADATA_KEY, nonce);
+    decipher.setAuthTag(tag);
+    const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
     const metadata = JSON.parse(decrypted.toString('utf8'));
-    // Re-decrypt with correct salt
-    const OFFLINE_METADATA_KEY = _getOfflineMetadataKey(metadata.s || '');
-    const decipher2 = crypto.createDecipheriv(
-      'aes-256-gcm',
-      OFFLINE_METADATA_KEY,
-      Buffer.from(encryptedEnvelope.n, 'hex')
-    );
-    decipher2.setAuthTag(Buffer.from(encryptedEnvelope.t, 'hex'));
-    const decrypted2 = Buffer.concat([decipher2.update(encryptedEnvelope.e, 'hex'), decipher2.final()]);
-    const metadata2 = JSON.parse(decrypted2.toString('utf8'));
     return {
-      id: metadata2.id,
-      from: metadata2.from,
-      timestamp: metadata2.ts,
-      data: encryptedEnvelope.d
+      id: metadata.id,
+      from: metadata.from,
+      timestamp: metadata.ts,
+      data: null // actual message data is in envelope.d
     };
   } catch (e) {
     console.error('[offline] Failed to decrypt metadata:', e.message);
@@ -681,6 +673,17 @@ function scheduleNonceCleanup() {
         usedSessionNonces.delete(nonce);
       }
     }
+    // HIGH-07: LRU eviction for session nonces - enforce max 10000
+    if (usedSessionNonces.size > 10000) {
+      const sorted = Array.from(usedSessionNonces).sort((a, b) => {
+        const [tsA] = a.split(':');
+        const [tsB] = b.split(':');
+        return parseInt(tsA, 10) - parseInt(tsB, 10);
+      });
+      for (let i = 0; i < 5000; i++) {
+        usedSessionNonces.delete(sorted[i]);
+      }
+    }
   }, 60 * 60 * 1000); // Cleanup every hour
 }
 
@@ -724,8 +727,15 @@ async function generateRefreshToken(username, oldToken = null) {
     }
     
     refreshTokens.set(token, { username, expiresAt, tokenVersion, familyId });
-    // HIGH-04: LRU cache for token maps
-    lruTrim(refreshTokens, MAX_REFRESH_TOKENS);
+    // HIGH-04: LRU cache for token maps + cleanup usedRefreshNonces
+    if (refreshTokens.size > MAX_REFRESH_TOKENS) {
+      const keysToRemove = Array.from(refreshTokens.keys()).slice(0, refreshTokens.size - MAX_REFRESH_TOKENS);
+      for (const k of keysToRemove) {
+        const t = refreshTokens.get(k);
+        if (t && t.familyId) usedRefreshNonces.delete(t.familyId);
+        refreshTokens.delete(k);
+      }
+    }
     return token;
   } finally {
     release();
@@ -1076,11 +1086,12 @@ let serverSignature = null;
              padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
              saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
            });
-           serverSignature = sig.toString('base64');
-           // Wipe private key from memory
-           _wipeKey(privateKeyBuffer);
-         } catch (e) {
-           console.error('[register] Error signing public key:', e.message);
+serverSignature = sig.toString('base64');
+            // CRIT-02: Wipe both Buffer and original PEM string
+            _wipeKey(privateKeyBuffer);
+            decrypted.privateKey = '';
+          } catch (e) {
+            console.error('[register] Error signing public key:', e.message);
          }
        }
       users.set(username_norm, {
@@ -1248,12 +1259,14 @@ app.get('/user/:username', requireUserAuth, (req, res) => {
     
 if (!user.serverSignature && fs.existsSync(MASTER_KEY_FILE)) {
        try {
-         // CRIT-03: Decrypt private key on-demand, sign, then wipe immediately
+// CRIT-03: Decrypt private key on-demand, sign, then wipe immediately
          const decrypted = _decryptMasterKey(fs.readFileSync(MASTER_KEY_FILE, 'utf8'), SESSION_SECRET);
          const privateKeyBuffer = Buffer.from(decrypted.privateKey, 'utf8');
-         user.serverSignature = crypto.sign('sha256', Buffer.from(user.publicKey), privateKeyBuffer).toString('base64');
-         _wipeKey(privateKeyBuffer);
-         users.set(req.params.username, user);
+user.serverSignature = crypto.sign('sha256', Buffer.from(user.publicKey), privateKeyBuffer).toString('base64');
+          // CRIT-02: Wipe both Buffer and original PEM string
+          _wipeKey(privateKeyBuffer);
+          decrypted.privateKey = '';
+          users.set(req.params.username, user);
          saveMap('users.json', users);
        } catch (e) {
          console.error('[user] Error signing public key:', e.message);
@@ -1935,6 +1948,14 @@ app.use((err, req, res, next) => {
     });
   }
 });
+
+// HIGH-02: DASHBOARD_PASS check after TLS init
+const DASHBOARD_PASS = process.env.DASHBOARD_PASS || 'admin';
+if (!DASHBOARD_PASS || DASHBOARD_PASS.length < 8) {
+  console.error('[FATAL] DASHBOARD_PASS must be at least 8 characters!');
+  console.error('[FATAL] Set DASHBOARD_PASS in .env or environment');
+  process.exit(1);
+}
 
 // ── Start ────────────────────────────────────────────────────
 

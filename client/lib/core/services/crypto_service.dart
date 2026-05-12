@@ -11,31 +11,30 @@ import 'package:path_provider/path_provider.dart';
 import 'package:crypto/crypto.dart' as crypto;
 
 /// Криптографически стойкий генератор случайных чисел на базе PointyCastle Fortuna PRNG.
-/// 
+///
 /// Используется для генерации:
 /// - Ключей шифрования AES
 /// - Nonce и векторов инициализации (IV)
 /// - Солей (salt)
 /// - Любого другого криптографического материала
 class _SecureRandom {
-  // CRIT-01: Using Dart's CSPRNG directly. Fortuna initialization not required.
-  // Random.secure() uses platform CSPRNG (SecRandom on iOS, java.security.SecureRandom on Android, etc.)
+  // CRIT-01: Fortuna PRNG seeded with Random.secure()
+  static final pc.SecureRandom _fortuna = pc.FortunaRandom();
   static bool _seeded = false;
 
-  /// Ensures CSPRNG is ready. No-op since Random.secure() handles this internally.
+  /// Ensures Fortuna is seeded with entropy from platform CSPRNG.
   static void _ensureSeeded() {
     if (_seeded) return;
+    final entropy = Random.secure().nextBytes(32);
+    _fortuna.seed(pc.KeyParameter(entropy));
+    entropy.fill(0);
     _seeded = true;
   }
 
-  // CRIT-01: Using CSPRNG directly - each call gets fresh bytes from OS
+  /// Returns [length] cryptographically secure random bytes via Fortuna PRNG.
   static Uint8List nextBytes(int length) {
-    final random = Random.secure();
-    final result = Uint8List(length);
-    for (int i = 0; i < length; i++) {
-      result[i] = random.nextInt(256);
-    }
-    return result;
+    _ensureSeeded();
+    return _fortuna.nextBytes(length);
   }
 
   // HIGH-04: Wipe password with Uint8List
@@ -369,6 +368,16 @@ class ServerKeyFingerprintResult {
       }
       
       // [FIX] Приоритет 2: TOFU как fallback (только для разработки!)
+      const isProduction = const bool.fromEnvironment('dart.vm.product', defaultValue: false);
+      // HIGH-06: Require pin in production, no TOFU
+      if (isProduction) {
+        debugPrint('[CryptoService] CRITICAL: TOFU not allowed in production!');
+        debugPrint('[CryptoService] Set --dart-define=SHADED_PIN_SHA256=<sha256-fingerprint>');
+        return ServerKeyFingerprintResult(
+          status: ServerKeyTrustStatus.mismatchDetected,
+          fingerprint: fingerprint,
+        );
+      }
       const storage = FlutterSecureStorage();
       const key = 'server_pubkey_fingerprint';
       final stored = await storage.read(key: key);

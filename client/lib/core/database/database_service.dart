@@ -88,15 +88,9 @@ class DatabaseService {
         await _verifyDatabaseIntegrity(db);
         return db;
       } catch (e) {
-        debugPrint('[DatabaseService] SQLCipher not available on desktop: $e');
-        debugPrint('[DatabaseService] WARNING: Database will be stored UNENCRYPTED on desktop!');
-        return sqflite_ffi.openDatabase(
-          filePath,
-          version: _dbVersion,
-          onConfigure: (db) async {},
-          onCreate: _onCreate,
-          onUpgrade: _onUpgrade,
-        );
+        debugPrint('[DatabaseService] SQLCipher failed: $e');
+        // HIGH-05: No unencrypted fallback on desktop
+        throw Exception('FATAL: SQLCipher required on desktop. Database unavailable. $e');
       }
     }
   }
@@ -157,9 +151,9 @@ class DatabaseService {
       deviceId = base64Url.encode(Uint8List(16).map((_) => random.nextInt(256)).toList());
     }
 
-    // MED-01: PBKDF2 (now 1M for all platforms per HIGH-08)
+    // MED-01: PBKDF2 (now 2.1M+ for all platforms per HIGH-08)
     final salt = utf8.encode(deviceId);
-    const iterations = 1000000; // HIGH-08: PBKDF2 1M for all platforms
+    const iterations = 2100000; // HIGH-08: PBKDF2 2.1M+ iterations
     final pbkdf2 = pc.PBKDF2KeyDerivator(pc.HMac(pc.SHA256Digest(), 64));
     pbkdf2.init(pc.Pbkdf2Parameters(Uint8List.fromList(salt), iterations, 32));
     final derivedKey = pbkdf2.process(masterKey);
