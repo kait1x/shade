@@ -152,63 +152,42 @@ const _pinSha256 =
 
 /// Creates an HTTP client with certificate pinning or TOFU fallback.
 http.Client _createHttpClient() {
-  final client = HttpClient();
+final client = HttpClient();
 
-  if (_pinSha256.isNotEmpty) {
-    // PIN provided: strict verification
-    client.badCertificateCallback = (X509Certificate cert, _, __) {
-      final fingerprint = sha256.convert(cert.der).toString();
-      return fingerprint == _pinSha256;
-    };
-  } else {
-    // No PIN: use TOFU fallback (or debug mode rules)
-    final isProduction = const bool.fromEnvironment('dart.vm.product', defaultValue: false);
-    
-    // FATAL: Certificate pin required in production
-    if (isProduction) {
-      throw StateError(
-        'FATAL: Certificate pin required. Set --dart-define=SHADED_PIN_SHA256=<sha256-fingerprint>\n\n'
-        'To get the fingerprint from your server:\n'
-        '  openssl s_client -connect your-server.com:443 -servername your-server.com '
-        '| openssl x509 -pubkey -noout '
-        '| openssl pkey -pubin -outform der '
-        '| openssl dgst -sha256 -binary '
-        '| openssl base64',
-      );
-    }
-    
-    assert(() {
-      debugPrint(
-        '⚠️ SECURITY WARNING: Certificate pinning disabled.\n'
-        'For localhost: self-signed certs allowed.\n'
-        'For non-localhost: TOFU enabled in production, debug mode rules in debug.\n'
-        'For production, set --dart-define=SHADED_PIN_SHA256=<fingerprint> for strict pinning.\n'
-        'To get the fingerprint from your server:\n'
-        '  openssl s_client -connect your-server.com:443 -servername your-server.com '
-        '| openssl x509 -pubkey -noout '
-        '| openssl pkey -pubin -outform der '
-        '| openssl dgst -sha256 -binary '
-        '| openssl base64',
-      );
-      return true;
-    }());
+     // CRIT-02: Verify pin for non-localhost
+     client.badCertificateCallback = (X509Certificate cert, String host, int port) {
+       final isLocalhost = host == 'localhost' || host == '127.0.0.1';
+       final isProduction = const bool.fromEnvironment('dart.vm.product', defaultValue: false);
 
-    // Debug mode: allow self-signed certs for localhost only
-    final isLocalhost = host == 'localhost' || host == '127.0.0.1';
-    // HIGH-06: Require PIN in debug for non-localhost
-    if (!isLocalhost) {
-      debugPrint('[ConnectionService] REJECTED: PIN required for non-localhost: $host (debug mode)');
-      debugPrint('[ConnectionService] For non-localhost, set --dart-define=SHADED_PIN_SHA256=<fingerprint>');
-      throw StateError(
-        'FATAL: PIN required for non-localhost in debug mode. '
-        'Set --dart-define=SHADED_PIN_SHA256=<sha256-fingerprint>',
-      );
-    }
-    debugPrint('[ConnectionService] Allowing self-signed cert for: $host (debug mode)');
-    return true;
-  };
+       // localhost in debug: allow without checking
+       if (!isProduction && isLocalhost) {
+         debugPrint('[ConnectionService] Allowing self-signed cert for: $host (debug mode)');
+         return true;
+       }
 
-  return http_io.IOClient(client);
+       // No PIN configured: production is fatal, debug non-localhost is rejected
+       if (_pinSha256.isEmpty) {
+         if (isProduction) {
+           throw StateError(
+             'FATAL: Certificate pin required. Set --dart-define=SHADED_PIN_SHA256=<sha256-fingerprint>\n\n'
+             'To get the fingerprint from your server:\n'
+             '  openssl s_client -connect your-server.com:443 -servername your-server.com '
+             '| openssl x509 -pubkey -noout '
+             '| openssl pkey -pubin -outform der '
+             '| openssl dgst -sha256 -binary '
+             '| openssl base64',
+           );
+         }
+         debugPrint('[ConnectionService] REJECTED: PIN required for $host');
+         return false;
+       }
+
+       // PIN configured: verify fingerprint
+       final fingerprint = sha256.convert(cert.der).toString();
+       return fingerprint == _pinSha256;
+     };
+
+     return http_io.IOClient(client);
 }
 
 // TOFU: store/retrieve certificate fingerprint

@@ -337,7 +337,6 @@ function _decryptMasterKey(encryptedData, secret) {
 // ── Server master key (for signing user public keys) ─────────────────────
 // Master key encrypted at rest with key derived from SESSION_SECRET
 const MASTER_KEY_FILE = path.join(DATA_DIR, 'server_master_key');
-let serverMasterKey = null;
 let serverPublicKey = null;
 
 function loadOrGenerateMasterKey() {
@@ -345,7 +344,6 @@ function loadOrGenerateMasterKey() {
     try {
       const encryptedData = fs.readFileSync(MASTER_KEY_FILE, 'utf8');
       const decrypted = _decryptMasterKey(encryptedData, SESSION_SECRET);
-      serverMasterKey = decrypted;
       serverPublicKey = decrypted.publicKey;
       console.log('[server] Master key loaded and decrypted');
       return;
@@ -359,8 +357,8 @@ function loadOrGenerateMasterKey() {
     publicKeyEncoding: { type: 'spki', format: 'pem' },
     privateKeyEncoding: { type: 'pkcs8', format: 'pem' }
   });
-  serverMasterKey = { publicKey, privateKey };
   serverPublicKey = publicKey;
+  // CRIT-03: Wipe master key after signing — only public key stays in memory
   const encrypted = _encryptMasterKey(privateKey, publicKey, SESSION_SECRET);
   fs.writeFileSync(MASTER_KEY_FILE, encrypted, { mode: 0o600 });
   console.log('[server] Master key generated and encrypted at rest');
@@ -1064,24 +1062,27 @@ app.post('/register', (req, res) => {
         release();
         return res.json({ ok: true, username: username_norm, token });
       }
-      let serverSignature = null;
-      if (serverMasterKey && serverMasterKey.privateKey) {
-        try {
-          const sign = crypto.createSign('sha256');
-          sign.update(publicKey);
-          sign.end();
-          const sig = sign.sign({
-            key: serverMasterKey.privateKey,
-            padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
-            saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
-          });
-          serverSignature = sig.toString('base64');
-          // Master key wiped after use
-          _wipeKey(serverMasterKey.privateKey);
-        } catch (e) {
-          console.error('[register] Error signing public key:', e.message);
-        }
-      }
+let serverSignature = null;
+       // CRIT-03: Decrypt private key on-demand, sign, then wipe immediately
+       if (fs.existsSync(MASTER_KEY_FILE)) {
+         try {
+           const decrypted = _decryptMasterKey(fs.readFileSync(MASTER_KEY_FILE, 'utf8'), SESSION_SECRET);
+           const privateKeyBuffer = Buffer.from(decrypted.privateKey, 'utf8');
+           const sign = crypto.createSign('sha256');
+           sign.update(publicKey);
+           sign.end();
+           const sig = sign.sign({
+             key: privateKeyBuffer,
+             padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+             saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST,
+           });
+           serverSignature = sig.toString('base64');
+           // Wipe private key from memory
+           _wipeKey(privateKeyBuffer);
+         } catch (e) {
+           console.error('[register] Error signing public key:', e.message);
+         }
+       }
       users.set(username_norm, {
         publicKey,
         signature,
@@ -1245,15 +1246,19 @@ app.get('/user/:username', requireUserAuth, (req, res) => {
       });
     }
     
-    if (!user.serverSignature && serverMasterKey && serverMasterKey.privateKey) {
-      try {
-        user.serverSignature = crypto.sign('sha256', Buffer.from(user.publicKey), serverMasterKey.privateKey).toString('base64');
-        users.set(req.params.username, user);
-        saveMap('users.json', users);
-      } catch (e) {
-        console.error('[user] Error signing public key:', e.message);
-      }
-    }
+if (!user.serverSignature && fs.existsSync(MASTER_KEY_FILE)) {
+       try {
+         // CRIT-03: Decrypt private key on-demand, sign, then wipe immediately
+         const decrypted = _decryptMasterKey(fs.readFileSync(MASTER_KEY_FILE, 'utf8'), SESSION_SECRET);
+         const privateKeyBuffer = Buffer.from(decrypted.privateKey, 'utf8');
+         user.serverSignature = crypto.sign('sha256', Buffer.from(user.publicKey), privateKeyBuffer).toString('base64');
+         _wipeKey(privateKeyBuffer);
+         users.set(req.params.username, user);
+         saveMap('users.json', users);
+       } catch (e) {
+         console.error('[user] Error signing public key:', e.message);
+       }
+     }
     const isOnline = onlineUsers.has(req.params.username);
     const lastSeenTime = lastSeen.get(req.params.username) || 0;
     return res.json({

@@ -141,12 +141,9 @@ class DatabaseService {
       debugPrint('[DatabaseService] secure storage read failed: $e');
     }
 
-    // CRIT-01: Direct Random.secure() instead of Fortuna wrapper
-    final random = math.Random.secure();
-    final masterKey = Uint8List(32);
-    for (int i = 0; i < 32; i++) {
-      masterKey[i] = random.nextInt(256);
-    }
+// CRIT-01: Direct Random.secure().nextBytes(32)
+     final random = math.Random.secure();
+     final masterKey = random.nextBytes(32);
 
     // Get or create device_id for PBKDF2 salt
     String? deviceId;
