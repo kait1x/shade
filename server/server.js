@@ -1631,15 +1631,15 @@ io.on('connection', (socket) => {
   wsConnectionsPerIp.set(clientIp, currentCount + 1);
   // HIGH-02: Global reconnect rate limit 10/min per IP
   const reconnectAttempts = reconnectRateLimit.get(clientIp) || [];
-  const now = Date.now();
-  const recentAttempts = reconnectAttempts.filter(ts => now - ts < 60000);
+  const nowReconnect = Date.now();
+  const recentAttempts = reconnectAttempts.filter(ts => nowReconnect - ts < 60000);
   if (recentAttempts.length >= 10) {
     console.warn('[ws] Rate limit exceeded for IP:', clientIp);
     socket.emit('error', { message: 'Too many connection attempts, try again later' });
     socket.disconnect();
     return;
   }
-  recentAttempts.push(now);
+  recentAttempts.push(nowReconnect);
   reconnectRateLimit.set(clientIp, recentAttempts);
   // LOW-04: Reconnect throttle 5s
   const RECONNECT_THROTTLE_MS = 5000;
