@@ -37,20 +37,19 @@ let httpsServer = null;
 let httpServer = null;
 
 function generateSelfSignedCerts() {
-  const keyPath = path.join(CERT_DIR, 'key.pem');
-  const certPath = path.join(CERT_DIR, 'cert.pem');
-  const key = crypto.generateKeySync('rsa', { modulusLength: 2048 });
-  const cert = crypto.createSelfSignedSubject({
-    keys: [
-      { key: key.export({ type: 'pkcs8', format: 'pem' }) },
-    ],
-    days: 365,
-    subject: { commonName: 'localhost' },
-  });
-  fs.mkdirSync(CERT_DIR, { recursive: true });
-  fs.writeFileSync(keyPath, key.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 });
-  fs.writeFileSync(certPath, cert, { mode: 0o644 });
-  console.log('[tls] Self-signed certificates generated in', CERT_DIR);
+  const { execSync } = require('child_process');
+  const certDir = path.resolve(CERT_DIR);
+  fs.mkdirSync(certDir, { recursive: true });
+  const keyPath = path.join(certDir, 'key.pem');
+  const certPath = path.join(certDir, 'cert.pem');
+  execSync(
+    `openssl req -x509 -nodes -days 365 -newkey rsa:2048 ` +
+    `-keyout "${keyPath}" -out "${certPath}" ` +
+    `-subj "/CN=localhost" ` +
+    `-addext "subjectAltName=DNS:localhost,IP:127.0.0.1"`,
+    { stdio: 'pipe' }
+  );
+  console.log('[tls] Self-signed certificates generated in', certDir);
 }
 
 try {
@@ -84,7 +83,7 @@ try {
 
     // MED-02: Self-signed cert warning
     const certContent = fs.readFileSync(certPath);
-    const certObj = crypto.X509Certificate.fromPEM(certContent);
+    const certObj = new crypto.X509Certificate(certContent);
     const isSelfSigned = certObj.issuer === certObj.subject;
     if (process.env.NODE_ENV === 'production' && isSelfSigned) {
       // LOW-02: Block production with self-signed cert
@@ -170,7 +169,7 @@ app.use((req, res, next) => {
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload'); // MED-02: Submit domain to hstspreload.org for full preload
   const wsHost = process.env.WS_HOST || 'wss://localhost';
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self' " + wsHost + "'"); // MED-01: CSP connect-src restricted
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' " + wsHost + "'"); // MED-01: CSP connect-src restricted
   res.removeHeader('X-Powered-By');
   next();
 });
@@ -762,10 +761,11 @@ function validateSessionToken(username, token) {
   const base = `${username}:${timestamp}:${nonce}`;
   const expectedSignature = crypto.createHmac('sha256', SESSION_SECRET).update(base).digest('hex');
   try {
-    return crypto.timingSafeEqual(
-      Buffer.from(signature, 'hex'),
-      Buffer.from(expectedSignature, 'hex')
-    );
+    // HIGH-01: Constant-time session token comparison
+    const sigBuf = Buffer.from(signature, 'hex');
+    const expBuf = Buffer.from(expectedSignature, 'hex');
+    if (sigBuf.length !== expBuf.length) return false;
+    return crypto.timingSafeEqual(sigBuf, expBuf);
   } catch (e) {
     return false;
   }
@@ -875,10 +875,247 @@ function requireAuth(req, res, next) {
   // Update backoff on failure
   adminBackoff.set(username, { backoff: (userBackoff.backoff || 0) + 1, lastAttempt: Date.now() });
   // Только cookie-аутентификация, без Basic Auth
-  return res.status(401).send('Unauthorized');
+  return res.redirect('/admin/login');
 }
 
-// Endpoint to set session cookie after successful Basic Auth
+// ── Admin Login Page ─────────────────────────────────────────
+
+app.get('/admin/login', (req, res) => {
+  const html = `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shade — Вход в админ-панель</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f0f1a;
+  --card:#1a1a2e;
+  --card-border:rgba(148,163,184,.08);
+  --accent:#7c3aed;
+  --accent-hover:#6d28d9;
+  --accent-glow:rgba(124,58,237,.35);
+  --text:#e2e8f0;
+  --text-muted:#64748b;
+  --input-bg:#0f0f1a;
+  --input-border:rgba(148,163,184,.15);
+  --input-focus:rgba(124,58,237,.4);
+  --danger:#ef4444;
+  --radius:16px;
+  --shadow:0 8px 40px rgba(0,0,0,.45);
+  --font:Inter,system-ui,-apple-system,sans-serif;
+}
+html{font-size:16px}
+body{
+  font-family:var(--font);
+  background:var(--bg);
+  color:var(--text);
+  min-height:100vh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:20px;
+  position:relative;
+  overflow:hidden;
+}
+body::before{
+  content:'';
+  position:absolute;
+  top:-50%;left:-50%;
+  width:200%;height:200%;
+  background:radial-gradient(ellipse at 30% 20%,rgba(124,58,237,.08) 0%,transparent 50%),
+             radial-gradient(ellipse at 70% 80%,rgba(0,212,170,.05) 0%,transparent 50%);
+  pointer-events:none;
+}
+.login-card{
+  position:relative;
+  width:100%;
+  max-width:420px;
+  background:var(--card);
+  border:1px solid var(--card-border);
+  border-radius:var(--radius);
+  box-shadow:var(--shadow);
+  padding:40px 36px 36px;
+}
+.login-header{text-align:center;margin-bottom:32px}
+.logo-icon{
+  width:56px;height:56px;
+  margin:0 auto 16px;
+  background:linear-gradient(135deg,var(--accent),#00d4aa);
+  border-radius:14px;
+  display:flex;align-items:center;justify-content:center;
+  font-weight:800;font-size:26px;color:#fff;
+  box-shadow:0 4px 20px var(--accent-glow);
+}
+.login-header h1{font-size:1.5rem;font-weight:700;letter-spacing:.5px;margin-bottom:4px}
+.login-header p{font-size:.88rem;color:var(--text-muted)}
+.form-group{margin-bottom:20px;position:relative}
+.form-group label{
+  display:block;
+  font-size:.82rem;
+  font-weight:600;
+  color:var(--text-muted);
+  margin-bottom:8px;
+  text-transform:uppercase;
+  letter-spacing:.5px;
+}
+.input-wrap{position:relative}
+.input-wrap .icon{
+  position:absolute;
+  left:14px;top:50%;
+  transform:translateY(-50%);
+  font-size:1.1rem;
+  color:var(--text-muted);
+  pointer-events:none;
+  transition:color .2s;
+}
+.input-wrap input{
+  width:100%;
+  padding:13px 14px 13px 44px;
+  background:var(--input-bg);
+  border:1px solid var(--input-border);
+  border-radius:10px;
+  color:var(--text);
+  font-size:.95rem;
+  font-family:var(--font);
+  outline:none;
+  transition:border-color .2s,box-shadow .2s;
+}
+.input-wrap input::placeholder{color:var(--text-muted);opacity:.6}
+.input-wrap input:focus{
+  border-color:var(--accent);
+  box-shadow:0 0 0 3px var(--input-focus);
+}
+.input-wrap input:focus + .icon,
+.input-wrap input:focus ~ .icon{color:var(--accent)}
+.btn-login{
+  width:100%;
+  padding:14px;
+  margin-top:8px;
+  background:linear-gradient(135deg,var(--accent),var(--accent-hover));
+  color:#fff;
+  font-size:1rem;
+  font-weight:600;
+  font-family:var(--font);
+  border:none;
+  border-radius:10px;
+  cursor:pointer;
+  transition:transform .15s,box-shadow .2s,opacity .2s;
+  box-shadow:0 4px 16px var(--accent-glow);
+}
+.btn-login:hover{
+  transform:translateY(-1px);
+  box-shadow:0 6px 24px var(--accent-glow);
+}
+.btn-login:active{transform:translateY(0);opacity:.9}
+.forgot-link{
+  display:block;
+  text-align:center;
+  margin-top:20px;
+  font-size:.85rem;
+  color:var(--text-muted);
+}
+.forgot-link a{
+  color:var(--accent);
+  text-decoration:none;
+  font-weight:500;
+  transition:color .2s;
+}
+.forgot-link a:hover{color:#a78bfa}
+.error-msg{
+  background:rgba(239,68,68,.1);
+  border:1px solid rgba(239,68,68,.2);
+  color:var(--danger);
+  padding:10px 14px;
+  border-radius:8px;
+  font-size:.85rem;
+  margin-bottom:20px;
+  display:none;
+  text-align:center;
+}
+.error-msg.visible{display:block}
+.footer-text{
+  text-align:center;
+  margin-top:28px;
+  font-size:.75rem;
+  color:var(--text-muted);
+  opacity:.6;
+}
+@media(max-width:480px){
+  .login-card{padding:32px 24px 28px}
+  .logo-icon{width:48px;height:48px;font-size:22px;border-radius:12px}
+  .login-header h1{font-size:1.3rem}
+}
+</style>
+</head>
+<body>
+<div class="login-card">
+  <div class="login-header">
+    <div class="logo-icon">S</div>
+    <h1>Shade</h1>
+    <p>Административная панель</p>
+  </div>
+  <div class="error-msg" id="error"></div>
+  <form id="loginForm" onsubmit="handleLogin(event)">
+    <div class="form-group">
+      <label for="username">Логин</label>
+      <div class="input-wrap">
+        <input type="text" id="username" name="username" placeholder="admin" autocomplete="username" required>
+        <span class="icon">&#x1F464;</span>
+      </div>
+    </div>
+    <div class="form-group">
+      <label for="password">Пароль</label>
+      <div class="input-wrap">
+        <input type="password" id="password" name="password" placeholder="Введите пароль" autocomplete="current-password" required>
+        <span class="icon">&#x1F512;</span>
+      </div>
+    </div>
+    <button type="submit" class="btn-login" id="btn">Войти</button>
+  </form>
+  <div class="forgot-link">
+    <a href="#">Забыли пароль?</a>
+  </div>
+  <div class="footer-text">Shade Relay Server &middot; Secure Admin Console</div>
+</div>
+<script>
+function handleLogin(e){
+  e.preventDefault();
+  var btn=document.getElementById('btn');
+  var err=document.getElementById('error');
+  var user=document.getElementById('username').value;
+  var pass=document.getElementById('password').value;
+  btn.textContent='Вход...';
+  btn.disabled=true;
+  err.classList.remove('visible');
+  var auth='Basic '+btoa(user+':'+pass);
+  fetch('/admin/login',{
+    method:'POST',
+    headers:{'Authorization':auth,'Content-Type':'application/json'}
+  })
+  .then(function(r){
+    if(r.ok)return r.json();
+    if(r.status===429)return r.json().then(function(d){throw new Error(d.error||'Слишком много попыток')});
+    return r.json().then(function(d){throw new Error(d.error||'Неверные учётные данные')});
+  })
+  .then(function(){
+    window.location.href='/dashboard';
+  })
+  .catch(function(e){
+    err.textContent=e.message;
+    err.classList.add('visible');
+    btn.textContent='Войти';
+    btn.disabled=false;
+  });
+}
+</script>
+</body>
+</html>`;
+  res.send(html);
+});
+
+// Endpoint to authenticate admin and set session cookie
 // TODO: TOTP 2FA for admin (LOW-03)
 app.post('/admin/login', (req, res) => {
   const clientIp = req.ip || req.connection.remoteAddress || 'unknown';
@@ -1363,6 +1600,7 @@ app.get('/group/:id', (req, res) => {
 // MED-07: WS connection limit 5 per IP
 const wsConnectionsPerIp = new Map();
 const lastDisconnectTime = new Map();
+const reconnectRateLimit = new Map(); // HIGH-02: 10 reconnects/min per IP
 
 // MED-06: Global WS rate limit 10/sec
 const globalWsRateLimit = new Map();
@@ -1391,6 +1629,18 @@ io.on('connection', (socket) => {
     return;
   }
   wsConnectionsPerIp.set(clientIp, currentCount + 1);
+  // HIGH-02: Global reconnect rate limit 10/min per IP
+  const reconnectAttempts = reconnectRateLimit.get(clientIp) || [];
+  const now = Date.now();
+  const recentAttempts = reconnectAttempts.filter(ts => now - ts < 60000);
+  if (recentAttempts.length >= 10) {
+    console.warn('[ws] Rate limit exceeded for IP:', clientIp);
+    socket.emit('error', { message: 'Too many connection attempts, try again later' });
+    socket.disconnect();
+    return;
+  }
+  recentAttempts.push(now);
+  reconnectRateLimit.set(clientIp, recentAttempts);
   // LOW-04: Reconnect throttle 5s
   const RECONNECT_THROTTLE_MS = 5000;
   const lastDisconnect = lastDisconnectTime.get(clientIp);
@@ -1925,6 +2175,527 @@ app.delete('/admin/user/:username', requireAuth, async (req, res) => {
 
 app.get('/logs', requireAuth, (_req, res) => {
   res.json(recentLogs.slice(-50));
+});
+
+// ── Admin Dashboard ──────────────────────────────────────────
+
+app.get('/dashboard', requireAuth, (_req, res) => {
+  const uptime = process.uptime();
+  const uptimeStr = (() => {
+    const h = Math.floor(uptime / 3600);
+    const m = Math.floor((uptime % 3600) / 60);
+    const s = Math.floor(uptime % 60);
+    return `${h}h ${m}m ${s}s`;
+  })();
+  const totalUsers = users.size;
+  const activeSessions = onlineUsers.size;
+  const totalGroups = groups.size;
+  const todayMessages = [...offlineBuffer.values()].reduce((s, a) => s + a.length, 0);
+  const serverVersion = '1.0.0';
+  const userList = [];
+  for (const [key, value] of users) {
+    const isOnline = onlineUsers.has(key);
+    const lastSeenTime = lastSeen.get(key) || value.registeredAt || 0;
+    userList.push({
+      username: key,
+      online: isOnline,
+      lastSeen: lastSeenTime,
+      registeredAt: value.registeredAt || 0,
+    });
+  }
+  userList.sort((a, b) => b.lastSeen - a.lastSeen);
+
+  function timeAgo(ts) {
+    const diff = Date.now() - ts;
+    const sec = Math.floor(diff / 1000);
+    if (sec < 60) return sec + 's ago';
+    const min = Math.floor(sec / 60);
+    if (min < 60) return min + 'm ago';
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return hr + 'h ago';
+    const days = Math.floor(hr / 24);
+    return days + 'd ago';
+  }
+  function escHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shade — Admin Dashboard</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg-primary:#0f0f1a;
+  --bg-secondary:#1a1a2e;
+  --bg-card:#16213e;
+  --bg-hover:#1f2b47;
+  --accent:#7c3aed;
+  --accent-light:#a78bfa;
+  --accent-glow:rgba(124,58,237,.25);
+  --teal:#00d4aa;
+  --text-primary:#e2e8f0;
+  --text-secondary:#94a3b8;
+  --text-muted:#64748b;
+  --border:rgba(148,163,184,.1);
+  --danger:#ef4444;
+  --success:#22c55e;
+  --warning:#f59e0b;
+  --radius:12px;
+  --shadow:0 4px 24px rgba(0,0,0,.35);
+  --shadow-sm:0 2px 8px rgba(0,0,0,.25);
+  --font:Inter,system-ui,-apple-system,sans-serif;
+}
+html{font-size:15px}
+body{
+  font-family:var(--font);
+  background:var(--bg-primary);
+  color:var(--text-primary);
+  min-height:100vh;
+  display:flex;
+  flex-direction:column;
+  line-height:1.5;
+}
+a{color:inherit;text-decoration:none}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+
+/* ── Layout ── */
+.layout{display:flex;min-height:100vh;flex:1}
+
+/* ── Sidebar ── */
+.sidebar{
+  width:240px;
+  background:var(--bg-secondary);
+  border-right:1px solid var(--border);
+  display:flex;
+  flex-direction:column;
+  position:fixed;
+  top:0;left:0;bottom:0;
+  z-index:100;
+  transition:transform .3s ease;
+}
+.sidebar-brand{
+  padding:24px 20px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  border-bottom:1px solid var(--border);
+}
+.sidebar-brand .logo{
+  width:36px;height:36px;
+  background:linear-gradient(135deg,var(--accent),var(--teal));
+  border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  font-weight:800;font-size:18px;color:#fff;
+}
+.sidebar-brand h1{font-size:1.25rem;font-weight:700;letter-spacing:.5px}
+.sidebar-nav{flex:1;padding:16px 12px;display:flex;flex-direction:column;gap:4px}
+.nav-item{
+  display:flex;align-items:center;gap:12px;
+  padding:10px 14px;border-radius:var(--radius);
+  font-size:.925rem;font-weight:500;
+  color:var(--text-secondary);
+  transition:all .2s ease;
+}
+.nav-item:hover,.nav-item.active{
+  background:var(--bg-hover);
+  color:var(--text-primary);
+}
+.nav-item.active{
+  background:var(--accent-glow);
+  color:var(--accent-light);
+}
+.nav-item .icon{font-size:1.15rem;width:22px;text-align:center}
+.sidebar-footer{
+  padding:16px 20px;
+  border-top:1px solid var(--border);
+  font-size:.78rem;
+  color:var(--text-muted);
+}
+
+/* ── Main ── */
+.main{flex:1;margin-left:240px;display:flex;flex-direction:column;min-height:100vh}
+
+/* ── Header ── */
+.header{
+  background:var(--bg-secondary);
+  border-bottom:1px solid var(--border);
+  padding:14px 28px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  position:sticky;top:0;z-index:50;
+  backdrop-filter:blur(12px);
+}
+.header-left{display:flex;align-items:center;gap:16px}
+.menu-toggle{display:none;font-size:1.4rem;padding:4px}
+.header-title{font-size:1.05rem;font-weight:600}
+.header-right{display:flex;align-items:center;gap:16px}
+.server-status{
+  display:flex;align-items:center;gap:8px;
+  font-size:.85rem;font-weight:500;
+  padding:6px 14px;
+  border-radius:20px;
+  background:rgba(34,197,94,.1);
+  color:var(--success);
+}
+.server-status .dot{
+  width:8px;height:8px;border-radius:50%;
+  background:var(--success);
+  box-shadow:0 0 6px var(--success);
+  animation:pulse 2s infinite;
+}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.btn-logout{
+  padding:7px 16px;
+  border-radius:8px;
+  font-size:.85rem;
+  font-weight:500;
+  background:rgba(239,68,68,.1);
+  color:var(--danger);
+  transition:background .2s;
+}
+.btn-logout:hover{background:rgba(239,68,68,.2)}
+
+/* ── Content ── */
+.content{padding:28px;flex:1}
+.content-title{font-size:1.5rem;font-weight:700;margin-bottom:24px}
+
+/* ── Stat Cards ── */
+.stats{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+  gap:20px;
+  margin-bottom:32px;
+}
+.stat-card{
+  background:var(--bg-card);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  padding:22px 24px;
+  box-shadow:var(--shadow-sm);
+  transition:transform .2s,box-shadow .2s;
+}
+.stat-card:hover{
+  transform:translateY(-2px);
+  box-shadow:var(--shadow);
+}
+.stat-card .stat-icon{
+  width:44px;height:44px;
+  border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:1.3rem;
+  margin-bottom:14px;
+}
+.stat-card .stat-icon.purple{background:rgba(124,58,237,.15);color:var(--accent-light)}
+.stat-card .stat-icon.teal{background:rgba(0,212,170,.12);color:var(--teal)}
+.stat-card .stat-icon.yellow{background:rgba(245,158,11,.12);color:var(--warning)}
+.stat-card .stat-icon.green{background:rgba(34,197,94,.12);color:var(--success)}
+.stat-card .stat-label{font-size:.82rem;color:var(--text-muted);font-weight:500;margin-bottom:4px}
+.stat-card .stat-value{font-size:1.75rem;font-weight:700}
+
+/* ── Table ── */
+.table-section{
+  background:var(--bg-card);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  box-shadow:var(--shadow-sm);
+  overflow:hidden;
+}
+.table-header{
+  padding:18px 24px;
+  border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;
+}
+.table-header h2{font-size:1.1rem;font-weight:600}
+.table-header .count{
+  font-size:.8rem;
+  padding:4px 10px;
+  border-radius:12px;
+  background:var(--accent-glow);
+  color:var(--accent-light);
+  font-weight:600;
+}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:600px}
+thead th{
+  text-align:left;
+  padding:12px 20px;
+  font-size:.78rem;
+  font-weight:600;
+  text-transform:uppercase;
+  letter-spacing:.5px;
+  color:var(--text-muted);
+  border-bottom:1px solid var(--border);
+  background:rgba(0,0,0,.15);
+}
+tbody td{
+  padding:14px 20px;
+  font-size:.9rem;
+  border-bottom:1px solid var(--border);
+  vertical-align:middle;
+}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--bg-hover)}
+.user-cell{display:flex;align-items:center;gap:10px}
+.avatar{
+  width:34px;height:34px;
+  border-radius:50%;
+  background:linear-gradient(135deg,var(--accent),var(--teal));
+  display:flex;align-items:center;justify-content:center;
+  font-weight:700;font-size:.8rem;color:#fff;
+  flex-shrink:0;
+}
+.status-badge{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:4px 10px;border-radius:12px;
+  font-size:.78rem;font-weight:600;
+}
+.status-badge.online{background:rgba(34,197,94,.12);color:var(--success)}
+.status-badge.offline{background:rgba(100,116,139,.12);color:var(--text-muted)}
+.status-badge .dot{width:6px;height:6px;border-radius:50%}
+.status-badge.online .dot{background:var(--success)}
+.status-badge.offline .dot{background:var(--text-muted)}
+.btn-revoke{
+  padding:5px 12px;
+  border-radius:6px;
+  font-size:.78rem;
+  font-weight:600;
+  background:rgba(239,68,68,.1);
+  color:var(--danger);
+  transition:background .2s;
+}
+.btn-revoke:hover{background:rgba(239,68,68,.22)}
+.btn-delete{
+  padding:5px 12px;
+  border-radius:6px;
+  font-size:.78rem;
+  font-weight:600;
+  background:rgba(245,158,11,.1);
+  color:var(--warning);
+  transition:background .2s;
+}
+.btn-delete:hover{background:rgba(245,158,11,.22)}
+.actions{display:flex;gap:8px}
+.empty-row td{
+  text-align:center;
+  padding:40px 20px;
+  color:var(--text-muted);
+  font-size:.9rem;
+}
+
+/* ── Footer ── */
+.footer{
+  padding:16px 28px;
+  border-top:1px solid var(--border);
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  font-size:.8rem;
+  color:var(--text-muted);
+  background:var(--bg-secondary);
+}
+
+/* ── Mobile ── */
+@media(max-width:768px){
+  .sidebar{transform:translateX(-100%)}
+  .sidebar.open{transform:translateX(0)}
+  .main{margin-left:0}
+  .menu-toggle{display:block}
+  .stats{grid-template-columns:1fr 1fr}
+  .content{padding:20px 16px}
+  .header{padding:12px 16px}
+  .footer{flex-direction:column;gap:6px;text-align:center}
+}
+@media(max-width:480px){
+  .stats{grid-template-columns:1fr}
+  .header-right{gap:10px}
+  .server-status span:not(.dot){display:none}
+}
+
+/* ── Overlay ── */
+.overlay{
+  display:none;
+  position:fixed;inset:0;
+  background:rgba(0,0,0,.5);
+  z-index:90;
+}
+.overlay.active{display:block}
+</style>
+</head>
+<body>
+<div class="overlay" id="overlay" onclick="toggleSidebar()"></div>
+<div class="layout">
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <div class="logo">S</div>
+      <h1>Shade</h1>
+    </div>
+    <nav class="sidebar-nav">
+      <a href="/dashboard" class="nav-item active"><span class="icon">&#x1F4CA;</span>Dashboard</a>
+      <a href="#users" class="nav-item"><span class="icon">&#x1F465;</span>Users</a>
+      <a href="#groups" class="nav-item"><span class="icon">&#x1F4AC;</span>Groups</a>
+      <a href="#logs" class="nav-item"><span class="icon">&#x1F4CB;</span>Logs</a>
+      <a href="#settings" class="nav-item"><span class="icon">&#x2699;&#xFE0F;</span>Settings</a>
+    </nav>
+    <div class="sidebar-footer">
+      v${serverVersion} &middot; Shade Relay Server
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-left">
+        <button class="menu-toggle" onclick="toggleSidebar()">&#x2630;</button>
+        <span class="header-title">Dashboard</span>
+      </div>
+      <div class="header-right">
+        <div class="server-status">
+          <span class="dot"></span>
+          <span>Online</span>
+        </div>
+        <form action="/admin/logout" method="POST">
+          <button type="submit" class="btn-logout">&#x21A9; Logout</button>
+        </form>
+      </div>
+    </header>
+
+    <!-- Content -->
+    <div class="content">
+      <h2 class="content-title">Overview</h2>
+
+      <!-- Stat Cards -->
+      <div class="stats">
+        <div class="stat-card">
+          <div class="stat-icon purple">&#x1F465;</div>
+          <div class="stat-label">Total Users</div>
+          <div class="stat-value">${totalUsers}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon teal">&#x1F525;</div>
+          <div class="stat-label">Active Sessions</div>
+          <div class="stat-value">${activeSessions}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon yellow">&#x1F4AC;</div>
+          <div class="stat-label">Groups</div>
+          <div class="stat-value">${totalGroups}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon green">&#x1F4E8;</div>
+          <div class="stat-label">Queued Messages</div>
+          <div class="stat-value">${todayMessages}</div>
+        </div>
+      </div>
+
+      <!-- Users Table -->
+      <div class="table-section" id="users">
+        <div class="table-header">
+          <h2>Users</h2>
+          <span class="count">${totalUsers} total</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Status</th>
+                <th>Last Seen</th>
+                <th>Registered</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${userList.length === 0
+                ? '<tr class="empty-row"><td colspan="5">No users registered yet</td></tr>'
+                : userList.map(u => {
+                    const ls = u.lastSeen ? timeAgo(u.lastSeen) : 'Never';
+                    const reg = u.registeredAt ? timeAgo(u.registeredAt) : 'Unknown';
+                    const initial = u.username.charAt(0).toUpperCase();
+                    const usernameEscaped = escHtml(u.username);
+                    return '<tr>' +
+                      '<td><div class="user-cell"><div class="avatar">' + initial + '</div>' + usernameEscaped + '</div></td>' +
+                      '<td><span class="status-badge ' + (u.online ? 'online' : 'offline') + '"><span class="dot"></span>' + (u.online ? 'Online' : 'Offline') + '</span></td>' +
+                      '<td>' + ls + '</td>' +
+                      '<td>' + reg + '</td>' +
+                      '<td><div class="actions">' +
+                        '<button class="btn-revoke" onclick="revokeToken(\'' + usernameEscaped + '\')">Revoke</button>' +
+                        '<button class="btn-delete" onclick="deleteUser(\'' + usernameEscaped + '\')">Delete</button>' +
+                      '</div></td>' +
+                    '</tr>';
+                  }).join('')
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span>Shade Server v${serverVersion}</span>
+      <span>Uptime: ${uptimeStr}</span>
+    </footer>
+  </div>
+</div>
+
+<script>
+function toggleSidebar(){
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('overlay').classList.toggle('active');
+}
+function timeAgo(ts){
+  const diff=Date.now()-ts;
+  const s=Math.floor(diff/1000);
+  if(s<60)return s+'s ago';
+  const m=Math.floor(s/60);
+  if(m<60)return m+'m ago';
+  const h=Math.floor(m/60);
+  if(h<24)return h+'h ago';
+  const d=Math.floor(h/24);
+  return d+'d ago';
+}
+function escHtml(s){
+  var d=document.createElement('div');
+  d.appendChild(document.createTextNode(s));
+  return d.innerHTML;
+}
+function revokeToken(user){
+  if(!confirm('Revoke all tokens for '+user+'?'))return;
+  fetch('/admin/revoke/'+encodeURIComponent(user),{method:'POST'})
+    .then(function(r){return r.json()})
+    .then(function(d){
+      if(d.ok){alert('Tokens revoked for '+user);location.reload()}
+      else{alert('Error: '+d.error)}
+    })
+    .catch(function(e){alert('Request failed')});
+}
+function deleteUser(user){
+  if(!confirm('Delete user '+user+'? This cannot be undone.'))return;
+  fetch('/admin/user/'+encodeURIComponent(user),{method:'DELETE'})
+    .then(function(r){return r.json()})
+    .then(function(d){
+      if(d.ok){alert('User deleted');location.reload()}
+      else{alert('Error: '+d.error)}
+    })
+    .catch(function(e){alert('Request failed')});
+}
+</script>
+</body>
+</html>`;
+
+  res.send(html);
 });
 
 // MED-07: Error Handler с санитизацией сообщений

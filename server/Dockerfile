@@ -1,10 +1,10 @@
-FROM node:18-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 
 # Install dependencies first (layer caching)
 COPY package*.json ./
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 # Copy source
 COPY . .

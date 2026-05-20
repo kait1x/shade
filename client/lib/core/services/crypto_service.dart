@@ -703,8 +703,8 @@ class ServerKeyFingerprintResult {
   }
 
   Uint8List _deriveKeyPBKDF2(String password, Uint8List salt) {
-    // LOW-03: Increased to 1M for desktop
-    const iterations = 1000000;
+    // HIGH-03: PBKDF2 2.1M for desktop (OWASP 2023)
+    const iterations = 2100000;
     const keyLength = 32;
     final pbkdf2 = pc.PBKDF2KeyDerivator(pc.HMac(pc.SHA256Digest(), 64));
     pbkdf2.init(pc.Pbkdf2Parameters(salt, iterations, keyLength));

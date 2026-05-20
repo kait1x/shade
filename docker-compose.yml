@@ -15,4 +15,4 @@ services:
       - DASHBOARD_PASS=${DASHBOARD_PASS:-admin}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
       - SESSION_SECRET=${SESSION_SECRET:-auto}
-      - NODE_ENV=production
+      - NODE_ENV=development
