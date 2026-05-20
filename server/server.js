@@ -752,12 +752,6 @@ function validateSessionToken(username, token) {
     console.log('[session] expired for', username);
     return false;
   }
-  const nonceKey = `${timestamp}:${nonce}`;
-  if (usedSessionNonces.has(nonceKey)) {
-    console.log('[session] nonce already used for', username, '- possible replay attack');
-    return false;
-  }
-  usedSessionNonces.add(nonceKey);
   const base = `${username}:${timestamp}:${nonce}`;
   const expectedSignature = crypto.createHmac('sha256', SESSION_SECRET).update(base).digest('hex');
   try {
