@@ -524,7 +524,7 @@ const sessions = new Map();
 const watchers = new Map();
 const refreshTokens = new Map();
 const gracePeriodSessions = new Map();
-const GRACE_PERIOD_MS = 5000;
+const GRACE_PERIOD_MS = 30000;
 
 // HIGH-04: LRU cache for token maps
 const MAX_SESSIONS = 10000;
@@ -1623,7 +1623,7 @@ io.on('connection', (socket) => {
   // MED-07: Ограничение 5 одновременных подключений с одного IP
   const clientIp = socket.handshake.address || socket.conn.remoteAddress || 'unknown';
   const currentCount = wsConnectionsPerIp.get(clientIp) || 0;
-  if (currentCount >= 5) {
+  if (currentCount >= 50) {
     console.warn('[ws] Connection limit exceeded for IP:', clientIp);
     socket.emit('error', { message: 'Too many connections from this IP' });
     socket.disconnect();
@@ -1634,7 +1634,7 @@ io.on('connection', (socket) => {
   const reconnectAttempts = reconnectRateLimit.get(clientIp) || [];
   const nowReconnect = Date.now();
   const recentAttempts = reconnectAttempts.filter(ts => nowReconnect - ts < 60000);
-  if (recentAttempts.length >= 10) {
+  if (recentAttempts.length >= 100) {
     console.warn('[ws] Rate limit exceeded for IP:', clientIp);
     socket.emit('error', { message: 'Too many connection attempts, try again later' });
     socket.disconnect();
@@ -1643,7 +1643,7 @@ io.on('connection', (socket) => {
   recentAttempts.push(nowReconnect);
   reconnectRateLimit.set(clientIp, recentAttempts);
   // LOW-04: Reconnect throttle 5s
-  const RECONNECT_THROTTLE_MS = 5000;
+  const RECONNECT_THROTTLE_MS = 500;
   const lastDisconnect = lastDisconnectTime.get(clientIp);
   if (lastDisconnect && (Date.now() - lastDisconnect) < RECONNECT_THROTTLE_MS) {
     console.warn('[ws] Reconnect throttle active for IP:', clientIp);
