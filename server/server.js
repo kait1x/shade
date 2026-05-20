@@ -2765,3 +2765,17 @@ server.listen(PORT, '0.0.0.0', () => {
   const proto = httpsServer ? 'https' : 'http';
   console.log(`Shade ${proto} server on :${PORT}`);
 });
+
+// ── HTTP WebSocket server (for testing without TLS) ──────────
+const HTTP_WS_PORT = process.env.HTTP_WS_PORT || 3001;
+const httpWsServer = http.createServer(app);
+io.attach(httpWsServer, {
+  cors: corsOptions,
+  transports: ['websocket'],
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  maxHttpBufferSize: 10e6,
+});
+httpWsServer.listen(HTTP_WS_PORT, '0.0.0.0', () => {
+  console.log(`Shade HTTP WebSocket server on :${HTTP_WS_PORT}`);
+});

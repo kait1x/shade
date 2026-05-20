@@ -8,11 +8,12 @@ services:
     ports:
       - "3443:3443"
       - "3000:3000"
+      - "3001:3001"
     volumes:
       - ./server/data:/app/data
       - ./server/certs:/app/certs
     environment:
       - DASHBOARD_PASS=${DASHBOARD_PASS:-admin}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://45.81.255.81:3001}
       - SESSION_SECRET=${SESSION_SECRET:-auto}
       - NODE_ENV=development
