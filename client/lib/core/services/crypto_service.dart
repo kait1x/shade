@@ -25,9 +25,10 @@ class _SecureRandom {
   /// Ensures Fortuna is seeded with entropy from platform CSPRNG.
   static void _ensureSeeded() {
     if (_seeded) return;
-    final entropy = Random.secure().nextBytes(32);
+    final random = Random.secure();
+    final entropy = Uint8List.fromList(List.generate(32, (_) => random.nextInt(256)));
     _fortuna.seed(pc.KeyParameter(entropy));
-    entropy.fill(0);
+    entropy.fillRange(0, entropy.length, 0);
     _seeded = true;
   }
 
@@ -45,6 +46,24 @@ class _SecureRandom {
     }
     return password;
   }
+}
+
+enum ServerKeyTrustStatus {
+  trusted,
+  newKeyRequiresConfirmation,
+  mismatchDetected,
+}
+
+class ServerKeyFingerprintResult {
+  final ServerKeyTrustStatus status;
+  final String fingerprint;
+  final String? storedFingerprint;
+
+  ServerKeyFingerprintResult({
+    required this.status,
+    required this.fingerprint,
+    this.storedFingerprint,
+  });
 }
 
 /// Сервис гибридного шифрования RSA-4096 + AES-256-GCM.
@@ -203,7 +222,7 @@ class CryptoService {
     return await RSA.signPSS(
       dataB64,
       Hash.SHA256,
-      const SaltLength(32), // Explicit 32-byte salt per RFC 8017
+      SaltLength.EQUALS_HASH,
       privateKey,
     );
   }
@@ -222,7 +241,7 @@ class CryptoService {
         signature,
         dataB64,
         Hash.SHA256,
-        const SaltLength(32), // Must match signData salt length
+        SaltLength.EQUALS_HASH,
         publicKey,
       );
     } catch (_) {
@@ -267,7 +286,7 @@ class CryptoService {
         serverSignature,
         dataB64,
         Hash.SHA256,
-        const SaltLength(32),
+        SaltLength.EQUALS_HASH,
         serverPublicKey,
       );
       if (!isValid) {
@@ -295,24 +314,6 @@ class CryptoService {
       );
     }
   }
-
-enum ServerKeyTrustStatus {
-  trusted,
-  newKeyRequiresConfirmation,
-  mismatchDetected,
-}
-
-class ServerKeyFingerprintResult {
-  final ServerKeyTrustStatus status;
-  final String fingerprint;
-  final String? storedFingerprint;
-
-  ServerKeyFingerprintResult({
-    required this.status,
-    required this.fingerprint,
-    this.storedFingerprint,
-  });
-}
 
   /// Проверяет отпечаток публичного ключа сервера.
   /// [FIX] HIGH #2: Используем PIN-код из сборки как единственный источник истины.
@@ -627,7 +628,7 @@ class ServerKeyFingerprintResult {
     try {
       final dir = await _getSecureStorageDir();
       final file = File('${dir.path}/$_keysFileName');
-      final data = '$privateKey|||SHADE_SEP|||$$publicKey';
+      final data = '$privateKey|||SHADE_SEP|||$publicKey';
       final encrypted = _encryptWithPassword(data, _password!);
       await file.writeAsBytes(encrypted);
       debugPrint('[CryptoService] Keys written to encrypted file');
@@ -668,14 +669,14 @@ class ServerKeyFingerprintResult {
       // FFI: free(ptr)
     }
     // Fallback: заполняем нулями
-    wipePassword(data);
+    _SecureRandom.wipePassword(data);
   }
 
   Uint8List _encryptWithPassword(String plaintext, String password) {
     final salt = _randomBytes(32);
     final key = _deriveKeyPBKDF2(password, salt);
     // HIGH-04: Стираем ключ после использования
-    wipePassword(key);
+    _SecureRandom.wipePassword(key);
     final nonce = _randomBytes(_aesNonceLen);
     final iv = enc.IV(nonce);
     final keyObj = enc.Key(key);
@@ -698,7 +699,7 @@ class ServerKeyFingerprintResult {
     final encrypter = enc.Encrypter(enc.AES(keyObj, mode: enc.AESMode.gcm));
     final result = encrypter.decrypt(enc.Encrypted(encrypted), iv: iv);
     // HIGH-04: Стираем ключ после использования
-    wipePassword(key);
+    _SecureRandom.wipePassword(key);
     return result;
   }
 

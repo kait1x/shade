@@ -810,7 +810,7 @@ async function validateRefreshToken(token) {
 // ── Middleware ──────────────────────────────────────────────
 function requireUserAuth(req, res, next) {
   const sessionToken = req.headers['x-session-token'];
-  const username = req.params.username || req.body.username;
+  const username = req.headers['x-username'] || req.params.username || req.body.username;
   if (!sessionToken || !username) {
     return res.status(401).json({ error: 'Authentication required' });
   }
@@ -1199,7 +1199,6 @@ app.get('/', (_req, res) => {
 });
 
 app.get('/api/stats', requireAuth, (req, res) => {
-  // HIGH-07: Hide user list from non-admin (stats endpoint already requires auth)
   const mem = process.memoryUsage();
   const uptime = process.uptime();
   res.json({
@@ -1212,7 +1211,15 @@ app.get('/api/stats', requireAuth, (req, res) => {
     },
     groups: groups.size,
     queuedMessages: [...offlineBuffer.values()].reduce((s, a) => s + a.length, 0),
-    // Users list removed - only admin should see full user data
+  });
+});
+
+app.get('/api/dashboard-stats', requireAuth, (req, res) => {
+  res.json({
+    totalUsers: users.size,
+    online: onlineUsers.size,
+    groups: groups.size,
+    queuedMessages: [...offlineBuffer.values()].reduce((s, a) => s + a.length, 0),
   });
 });
 
@@ -2691,6 +2698,32 @@ function deleteUser(user){
     })
     .catch(function(e){alert('Request failed')});
 }
+// Auto-refresh every 5 seconds
+setInterval(function(){
+  fetch('/api/dashboard-stats')
+    .then(function(r){return r.json()})
+    .then(function(d){
+      var cards=document.querySelectorAll('.stat-value');
+      if(cards.length>=4){
+        cards[0].textContent=d.totalUsers;
+        cards[1].textContent=d.online;
+        cards[2].textContent=d.groups;
+        cards[3].textContent=d.queuedMessages;
+      }
+    })
+    .catch(function(){});
+  // Refresh user table
+  fetch('/dashboard')
+    .then(function(r){return r.text()})
+    .then(function(html){
+      var parser=new DOMParser();
+      var doc=parser.parseFromString(html,'text/html');
+      var newTable=doc.querySelector('.table-section');
+      var oldTable=document.querySelector('.table-section');
+      if(newTable&&oldTable) oldTable.innerHTML=newTable.innerHTML;
+    })
+    .catch(function(){});
+},5000);
 </script>
 </body>
 </html>`;

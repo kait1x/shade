@@ -4,15 +4,16 @@ import android.os.Bundle
 import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+
+    private val CHANNEL = "com.shade.app/security"
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        
-        // Канал для управления безопасностью (скриншоты, запись экрана)
-        flutterEngine.dartExecutor.binaryMessenger.setMethodCallHandler(
-            "com.shade.app/security"
-        ) { call, result ->
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "enableSecureMode" -> {
                     enableSecureMode()
@@ -45,8 +46,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun excludeFromRecents() {
-        // Убираем приложение из списка недавних
-        val recentsFlag = WindowManager.LayoutParams.FLAG_EXCLUDE_FROM_RECENTS
+        val recentsFlag = 0x00080000
         window.addFlags(recentsFlag)
     }
 }

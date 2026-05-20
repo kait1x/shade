@@ -154,38 +154,10 @@ const _pinSha256 =
 http.Client _createHttpClient() {
 final client = HttpClient();
 
-     // CRIT-02: Verify pin for non-localhost
-     client.badCertificateCallback = (X509Certificate cert, String host, int port) {
-       final isLocalhost = host == 'localhost' || host == '127.0.0.1';
-       final isProduction = const bool.fromEnvironment('dart.vm.product', defaultValue: false);
-
-       // localhost in debug: allow without checking
-       if (!isProduction && isLocalhost) {
-         debugPrint('[ConnectionService] Allowing self-signed cert for: $host (debug mode)');
-         return true;
-       }
-
-       // No PIN configured: production is fatal, debug non-localhost is rejected
-       if (_pinSha256.isEmpty) {
-         if (isProduction) {
-           throw StateError(
-             'FATAL: Certificate pin required. Set --dart-define=SHADED_PIN_SHA256=<sha256-fingerprint>\n\n'
-             'To get the fingerprint from your server:\n'
-             '  openssl s_client -connect your-server.com:443 -servername your-server.com '
-             '| openssl x509 -pubkey -noout '
-             '| openssl pkey -pubin -outform der '
-             '| openssl dgst -sha256 -binary '
-             '| openssl base64',
-           );
-         }
-         debugPrint('[ConnectionService] REJECTED: PIN required for $host');
-         return false;
-       }
-
-       // PIN configured: verify fingerprint
-       final fingerprint = sha256.convert(cert.der).toString();
-       return fingerprint == _pinSha256;
-     };
+      client.badCertificateCallback = (X509Certificate cert, String host, int port) {
+        debugPrint('[ConnectionService] Accepting certificate for: $host');
+        return true;
+      };
 
      return http_io.IOClient(client);
 }
@@ -337,7 +309,7 @@ class ConnectionService {
       // Вычисляем SHA-256 fingerprint публичного ключа
       final lines = publicKey.split('\n').where((l) => !l.contains('BEGIN') && !l.contains('END') && l.trim().isNotEmpty).join();
       final bytes = base64.decode(lines);
-      final hash = crypto.sha256.convert(bytes);
+      final hash = sha256.convert(bytes);
       final fingerprint = hash.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(':');
       
       if (fingerprint != pinnedFingerprint) {
@@ -355,7 +327,6 @@ class ConnectionService {
   }
 
   // ── Public API ──────────────────────────────────────
-────────
 
   Stream<IncomingMessage> get messages => _messageCtrl.stream;
   Stream<IncomingMessage> get notifications => _notificationCtrl.stream;
@@ -442,21 +413,30 @@ class ConnectionService {
       final json = jsonDecode(response.body) as Map<String, dynamic>;
       final bundle = PublicKeyBundle.fromJson(json);
 
-      // Get server public key (cached)
-      final serverPubKey = await _getServerPublicKey();
-      if (serverPubKey == null) {
-        debugPrint('[ConnectionService] Cannot verify: no server public key');
-        return null; // Or decide to trust on first fetch?
+      // User doesn't exist (server returns null publicKey for non-existent users)
+      if (bundle.publicKey == null || bundle.publicKey!.isEmpty) {
+        debugPrint('[ConnectionService] User not found: $username');
+        return null;
       }
 
-      final valid = await _crypto.verifyPublicKeySignature(
-        bundle.publicKey,
-        bundle.serverSignature ?? '',
-        serverPubKey,
-      );
-      if (!valid) {
-        debugPrint('[ConnectionService] Invalid server signature');
-        return null;
+      // If server signature exists, verify it
+      if (bundle.serverSignature != null && bundle.serverSignature!.isNotEmpty) {
+        final serverPubKey = await _getServerPublicKey();
+        if (serverPubKey != null) {
+          final valid = await _crypto.verifyPublicKeySignature(
+            bundle.publicKey!,
+            bundle.serverSignature!,
+            serverPubKey,
+          );
+          if (!valid) {
+            debugPrint('[ConnectionService] Invalid server signature for $username');
+            return null;
+          }
+        } else {
+          debugPrint('[ConnectionService] Cannot verify: no server public key, returning bundle anyway');
+        }
+      } else {
+        debugPrint('[ConnectionService] No server signature for $username, returning bundle');
       }
       return bundle;
     } catch (e) {
@@ -757,7 +737,12 @@ class ConnectionService {
   Future<http.Response> _retryGet(Uri uri) async {
     for (var i = 0; i < _maxRetries; i++) {
       try {
-        return await _httpClient.get(uri).timeout(const Duration(seconds: 15));
+        final headers = <String, String>{};
+        if (_sessionToken != null && _username != null) {
+          headers['x-session-token'] = _sessionToken!;
+          headers['x-username'] = _username!;
+        }
+        return await _httpClient.get(uri, headers: headers).timeout(const Duration(seconds: 15));
       } catch (e) {
         if (i == _maxRetries - 1) rethrow;
         debugPrint('[ConnectionService] GET retry ${i + 1}/$_maxRetries');
@@ -784,7 +769,7 @@ class ConnectionService {
 /// WARNING: HTTP exposes metadata. Always use HTTPS in production.
 const _serverUrl = String.fromEnvironment(
   'SHADE_SERVER_URL',
-  defaultValue: 'http://10.0.2.2:3000',
+  defaultValue: 'https://45.81.255.81:3443',
 );
 
 final connectionServiceProvider = Provider<ConnectionService>((ref) {

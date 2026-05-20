@@ -135,9 +135,9 @@ class DatabaseService {
       debugPrint('[DatabaseService] secure storage read failed: $e');
     }
 
-// CRIT-01: Direct Random.secure().nextBytes(32)
+// CRIT-01: Direct Random.secure() bytes generation
      final random = math.Random.secure();
-     final masterKey = random.nextBytes(32);
+     final masterKey = Uint8List.fromList(List.generate(32, (_) => random.nextInt(256)));
 
     // Get or create device_id for PBKDF2 salt
     String? deviceId;
@@ -468,6 +468,19 @@ class DatabaseService {
   Future<bool> hasMoreMessages(int conversationId, int loadedCount) async {
     final totalCount = await getMessageCount(conversationId);
     return loadedCount < totalCount;
+  }
+
+  /// Returns the last message for a conversation.
+  Future<Map<String, dynamic>?> getLastMessage(int conversationId) async {
+    final db = await database;
+    final result = await db.query(
+      'messages',
+      where: 'conversation_id = ?',
+      whereArgs: [conversationId],
+      orderBy: 'timestamp DESC',
+      limit: 1,
+    );
+    return result.isEmpty ? null : result.first;
   }
 
   // ── Cleanup ─────────────────────────────────────────────────

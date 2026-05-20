@@ -919,7 +919,6 @@ class _MessagesArea extends StatelessWidget {
   }
 
   bool get _isLoadingMoreIndicator => false; // Will be handled by state
-  }
 
   void _showDeleteMenu(
       BuildContext context, DisplayMessage msg, ChatMessagesNotifier notifier) {
@@ -939,7 +938,7 @@ class _MessagesArea extends StatelessWidget {
                   style: TextStyle(color: ShadeColors.textPrimary)),
               onTap: () {
                 Navigator.pop(ctx);
-                if (onReply != null) onReply!(msg);
+                notifier.setReply(msg);
               },
             ),
             ListTile(

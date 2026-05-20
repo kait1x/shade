@@ -165,8 +165,8 @@ class ChatRepository {
     );
   }
 
-  Future<List<Message>> getMessages(int conversationId) async {
-    final rows = await _db.getMessages(conversationId);
+  Future<List<Message>> getMessages(int conversationId, {int limit = 20, int offset = 0}) async {
+    final rows = await _db.getMessages(conversationId, limit: limit, offset: offset);
     return rows.map(Message.fromRow).toList();
   }
 
