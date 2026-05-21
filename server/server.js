@@ -1790,8 +1790,8 @@ io.on('connection', (socket) => {
 
   socket.on('message', (payload) => {
     // MED-04: Раздельные лимиты для текста и файлов
-    const MAX_TEXT_SIZE = 1 * 1024 * 1024;   // 1MB для текстовых сообщений
-    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB для файлов
+    const MAX_TEXT_SIZE = 10 * 1024 * 1024;  // 10MB для текстовых сообщений
+    const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB для файлов
     if (!payload || !payload.to || !payload.data) return;
     
     // CRIT-02: Validate encrypted payload format before relay
