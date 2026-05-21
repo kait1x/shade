@@ -153,7 +153,7 @@ const io = new Server(server || http.createServer(app), {
   transports: ['websocket'],
   pingTimeout: 60000,
   pingInterval: 25000,
-  maxHttpBufferSize: 10e6,
+  maxHttpBufferSize: 100e6,
 });
 
 app.set('trust proxy', 1);
@@ -1790,8 +1790,8 @@ io.on('connection', (socket) => {
 
   socket.on('message', (payload) => {
     // MED-04: Раздельные лимиты для текста и файлов
-    const MAX_TEXT_SIZE = 10 * 1024 * 1024;  // 10MB для текстовых сообщений
-    const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB для файлов
+    const MAX_TEXT_SIZE = 50 * 1024 * 1024;  // 50MB для текстовых сообщений
+    const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB для файлов
     if (!payload || !payload.to || !payload.data) return;
     
     // CRIT-02: Validate encrypted payload format before relay
@@ -2774,7 +2774,7 @@ io.attach(httpWsServer, {
   transports: ['websocket'],
   pingTimeout: 60000,
   pingInterval: 25000,
-  maxHttpBufferSize: 10e6,
+  maxHttpBufferSize: 100e6,
 });
 httpWsServer.listen(HTTP_WS_PORT, '0.0.0.0', () => {
   console.log(`Shade HTTP WebSocket server on :${HTTP_WS_PORT}`);
