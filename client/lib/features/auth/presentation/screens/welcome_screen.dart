@@ -1,503 +1,216 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-
-import 'package:shade/core/services/crypto_service.dart';
 import 'package:shade/core/widgets/shade_logo.dart';
 import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 import 'package:shade/main.dart';
 
 class WelcomeScreen extends ConsumerStatefulWidget {
   const WelcomeScreen({super.key});
-
   @override
   ConsumerState<WelcomeScreen> createState() => _WelcomeScreenState();
 }
 
 class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
-  final _nicknameController = TextEditingController();
-  final _focusNode = FocusNode();
-  final _formKey = GlobalKey<FormState>();
-
-  @override
-  void dispose() {
-    _nicknameController.dispose();
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  Future<void> _createProfile() async {
-    if (!_formKey.currentState!.validate()) return;
-
-    final nickname = _nicknameController.text.trim().toLowerCase();
-    final authNotifier = ref.read(authNotifierProvider.notifier);
-
-    final success = await authNotifier.createSecureProfile(nickname);
-
-    if (!success && mounted) {
-      final updatedState = ref.read(authNotifierProvider);
-      final errorMsg = updatedState.error ?? 'Не удалось создать профиль';
-
-      showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          backgroundColor: ShadeColors.surfaceCard,
-          title: const Text('Ошибка',
-              style: TextStyle(color: ShadeColors.textPrimary)),
-          content: Text(errorMsg,
-              style: const TextStyle(color: ShadeColors.textSecondary)),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child:
-                  const Text('OK', style: TextStyle(color: ShadeColors.violet)),
-            ),
-          ],
-        ),
-      );
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final authState = ref.watch(authNotifierProvider);
-
-    return Scaffold(
-      resizeToAvoidBottomInset: true,
-      body: Container(
-        width: double.infinity,
-        height: double.infinity,
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [
-              ShadeColors.black,
-              ShadeColors.surfaceDark,
-              ShadeColors.black,
-            ],
-            stops: [0.0, 0.5, 1.0],
-          ),
-        ),
-        child: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 28.0),
-            child: ConstrainedBox(
-              constraints: BoxConstraints(
-                minHeight: (MediaQuery.of(context).size.height -
-                        MediaQuery.of(context).padding.top -
-                        MediaQuery.of(context).padding.bottom -
-                        48)
-                    .clamp(0.0, double.infinity),
-              ),
-              child: IntrinsicHeight(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Spacer(flex: 2),
-
-                    // Ghost logo
-                    const ShadeLogo(size: 120),
-
-                    const SizedBox(height: 36),
-
-                    // Title
-                    const Text(
-                      'SHADE',
-                      style: TextStyle(
-                        fontSize: 42,
-                        fontWeight: FontWeight.w900,
-                        color: ShadeColors.textPrimary,
-                        letterSpacing: 8,
-                      ),
-                    ),
-
-                    const SizedBox(height: 8),
-
-                    // Subtitle
-                    Text(
-                      'Encrypted Messenger',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: ShadeColors.textSecondary,
-                        letterSpacing: 3,
-                      ),
-                    ),
-
-                    const SizedBox(height: 56),
-
-                    // Form or loader
-                    if (authState.status == AuthStatus.generatingKeys)
-                      const _LoadingView()
-                    else
-                      _ProfileForm(
-                        formKey: _formKey,
-                        nicknameController: _nicknameController,
-                        focusNode: _focusNode,
-                        onSubmit: _createProfile,
-                      ),
-
-                    const Spacer(flex: 2),
-
-                    // Footer
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.lock_rounded,
-                          size: 12,
-                          color: ShadeColors.greenAccent.withOpacity(0.6),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          'RSA 4096 · E2EE',
-                          style: TextStyle(
-                            fontSize: 11,
-                            color: ShadeColors.textMuted,
-                            letterSpacing: 1.5,
-                          ),
-                        ),
-                      ],
-                    ),
-
-                    const SizedBox(height: 20),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _LoadingView extends StatelessWidget {
-  const _LoadingView();
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const SizedBox(
-          width: 36,
-          height: 36,
-          child: CircularProgressIndicator(
-            strokeWidth: 2.5,
-            valueColor: AlwaysStoppedAnimation<Color>(ShadeColors.violet),
-          ),
-        ),
-        const SizedBox(height: 24),
-        const Text(
-          'Generating 4096-bit keys...',
-          style: TextStyle(
-            fontSize: 15,
-            color: ShadeColors.textPrimary,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          'This may take a few seconds',
-          style: TextStyle(
-            fontSize: 12,
-            color: ShadeColors.textMuted,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _ProfileForm extends ConsumerStatefulWidget {
-  final GlobalKey<FormState> formKey;
-  final TextEditingController nicknameController;
-  final FocusNode focusNode;
-  final VoidCallback onSubmit;
-
-  const _ProfileForm({
-    required this.formKey,
-    required this.nicknameController,
-    required this.focusNode,
-    required this.onSubmit,
-  });
-
-  @override
-  ConsumerState<_ProfileForm> createState() => _ProfileFormState();
-}
-
-class _ProfileFormState extends ConsumerState<_ProfileForm> {
-  final _formKey = GlobalKey<FormState>();
-  final _nicknameController = TextEditingController();
-  bool _isFocused = false;
-  bool _isSubmitting = false;
-  String? _errorText;
-
+  final _nickname = TextEditingController();
+  final _form = GlobalKey<FormState>();
   @override
   void initState() {
     super.initState();
-    _nicknameController.addListener(() {
-      if (_errorText != null) setState(() => _errorText = null);
-    });
+    _nickname.text = ref.read(authNotifierProvider).nickname ?? '';
   }
 
   @override
   void dispose() {
-    _nicknameController.dispose();
+    _nickname.dispose();
     super.dispose();
   }
 
-  Future<void> _createProfile() async {
-    if (!_formKey.currentState!.validate()) return;
-
-    setState(() {
-      _isSubmitting = true;
-      _errorText = null;
-    });
-
-    final nickname = _nicknameController.text.trim().toLowerCase();
-    final authNotifier = ref.read(authNotifierProvider.notifier);
-
-    try {
-      final success = await authNotifier
-          .createSecureProfile(nickname)
-          .timeout(const Duration(seconds: 15));
-
-      if (!success && mounted) {
-        final updatedState = ref.read(authNotifierProvider);
-        setState(() {
-          _errorText = updatedState.error ?? 'Не удалось создать профиль';
-          _isSubmitting = false;
-        });
-        return;
-      }
-
-      // Check if server key needs confirmation (TOFU)
-      final fpResult = await authNotifier.checkServerKeyConfirmation();
-      if (fpResult != null && 
-          fpResult.status == ServerKeyTrustStatus.newKeyRequiresConfirmation) {
-        if (!mounted) return;
-        
-        final confirmed = await showDialog<bool>(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            title: const Text('Подтверждение сервера'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('Впервые подключаетесь к этому серверу.'),
-                const SizedBox(height: 8),
-                const Text('Fingerprint серверного ключа:'),
-                const SizedBox(height: 4),
-                SelectableText(
-                  fpResult.fingerprint,
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 10),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Отклонить'),
-              ),
-              ElevatedButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('Доверять'),
-              ),
-            ],
-          ),
-        );
-
-        if (confirmed == true) {
-          await authNotifier.trustServerKey(fpResult.fingerprint);
-        } else {
-          setState(() {
-            _errorText = 'Server key rejected by user';
-            _isSubmitting = false;
-          });
-          return;
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _errorText = 'Таймаут или ошибка: $e';
-          _isSubmitting = false;
-        });
-      }
+  Future<void> _signIn() async {
+    if (_form.currentState!.validate()) {
+      await ref
+          .read(authNotifierProvider.notifier)
+          .createSecureProfile(_nickname.text.trim().toLowerCase());
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Form(
-      key: widget.formKey,
-      child: Column(
-        children: [
-          // Nickname input with neon border
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 250),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(16),
-              boxShadow: _isFocused
-                  ? [
-                      BoxShadow(
-                        color: ShadeColors.violet.withOpacity(0.2),
-                        blurRadius: 20,
-                        spreadRadius: 1,
-                      ),
-                    ]
-                  : null,
-            ),
-            child: TextFormField(
-              controller: widget.nicknameController,
-              focusNode: widget.focusNode,
-              style: const TextStyle(
-                color: ShadeColors.textPrimary,
-                fontSize: 16,
-              ),
-              cursorColor: ShadeColors.violet,
-              decoration: InputDecoration(
-                labelText: 'Никнейм',
-                helperText: 'a-z, 0-9, _ • от 3 до 32 символов',
-                helperStyle: TextStyle(
-                  color: ShadeColors.textMuted,
-                  fontSize: 12,
-                ),
-                labelStyle: TextStyle(
-                  color: _isFocused
-                      ? ShadeColors.violetLight
-                      : ShadeColors.textMuted,
-                ),
-                prefixIcon: Icon(
-                  Icons.alternate_email_rounded,
-                  color:
-                      _isFocused ? ShadeColors.violet : ShadeColors.textMuted,
-                ),
-                filled: true,
-                fillColor: ShadeColors.surfaceCard,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  borderSide: const BorderSide(color: ShadeColors.greyBorder),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  borderSide: const BorderSide(color: ShadeColors.greyBorder),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  borderSide: const BorderSide(
-                    color: ShadeColors.violet,
-                    width: 1.5,
-                  ),
-                ),
-              ),
-              validator: (value) {
-                final nick = (value ?? '').trim().toLowerCase();
-                if (nick.isEmpty) {
-                  return 'Введите никнейм';
-                }
-                if (nick.length < 3) {
-                  return 'Минимум 3 символа (сейчас ${nick.length})';
-                }
-                if (nick.length > 32) {
-                  return 'Максимум 32 символа (сейчас ${nick.length})';
-                }
-                if (!RegExp(r'^[a-z0-9_]+$').hasMatch(nick)) {
-                  final bad = nick
-                      .split('')
-                      .where((c) => !RegExp(r'[a-z0-9_]').hasMatch(c))
-                      .toSet()
-                      .join(', ');
-                  return 'Недопустимые символы: $bad';
-                }
-                return null;
-              },
-              textInputAction: TextInputAction.done,
-              onFieldSubmitted: (_) => widget.onSubmit(),
-            ),
-          ),
-
-          const SizedBox(height: 28),
-
-          // Error message
-          if (_errorText != null)
-            Container(
-              padding: const EdgeInsets.all(12),
-              margin: const EdgeInsets.only(bottom: 16),
-              decoration: BoxDecoration(
-                color: const Color(0xFFEF4444).withOpacity(0.1),
-                borderRadius: BorderRadius.circular(12),
-                border:
-                    Border.all(color: const Color(0xFFEF4444).withOpacity(0.3)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.error_outline_rounded,
-                      color: Color(0xFFEF4444), size: 20),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      _errorText!,
-                      style: const TextStyle(
-                          color: Color(0xFFEF4444), fontSize: 13),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-          // Create button
-          SizedBox(
-            width: double.infinity,
-            height: 56,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [ShadeColors.violet, ShadeColors.cyan],
-                  begin: Alignment.centerLeft,
-                  end: Alignment.centerRight,
-                ),
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [
-                  BoxShadow(
-                    color: ShadeColors.violet.withOpacity(0.35),
-                    blurRadius: 16,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: ElevatedButton(
-                onPressed: _isSubmitting ? null : _createProfile,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.transparent,
-                  shadowColor: Colors.transparent,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                ),
-                child: _isSubmitting
-                    ? const SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.white),
-                      )
-                    : const Text(
-                        'Create Secure Profile',
+    final auth = ref.watch(authNotifierProvider);
+    final busy = auth.status == AuthStatus.generatingKeys;
+    return Scaffold(
+        body: DecoratedBox(
+      decoration: const BoxDecoration(
+          gradient: RadialGradient(
+              center: Alignment(-.7, -.8),
+              radius: 1.3,
+              colors: [Color(0xFF242424), ShadeColors.black],
+              stops: [0, .8])),
+      child: SafeArea(
+          child: Center(
+              child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Form(
+              key: _form,
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Row(children: [
+                      ShadeLogo(size: 30),
+                      SizedBox(width: 8),
+                      Text('shade',
+                          style: TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: -1)),
+                      Spacer(),
+                      Icon(Icons.lock_outline_rounded,
+                          color: ShadeColors.textMuted, size: 18)
+                    ]),
+                    const SizedBox(height: 28),
+                    Center(
+                        child: Container(
+                            width: 134,
+                            height: 134,
+                            decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                    color: ShadeColors.violet
+                                        .withValues(alpha: .15)),
+                                gradient: RadialGradient(colors: [
+                                  ShadeColors.violet.withValues(alpha: .16),
+                                  ShadeColors.violet.withValues(alpha: .015)
+                                ])),
+                            child: const Center(child: ShadeLogo(size: 138)))),
+                    const SizedBox(height: 20),
+                    Text('Свои люди.\nЛичные разговоры.',
                         style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                          letterSpacing: 0.5,
-                        ),
-                      ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
+                            fontSize: MediaQuery.sizeOf(context).width < 360
+                                ? 32
+                                : 36,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: -1.3,
+                            height: 1.12)),
+                    const SizedBox(height: 12),
+                    const Text(
+                        'Место для ваших разговоров,\nфотографий и маленьких планов.',
+                        style: TextStyle(
+                            color: ShadeColors.textSecondary,
+                            fontSize: 15,
+                            height: 1.6)),
+                    const SizedBox(height: 26),
+                    Container(
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                            color:
+                                ShadeColors.surfaceCard.withValues(alpha: .9),
+                            borderRadius: BorderRadius.circular(24),
+                            border: Border.all(color: ShadeColors.greyBorder)),
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              const Text('Давайте познакомимся',
+                                  style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w700)),
+                              const SizedBox(height: 7),
+                              const Text('По никнейму друзья смогут найти вас.',
+                                  style: TextStyle(
+                                      color: ShadeColors.textSecondary,
+                                      fontSize: 12,
+                                      height: 1.5)),
+                              const SizedBox(height: 20),
+                              TextFormField(
+                                  key: const Key('nickname'),
+                                  controller: _nickname,
+                                  enabled: !busy,
+                                  autocorrect: false,
+                                  maxLength: 32,
+                                  textInputAction: TextInputAction.done,
+                                  decoration: const InputDecoration(
+                                      labelText: 'Ваш никнейм',
+                                      hintText: 'например, kait1x',
+                                      counterText: '',
+                                      prefixIcon: Icon(
+                                          Icons.alternate_email_rounded,
+                                          size: 20)),
+                                  validator: (value) =>
+                                      RegExp(r'^[a-z0-9_]{3,32}$').hasMatch(
+                                              (value ?? '')
+                                                  .trim()
+                                                  .toLowerCase())
+                                          ? null
+                                          : 'От 3 до 32 символов: a–z, 0–9 и _',
+                                  onFieldSubmitted: (_) {
+                                    if (!busy) _signIn();
+                                  }),
+                              const SizedBox(height: 16),
+                              FilledButton.icon(
+                                  key: const Key('google-sign-in'),
+                                  onPressed: busy ? null : _signIn,
+                                  icon: busy
+                                      ? const SizedBox(
+                                          width: 18,
+                                          height: 18,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2))
+                                      : const Icon(Icons.login_rounded,
+                                          size: 19),
+                                  label: Text(busy
+                                      ? 'Подключаем…'
+                                      : 'Продолжить с Google'),
+                                  style: FilledButton.styleFrom(
+                                      backgroundColor: const Color(0xFFF1F1F1),
+                                      foregroundColor: ShadeColors.black,
+                                      minimumSize: const Size.fromHeight(52),
+                                      textStyle: const TextStyle(
+                                          fontFamily: 'Roboto',
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 14))),
+                              if (auth.error != null)
+                                Padding(
+                                    padding: const EdgeInsets.only(top: 14),
+                                    child: Text(auth.error!,
+                                        key: const Key('auth-error'),
+                                        style: TextStyle(
+                                            fontSize: 12,
+                                            height: 1.5,
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .error))),
+                            ])),
+                    const SizedBox(height: 20),
+                    const Text(
+                        'История и ключи остаются на этом устройстве.\nВосстановление на новом телефоне пока недоступно.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 11,
+                            height: 1.6,
+                            color: ShadeColors.textSecondary)),
+                    const SizedBox(height: 4),
+                    const ExpansionTile(
+                        title: Text('Как используется Google-аккаунт',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                                fontSize: 11, color: ShadeColors.textMuted)),
+                        tilePadding: EdgeInsets.zero,
+                        dense: true,
+                        shape: Border(),
+                        collapsedShape: Border(),
+                        children: [
+                          Padding(
+                              padding: EdgeInsets.all(12),
+                              child: Text(
+                                  'Google подтверждает имя, email и фото профиля. Shade не получает пароль Google. Шифрование переписки использует отдельные ключи на вашем устройстве.',
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: ShadeColors.textSecondary,
+                                      height: 1.6)))
+                        ]),
+                  ])),
+        ),
+      ))),
+    ));
   }
 }

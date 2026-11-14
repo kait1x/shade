@@ -1,7 +1,7 @@
+import 'package:sqflite_common_ffi/sqflite_ffi.dart' as sqflite_ffi;
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -9,31 +9,36 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 // Mobile: encrypted SQLite via SQLCipher
 import 'package:sqflite_sqlcipher/sqflite.dart' as sqlcipher;
 // Desktop: standard SQLite via FFI
-import 'package:sqflite_common_ffi/sqflite_ffi.dart' as sqflite_ffi;
 // Common types (Database, ConflictAlgorithm)
-import 'package:sqflite_common/sqflite.dart' show Database, ConflictAlgorithm;
+import 'package:sqflite_common/sqflite.dart'
+    show Database, ConflictAlgorithm, DatabaseFactory, OpenDatabaseOptions;
 import 'package:pointycastle/export.dart' as pc;
+
+// Keep the existing derivation parameters and stored-key format. Initial key
+// generation is CPU-heavy and must not block the first frame or keyboard input.
+String _deriveDatabaseKey(List<Uint8List> input) {
+  final pbkdf2 = pc.PBKDF2KeyDerivator(pc.HMac(pc.SHA256Digest(), 64));
+  pbkdf2.init(pc.Pbkdf2Parameters(input[1], 2100000, 32));
+  return base64Url.encode(pbkdf2.process(input[0]));
+}
 
 /// Returns true when running on a mobile platform that supports SQLCipher.
 bool get _isMobile => Platform.isAndroid || Platform.isIOS;
 
 /// Unified database service.
 ///
-/// - **All platforms (Android/iOS/Desktop):** Uses SQLCipher with a key stored in
-///   flutter_secure_storage.
-/// - **Desktop (Windows/Mac/Linux):** Uses sqflite_common_ffi with SQLCipher support.
-/// - **MED-03:** SQLCipher now enabled for all platforms via sqflite_sqlcipher
+/// Android/iOS use SQLCipher with a key in OS secure storage.
+/// Desktop production storage is unsupported; tests inject their own factory.
 class DatabaseService {
   static const String _dbName = 'shade.db';
-  static const int _dbVersion = 4;
+  static const int _dbVersion = 6;
   static const String _dbKeyStorageKey = 'sqlcipher_db_key';
 
   final FlutterSecureStorage _secureStorage;
 
   /// Holds the database handle.
   Database? _db;
-
-  bool _ffiInitialised = false;
+  Future<Database>? _opening;
 
   DatabaseService({FlutterSecureStorage? secureStorage})
       : _secureStorage = secureStorage ??
@@ -41,65 +46,64 @@ class DatabaseService {
               aOptions: AndroidOptions(encryptedSharedPreferences: true),
             );
 
+  /// Opens the real schema on a test-provided SQLite factory; never used by
+  /// production code (mobile still always opens SQLCipher with a key).
+  static Future<DatabaseService> openForTest(
+      DatabaseFactory factory, String path,
+      {bool createVersion4 = false, int? schemaVersion}) async {
+    final service = DatabaseService();
+    final version = schemaVersion ?? (createVersion4 ? 4 : _dbVersion);
+    service._db = await factory.openDatabase(path,
+        options: OpenDatabaseOptions(
+            version: version,
+            onCreate: (db, version) async {
+              await service._createSchemaV1(db);
+              await service._createSchemaV2(db);
+              await service._createSchemaV3(db);
+              if (version >= 5) await service._createSchemaV5(db);
+              if (version >= 6) await service._createSchemaV6(db);
+            },
+            onUpgrade: service._onUpgrade));
+    return service;
+  }
+
+  Future<bool> hasNetworkMessage(String id, {required String sender}) async =>
+      (await (await database).query('messages',
+              columns: ['id'],
+              where: 'network_id = ? AND network_sender = ?',
+              whereArgs: [id, sender],
+              limit: 1))
+          .isNotEmpty;
+
   // ── Lifecycle ───────────────────────────────────────────────
 
   Future<Database> get database async {
-    _db ??= await _open();
+    _db ??= await (_opening ??= _open());
     return _db!;
   }
 
   Future<Database> _open() async {
-    String dir;
-
-    if (_isMobile) {
-      // ── Mobile: use sqflite_sqlcipher path ──────────────────
-      dir = await sqlcipher.getDatabasesPath();
-    } else {
-      // ── Desktop: init FFI first, then get path ─────────────
-      await _initFfi();
-      dir = await sqflite_ffi.getDatabasesPath();
+    if (!_isMobile) {
+      throw UnsupportedError(
+          'Shade currently supports encrypted production storage on Android/iOS only. Desktop SQLCipher is not configured.');
     }
-
-    final filePath = p.join(dir, _dbName);
-
-    if (_isMobile) {
-      final key = await _getOrCreateKey();
-      final db = await sqlcipher.openDatabase(
-        filePath,
+    final dir = await sqlcipher.getDatabasesPath();
+    final key = await _getOrCreateKey();
+    final db = await sqlcipher.openDatabase(p.join(dir, _dbName),
         version: _dbVersion,
         password: key,
-        onConfigure: (db) async {},
         onCreate: _onCreate,
-        onUpgrade: _onUpgrade,
-      );
-      await _verifyDatabaseIntegrity(db);
-      return db;
-    } else {
-      try {
-        final key = await _getOrCreateKey();
-        final db = await sqlcipher.openDatabase(
-          filePath,
-          version: _dbVersion,
-          password: key,
-          onConfigure: (db) async {},
-          onCreate: _onCreate,
-          onUpgrade: _onUpgrade,
-        );
-        await _verifyDatabaseIntegrity(db);
-        return db;
-      } catch (e) {
-        debugPrint('[DatabaseService] SQLCipher failed: $e');
-        // HIGH-05: No unencrypted fallback on desktop
-        throw Exception('FATAL: SQLCipher required on desktop. Database unavailable. $e');
-      }
-    }
+        onUpgrade: _onUpgrade);
+    await _verifyDatabaseIntegrity(db);
+    return db;
   }
 
   // MED-04: Parameterized queries — SQL injection safe
   Future<void> _verifyDatabaseIntegrity(Database db) async {
     try {
       // MED-04: No user input in this query - safe
-      final result = await db.rawQuery('SELECT count(*) as cnt FROM sqlite_master');
+      final result =
+          await db.rawQuery('SELECT count(*) as cnt FROM sqlite_master');
       final count = result.first['cnt'] as int?;
       if (count != null) {
         debugPrint('[DatabaseService] Database integrity verified OK');
@@ -113,54 +117,46 @@ class DatabaseService {
     }
   }
 
-  /// One-time initialisation of the FFI database factory (desktop only).
-  Future<void> _initFfi() async {
-    if (_ffiInitialised) return;
-    sqflite_ffi.sqfliteFfiInit();
-    sqflite_ffi.databaseFactory = sqflite_ffi.databaseFactoryFfi;
-    _ffiInitialised = true;
-    debugPrint('[DatabaseService] sqflite FFI initialised (desktop mode)');
-  }
-
   // ── Key management (mobile only) ────────────────────────────
 
   /// Generates or retrieves the SQLCipher database encryption key.
   Future<String> _getOrCreateKey() async {
     const deviceIdKey = 'shade_device_id';
-    
+
     try {
       final existing = await _secureStorage.read(key: _dbKeyStorageKey);
       if (existing != null && existing.isNotEmpty) return existing;
-    } catch (e) {
-      debugPrint('[DatabaseService] secure storage read failed: $e');
+    } catch (_) {
+      throw StateError(
+          'Secure storage unavailable; retry without replacing the database key');
     }
 
 // CRIT-01: Direct Random.secure() bytes generation
-     final random = math.Random.secure();
-     final masterKey = Uint8List.fromList(List.generate(32, (_) => random.nextInt(256)));
+    final random = math.Random.secure();
+    final masterKey =
+        Uint8List.fromList(List.generate(32, (_) => random.nextInt(256)));
 
     // Get or create device_id for PBKDF2 salt
     String? deviceId;
     try {
       deviceId = await _secureStorage.read(key: deviceIdKey);
       if (deviceId == null || deviceId.isEmpty) {
-        deviceId = base64Url.encode(Uint8List(16).map((_) => random.nextInt(256)).toList());
+        deviceId = base64Url
+            .encode(Uint8List(16).map((_) => random.nextInt(256)).toList());
         await _secureStorage.write(key: deviceIdKey, value: deviceId);
       }
     } catch (e) {
-      deviceId = base64Url.encode(Uint8List(16).map((_) => random.nextInt(256)).toList());
+      deviceId = base64Url
+          .encode(Uint8List(16).map((_) => random.nextInt(256)).toList());
     }
 
-    // MED-01: PBKDF2 (now 2.1M+ for all platforms per HIGH-08)
-    final salt = utf8.encode(deviceId);
-    const iterations = 2100000; // HIGH-08: PBKDF2 2.1M+ iterations
-    final pbkdf2 = pc.PBKDF2KeyDerivator(pc.HMac(pc.SHA256Digest(), 64));
-    pbkdf2.init(pc.Pbkdf2Parameters(Uint8List.fromList(salt), iterations, 32));
-    final derivedKey = pbkdf2.process(masterKey);
-    final key = base64Url.encode(derivedKey);
+    final key = await compute(_deriveDatabaseKey,
+        [masterKey, Uint8List.fromList(utf8.encode(deviceId))],
+        debugLabel: 'shade-database-key');
 
     await _secureStorage.write(key: _dbKeyStorageKey, value: key);
-    debugPrint('[DatabaseService] Generated new DB encryption key (PBKDF2 with device_id salt)');
+    debugPrint(
+        '[DatabaseService] Generated new DB encryption key (PBKDF2 with device_id salt)');
     return key;
   }
 
@@ -168,9 +164,10 @@ class DatabaseService {
 
   Future<void> _onCreate(Database db, int version) async {
     await _createSchemaV1(db);
-    if (version >= 2) {
-      await _createSchemaV2(db);
-    }
+    await _createSchemaV2(db);
+    await _createSchemaV3(db);
+    await _createSchemaV5(db);
+    await _createSchemaV6(db);
   }
 
   Future<void> _createSchemaV1(Database db) async {
@@ -275,23 +272,65 @@ class DatabaseService {
     if (oldVersion < 3) {
       await _createSchemaV3(db);
     }
-    if (oldVersion < 4) {
-      // Add is_read column to messages
+    if (oldVersion < 4 &&
+        !(await db.rawQuery('PRAGMA table_info(messages)'))
+            .any((c) => c['name'] == 'is_read')) {
+      // Older schema snapshots already included this column.
       await db.execute(
         'ALTER TABLE messages ADD COLUMN is_read INTEGER NOT NULL DEFAULT 0',
       );
     }
+    if (oldVersion < 5) await _createSchemaV5(db);
+    if (oldVersion < 6) await _createSchemaV6(db);
+  }
+
+  Future<void> _createSchemaV5(Database db) async {
+    await db.execute('ALTER TABLE messages ADD COLUMN network_id TEXT');
+    await db.execute(
+        "ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'sent'");
+    await db.execute(
+        'CREATE UNIQUE INDEX idx_messages_network_id ON messages(network_id)');
+    await db.execute('ALTER TABLE users ADD COLUMN email TEXT');
+    await db.execute('ALTER TABLE users ADD COLUMN display_name TEXT');
+    await db.execute('ALTER TABLE users ADD COLUMN avatar_url TEXT');
+    await db.execute(
+        'CREATE TABLE outbox (network_id TEXT PRIMARY KEY, recipient TEXT NOT NULL, payload TEXT NOT NULL)');
+  }
+
+  Future<void> _createSchemaV6(Database db) async {
+    await db.execute(
+        "ALTER TABLE messages ADD COLUMN network_sender TEXT NOT NULL DEFAULT ''");
+    await db.execute(
+        'ALTER TABLE messages ADD COLUMN is_outgoing INTEGER NOT NULL DEFAULT 0');
+    final profiles = await db.query('users', limit: 1);
+    final nickname =
+        profiles.isEmpty ? '' : profiles.first['nickname'] as String;
+    // Preserve v5 history; old incoming identity can be recovered from its chat.
+    await db.execute(
+        "UPDATE messages SET network_sender = COALESCE((SELECT name FROM conversations WHERE id = messages.conversation_id), 'legacy:' || sender_id)");
+    if (nickname.isNotEmpty) {
+      await db.update(
+          'messages', {'network_sender': nickname, 'is_outgoing': 1},
+          where: 'sender_id = ?', whereArgs: [nickname.hashCode.abs()]);
+    }
+    await db.execute('DROP INDEX idx_messages_network_id');
+    await db.execute(
+        'CREATE UNIQUE INDEX idx_messages_network_id ON messages(network_sender, network_id)');
   }
 
   // ── Users ───────────────────────────────────────────────────
 
-  Future<int> saveUserProfile(String nickname, String publicKey) async {
+  Future<int> saveUserProfile(String nickname, String publicKey,
+      {Map<String, dynamic> profile = const {}}) async {
     final db = await database;
     return db.insert(
       'users',
       {
         'nickname': nickname,
         'public_key': publicKey,
+        'email': profile['email'],
+        'display_name': profile['displayName'],
+        'avatar_url': profile['avatarUrl'],
         'created_at': DateTime.now().millisecondsSinceEpoch,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
@@ -356,7 +395,7 @@ class DatabaseService {
 
   Future<List<Map<String, dynamic>>> searchContacts(String query) async {
     // MED-04: Escape LIKE special chars
-    final escaped = query.replaceAll('%', r'\%').replaceAll('_', '\_');
+    final escaped = query.replaceAll('%', r'\%').replaceAll('_', '_');
     final db = await database;
     return db.query(
       'contacts',
@@ -371,10 +410,15 @@ class DatabaseService {
 
   Future<int> createConversation(String name, {String? publicKey}) async {
     final db = await database;
-    return db.insert('conversations', {
-      'name': name,
-      'public_key': publicKey,
-      'created_at': DateTime.now().millisecondsSinceEpoch,
+    return db.transaction((txn) async {
+      final existing = await txn.query('conversations',
+          where: 'name = ?', whereArgs: [name], limit: 1);
+      if (existing.isNotEmpty) return existing.first['id'] as int;
+      return txn.insert('conversations', {
+        'name': name,
+        'public_key': publicKey,
+        'created_at': DateTime.now().millisecondsSinceEpoch,
+      });
     });
   }
 
@@ -385,8 +429,14 @@ class DatabaseService {
 
   Future<void> deleteConversation(int id) async {
     final db = await database;
-    await db.delete('messages', where: 'conversation_id = ?', whereArgs: [id]);
-    await db.delete('conversations', where: 'id = ?', whereArgs: [id]);
+    await db.transaction((txn) async {
+      await txn.rawDelete(
+          'DELETE FROM outbox WHERE network_id IN (SELECT network_id FROM messages WHERE conversation_id = ? AND is_outgoing = 1)',
+          [id]);
+      await txn
+          .delete('messages', where: 'conversation_id = ?', whereArgs: [id]);
+      await txn.delete('conversations', where: 'id = ?', whereArgs: [id]);
+    });
   }
 
   // ── Messages ────────────────────────────────────────────────
@@ -396,26 +446,92 @@ class DatabaseService {
     required int conversationId,
     required int senderId,
     required String encryptedContent,
+    String? networkId,
+    String status = 'sent',
+    int? timestamp,
+    bool outgoing = false,
+    String? networkSender,
+    String? recipient,
+    String? networkPayload,
   }) async {
     final db = await database;
-    return db.insert('messages', {
-      'conversation_id': conversationId,
-      'sender_id': senderId,
-      'encrypted_content': encryptedContent,
-      'timestamp': DateTime.now().millisecondsSinceEpoch,
-      'is_read': 0,
+    final sender = networkSender ?? (outgoing ? '@self' : 'legacy:$senderId');
+    return db.transaction((txn) async {
+      if (networkId != null) {
+        final rows = await txn.query('messages',
+            where: 'network_id = ? AND network_sender = ?',
+            whereArgs: [networkId, sender],
+            limit: 1);
+        if (rows.isNotEmpty) return rows.first['id'] as int;
+      }
+      final id = await txn.insert('messages', {
+        'conversation_id': conversationId,
+        'sender_id': senderId,
+        'encrypted_content': encryptedContent,
+        'network_id': networkId,
+        'network_sender': sender,
+        'is_outgoing': outgoing ? 1 : 0,
+        'status': status,
+        'timestamp': timestamp ?? DateTime.now().millisecondsSinceEpoch,
+        'is_read': outgoing ? 1 : 0,
+      });
+      // The display copy and the recipient-encrypted outbox commit together.
+      if (networkPayload != null && recipient != null && networkId != null) {
+        await txn.insert('outbox', {
+          'network_id': networkId,
+          'recipient': recipient,
+          'payload': networkPayload
+        });
+      }
+      return id;
     });
   }
 
-  /// Marks all messages in a conversation as read (for received messages).
-  Future<void> markMessagesAsRead(int conversationId) async {
+  Future<List<Map<String, dynamic>>> getOutbox() async =>
+      (await database).query('outbox');
+
+  Future<void> updateMessageStatus(String networkId, String status) async {
+    const ranks = {'queued': 0, 'sent': 1, 'delivered': 2, 'read': 3};
+    if (!ranks.containsKey(status)) return;
     final db = await database;
-    await db.update(
-      'messages',
-      {'is_read': 1},
-      where: 'conversation_id = ? AND is_read = 0',
-      whereArgs: [conversationId],
-    );
+    await db.transaction((txn) async {
+      final rows = await txn.query('messages',
+          where: 'network_id = ? AND is_outgoing = 1', whereArgs: [networkId]);
+      if (rows.isEmpty) return;
+      final old = rows.first['status'] as String;
+      if ((ranks[status] ?? 0) > (ranks[old] ?? 0)) {
+        await txn.update('messages', {'status': status},
+            where: 'network_id = ? AND is_outgoing = 1',
+            whereArgs: [networkId]);
+      }
+      if (status != 'queued') {
+        await txn
+            .delete('outbox', where: 'network_id = ?', whereArgs: [networkId]);
+      }
+    });
+  }
+
+  /// Only the displayed and server-confirmed incoming IDs become read.
+  Future<void> markMessagesAsRead(int conversationId,
+      {required List<int> messageIds}) async {
+    if (messageIds.isEmpty) return;
+    final db = await database;
+    final placeholders = List.filled(messageIds.length, '?').join(',');
+    await db.update('messages', {'is_read': 1},
+        where:
+            'conversation_id = ? AND is_outgoing = 0 AND id IN ($placeholders)',
+        whereArgs: [conversationId, ...messageIds]);
+  }
+
+  Future<bool> isPendingMessage(String networkId) async =>
+      (await (await database).query('outbox',
+              where: 'network_id = ?', whereArgs: [networkId], limit: 1))
+          .isNotEmpty;
+
+  Future<void> deleteIncomingMessage(String sender, String networkId) async {
+    await (await database).delete('messages',
+        where: 'network_sender = ? AND network_id = ? AND is_outgoing = 0',
+        whereArgs: [sender, networkId]);
   }
 
   /// Returns count of unread messages in a conversation.
@@ -431,7 +547,7 @@ class DatabaseService {
   }
 
   /// Returns messages with pagination support.
-  /// 
+  ///
   /// [conversationId] - ID беседы
   /// [limit] - количество сообщений для загрузки (по умолчанию 20)
   /// [offset] - смещение от конца истории (0 = последние сообщения)
@@ -446,7 +562,7 @@ class DatabaseService {
       'messages',
       where: 'conversation_id = ?',
       whereArgs: [conversationId],
-      orderBy: 'timestamp DESC',
+      orderBy: 'timestamp DESC, id DESC',
       limit: limit,
       offset: offset,
     );
@@ -477,7 +593,7 @@ class DatabaseService {
       'messages',
       where: 'conversation_id = ?',
       whereArgs: [conversationId],
-      orderBy: 'timestamp DESC',
+      orderBy: 'timestamp DESC, id DESC',
       limit: 1,
     );
     return result.isEmpty ? null : result.first;
@@ -491,6 +607,7 @@ class DatabaseService {
       await db.close();
     }
     _db = null;
+    _opening = null;
   }
 
   // ── Groups ──────────────────────────────────────────────────
@@ -588,7 +705,7 @@ class DatabaseService {
   }
 
   /// Deletes the entire database and all its data.
-  /// 
+  ///
   /// This should be called during logout to remove all local message history
   /// and cryptographic material from the device.
   Future<void> deleteDatabase() async {

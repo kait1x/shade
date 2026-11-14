@@ -6,6 +6,7 @@ import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 import 'package:shade/features/chats/data/repositories/chat_repository.dart';
 import 'package:shade/features/chats/presentation/screens/chat_screen.dart';
 import 'package:shade/main.dart';
+import 'package:shade/core/widgets/shade_ui.dart';
 
 /// Search for users on the server and start a chat.
 class UserSearchScreen extends ConsumerStatefulWidget {
@@ -29,8 +30,8 @@ class _UserSearchScreenState extends ConsumerState<UserSearchScreen> {
   }
 
   Future<void> _search() async {
-    final username = _controller.text.trim();
-    if (username.isEmpty) return;
+    final username = _controller.text.trim().toLowerCase();
+    if (username.isEmpty || _isSearching) return;
 
     setState(() {
       _isSearching = true;
@@ -43,6 +44,7 @@ class _UserSearchScreenState extends ConsumerState<UserSearchScreen> {
       final connectionService = ref.read(connectionServiceProvider);
       final bundle = await connectionService.getPublicKey(username);
 
+      if (!mounted) return;
       if (bundle == null) {
         setState(() {
           _error = 'Пользователь не найден или подпись невалидна';
@@ -56,6 +58,7 @@ class _UserSearchScreenState extends ConsumerState<UserSearchScreen> {
         _isSearching = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = 'Ошибка поиска: $e';
         _isSearching = false;
@@ -116,150 +119,121 @@ class _UserSearchScreenState extends ConsumerState<UserSearchScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Найти пользователя'),
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Container(height: 0.5, color: ShadeColors.greyBorder),
-        ),
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Search field
-            TextField(
-              controller: _controller,
-              style: const TextStyle(color: ShadeColors.textPrimary),
-              cursorColor: ShadeColors.violet,
-              decoration: InputDecoration(
-                hintText: 'Введите никнейм...',
-                prefixIcon: const Icon(Icons.search, color: ShadeColors.violet),
-                suffixIcon: _controller.text.isNotEmpty
-                    ? IconButton(
-                        icon: const Icon(Icons.clear, color: ShadeColors.textMuted),
-                        onPressed: () {
-                          _controller.clear();
-                          setState(() {
-                            _foundUser = null;
-                            _error = null;
-                          });
-                        },
-                      )
-                    : null,
-              ),
-              onSubmitted: (_) => _search(),
-              onChanged: (_) => setState(() {}),
-            ),
-
-            const SizedBox(height: 16),
-
-            // Search button
-            SizedBox(
-              height: 48,
-              child: ElevatedButton(
-                onPressed: _isSearching ? null : _search,
-                child: _isSearching
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('Найти'),
-              ),
-            ),
-
-            const SizedBox(height: 24),
-
-            // Results
-            if (_isSearching)
-              const Center(child: CircularProgressIndicator())
-            else if (_error != null)
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.red.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.red.withOpacity(0.3)),
-                ),
-                child: Row(
-                  children: [
-                    const Icon(Icons.error_outline, color: Colors.red),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        _error!,
-                        style: const TextStyle(color: Colors.red),
-                      ),
-                    ),
-                  ],
-                ),
-              )
-            else if (_foundUser != null && _searchedUsername != null)
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: ShadeColors.surfaceCard,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: ShadeColors.greyBorder),
-                ),
-                child: Column(
-                  children: [
-                    // User avatar and name
-                    CircleAvatar(
-                      radius: 32,
-                      backgroundColor: ShadeColors.violet.withOpacity(0.2),
-                      child: Text(
-                        _searchedUsername![0].toUpperCase(),
-                        style: const TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                          color: ShadeColors.violet,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      _searchedUsername!,
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: ShadeColors.textPrimary,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
+  Widget build(BuildContext context) => Scaffold(
+      appBar: AppBar(title: const Text('Новый разговор')),
+      body: Center(
+          child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 600),
+              child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Icon(Icons.verified, size: 14, color: ShadeColors.greenAccent),
-                        SizedBox(width: 4),
-                        Text(
-                          'Подпись верна · E2EE',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: ShadeColors.greenAccent,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed: _startChat,
-                        icon: const Icon(Icons.chat),
-                        label: const Text('Начать чат'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
+                        const Text('Найдите своих',
+                            style: TextStyle(
+                                fontSize: 30,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -.8)),
+                        const SizedBox(height: 10),
+                        const Text(
+                            'Введите точный никнейм друга в Shade.\nИмена аккаунтов состоят из латинских букв, цифр и _.',
+                            style: TextStyle(
+                                color: ShadeColors.textSecondary,
+                                height: 1.6,
+                                fontSize: 14)),
+                        const SizedBox(height: 26),
+                        TextField(
+                            key: const Key('user-search'),
+                            controller: _controller,
+                            enabled: !_isSearching,
+                            autocorrect: false,
+                            textInputAction: TextInputAction.search,
+                            decoration: InputDecoration(
+                                hintText: 'Никнейм собеседника',
+                                prefixIcon: const Icon(
+                                    Icons.alternate_email_rounded,
+                                    size: 21),
+                                suffixIcon: _controller.text.isEmpty
+                                    ? null
+                                    : IconButton(
+                                        tooltip: 'Очистить',
+                                        icon: const Icon(Icons.close_rounded,
+                                            size: 19),
+                                        onPressed: () {
+                                          _controller.clear();
+                                          setState(() {
+                                            _foundUser = null;
+                                            _error = null;
+                                          });
+                                        })),
+                            onSubmitted: (_) => _search(),
+                            onChanged: (_) => setState(() {
+                                  _foundUser = null;
+                                  _error = null;
+                                })),
+                        const SizedBox(height: 16),
+                        FilledButton.icon(
+                            onPressed:
+                                _isSearching || _controller.text.trim().isEmpty
+                                    ? null
+                                    : _search,
+                            icon: _isSearching
+                                ? const SizedBox(
+                                    width: 17,
+                                    height: 17,
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2))
+                                : const Icon(Icons.search_rounded, size: 20),
+                            label: Text(
+                                _isSearching ? 'Ищем…' : 'Найти собеседника'),
+                            style: FilledButton.styleFrom(
+                                minimumSize: const Size.fromHeight(52))),
+                        const SizedBox(height: 28),
+                        if (_error != null)
+                          const ShadeEmptyState(
+                              icon: Icons.person_search_outlined,
+                              title: 'Пока не нашли',
+                              description:
+                                  'Проверьте никнейм и соединение с сервером.\nЗатем попробуйте ещё раз.')
+                        else if (_foundUser != null &&
+                            _searchedUsername != null)
+                          Container(
+                              padding: const EdgeInsets.all(24),
+                              decoration: BoxDecoration(
+                                  color: ShadeColors.surfaceCard,
+                                  borderRadius: BorderRadius.circular(24),
+                                  border: Border.all(
+                                      color: ShadeColors.greyBorder)),
+                              child: Column(children: [
+                                ShadeAvatar(name: _searchedUsername!, size: 76),
+                                const SizedBox(height: 18),
+                                Text('@$_searchedUsername',
+                                    style: const TextStyle(
+                                        fontSize: 22,
+                                        fontWeight: FontWeight.w700)),
+                                const SizedBox(height: 8),
+                                const Text('Профиль найден',
+                                    style: TextStyle(
+                                        color: ShadeColors.greenAccent,
+                                        fontSize: 13)),
+                                const SizedBox(height: 22),
+                                SizedBox(
+                                    width: double.infinity,
+                                    child: FilledButton.icon(
+                                        onPressed: _startChat,
+                                        icon: const Icon(
+                                            Icons.chat_bubble_outline_rounded,
+                                            size: 19),
+                                        label: const Text('Написать сообщение'),
+                                        style: FilledButton.styleFrom(
+                                            minimumSize:
+                                                const Size.fromHeight(50)))),
+                              ]))
+                        else if (!_isSearching)
+                          const ShadeEmptyState(
+                              icon: Icons.waving_hand_outlined,
+                              title: 'Одно имя — и вы на связи',
+                              description:
+                                  'Попросите друга поделиться никнеймом.\nВаш собственный никнейм есть в профиле.'),
+                      ])))));
 }

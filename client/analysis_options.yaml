@@ -1,3 +1,9 @@
+analyzer:
+  exclude:
+    - build/**
+    - android/**
+    - ios/**
+    - windows/**
 include: package:flutter_lints/flutter.yaml
 
 linter:
@@ -6,8 +12,5 @@ linter:
     prefer_const_literals_to_create_immutables: true
     avoid_print: true
     # Security rules
-    avoid_web_libraries: true
-    unnecessary_await: false
     # Crypto warnings
     parameter_assignments: false
-    unnecessary_getters: false

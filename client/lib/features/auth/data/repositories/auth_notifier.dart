@@ -1,5 +1,5 @@
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart' show AlertDialog, BuildContext;
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -23,6 +23,9 @@ class AuthState {
   final String? publicKey;
   final int? userId;
   final String? error;
+  final String? email;
+  final String? displayName;
+  final String? avatarUrl;
 
   const AuthState({
     this.status = AuthStatus.initial,
@@ -30,6 +33,9 @@ class AuthState {
     this.publicKey,
     this.userId,
     this.error,
+    this.email,
+    this.displayName,
+    this.avatarUrl,
   });
 
   AuthState copyWith({
@@ -38,13 +44,19 @@ class AuthState {
     String? publicKey,
     int? userId,
     String? error,
+    String? email,
+    String? displayName,
+    String? avatarUrl,
   }) {
     return AuthState(
       status: status ?? this.status,
       nickname: nickname ?? this.nickname,
       publicKey: publicKey ?? this.publicKey,
       userId: userId ?? this.userId,
-      error: error ?? this.error,
+      error: error,
+      email: email ?? this.email,
+      displayName: displayName ?? this.displayName,
+      avatarUrl: avatarUrl ?? this.avatarUrl,
     );
   }
 }
@@ -54,6 +66,7 @@ class AuthNotifier extends StateNotifier<AuthState> {
   final CryptoService _cryptoService;
   final DatabaseService _databaseService;
   final ConnectionService _connectionService;
+  int _authEpoch = 0;
 
   AuthNotifier(
     this._cryptoService,
@@ -66,6 +79,14 @@ class AuthNotifier extends StateNotifier<AuthState> {
   /// Automatically restores the previous session on first build.
   Future<void> _restoreSession() async {
     try {
+      final prefs = await SharedPreferences.getInstance();
+      if (prefs.getBool('signed_out') == true) {
+        final profile = await _databaseService.getCurrentUserProfile();
+        state = AuthState(
+            status: AuthStatus.error,
+            nickname: profile?['nickname'] as String?);
+        return;
+      }
       final restored = await checkExistingProfile();
       if (!restored && state.status == AuthStatus.initial) {
         // No profile — just go to welcome, no error
@@ -79,79 +100,80 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
-  /// Generates identity keys, registers on server, and saves user profile.
+  static Future<void>? _googleInit;
+
+  /// Google establishes the account identity; the relay validates its ID token.
+  /// Private encryption keys stay on this installation, independently of Google.
   Future<bool> createSecureProfile(String nickname) async {
+    final epoch = ++_authEpoch;
     try {
       state = state.copyWith(status: AuthStatus.generatingKeys);
-      debugPrint('[Auth] Generating keys...');
-
-      // Generate 4096-bit RSA key pair
-      final keys = await _cryptoService.generateIdentityKeys();
-      final publicKey = keys['publicKey']!;
-      debugPrint('[Auth] Keys generated');
-
-      // Save profile to encrypted database
-      final userId =
-          await _databaseService.saveUserProfile(nickname, publicKey);
-      debugPrint('[Auth] Profile saved, userId=$userId');
-
-      // Register on relay server (signs the key automatically)
-      try {
-        debugPrint('[Auth] Registering on server...');
-        await _connectionService.register(nickname);
-        debugPrint('[Auth] Registered, connecting...');
-        _connectionService.connect(nickname);
-        debugPrint('Registered and connected to server');
-
-        // Initialize notifications (local + FCM)
-        await NotificationService.init();
-        await NotificationService.registerToken(
-          _connectionService.serverUrl,
-          nickname,
-          _connectionService.sessionToken,
-        );
-      } catch (e) {
-        final errorStr = e.toString();
-        debugPrint('[Auth] Register error: $errorStr');
-        if (errorStr.contains('Username already taken') ||
-            errorStr.contains('409') ||
-            errorStr.contains('Никнейм уже занят')) {
-          state = state.copyWith(
-            status: AuthStatus.error,
-            error: 'Этот никнейм уже занят. Выберите другой.',
-          );
-          return false;
-        }
-        // Server registration is non-fatal — local E2EE still works
-        debugPrint('Server registration skipped: $e');
+      const clientId = String.fromEnvironment('GOOGLE_WEB_CLIENT_ID');
+      if (clientId.isEmpty) {
+        throw StateError(
+            'Google-вход ещё не настроен: нужен OAuth Web Client ID.');
       }
-
-      state = state.copyWith(
-        status: AuthStatus.authenticated,
-        nickname: nickname,
-        publicKey: publicKey,
-        userId: userId,
-      );
-
-      // Set flag for fast startup
+      final previous = await _databaseService.getCurrentUserProfile();
+      if (previous != null && previous['nickname'] != nickname) {
+        throw StateError(
+            'На устройстве уже есть профиль @${previous['nickname']}. Используйте этот никнейм, чтобы сохранить историю.');
+      }
+      _googleInit ??=
+          GoogleSignIn.instance.initialize(serverClientId: clientId);
+      await _googleInit;
+      final account = await GoogleSignIn.instance.authenticate();
+      final idToken = account.authentication.idToken;
+      if (idToken == null) {
+        throw StateError(
+            'Google не вернул ID token. Проверьте OAuth-настройки APK.');
+      }
+      var publicKey = await _cryptoService.getPublicKey();
+      publicKey ??= (await _cryptoService.generateIdentityKeys())['publicKey']!;
+      // Save an authenticated profile only AFTER server validation succeeds.
+      final profile =
+          await _connectionService.register(nickname, googleIdToken: idToken);
+      if (!mounted || epoch != _authEpoch) return false;
+      final userId = await _databaseService.saveUserProfile(nickname, publicKey,
+          profile: profile);
+      if (!mounted || epoch != _authEpoch) return false;
+      _connectionService.connect(nickname);
+      state = AuthState(
+          status: AuthStatus.authenticated,
+          nickname: nickname,
+          publicKey: publicKey,
+          userId: userId,
+          email: profile['email'] as String?,
+          displayName: profile['displayName'] as String?,
+          avatarUrl: profile['avatarUrl'] as String?);
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('has_profile', true);
-
-      debugPrint('Secure profile created');
+      await prefs.setBool('signed_out', false);
+      try {
+        await NotificationService.init();
+        await NotificationService.registerToken(_connectionService.serverUrl,
+            nickname, _connectionService.sessionToken);
+      } catch (e) {
+        debugPrint('Notifications unavailable: $e');
+      }
       return true;
-    } catch (e) {
+    } on GoogleSignInException catch (e) {
       state = state.copyWith(
-        status: AuthStatus.error,
-        error: e.toString(),
-      );
-      debugPrint('Error creating secure profile: $e');
+          status: AuthStatus.error,
+          error: e.code == GoogleSignInExceptionCode.canceled
+              ? 'Вход отменён. Можно попробовать снова.'
+              : 'Google-вход недоступен. Проверьте сеть и настройки OAuth.');
+      return false;
+    } catch (e) {
+      state = state.copyWith(status: AuthStatus.error, error: e.toString());
       return false;
     }
   }
 
   /// Checks if user already has a profile and reconnects to server.
   Future<bool> checkExistingProfile() async {
+    final epoch = _authEpoch;
     final hasProfileInDb = await _databaseService.hasUserProfile();
+    if (!mounted || epoch != _authEpoch) return false;
     if (hasProfileInDb) {
       // Set flag for fast startup on next launch
       final prefs = await SharedPreferences.getInstance();
@@ -160,20 +182,31 @@ class AuthNotifier extends StateNotifier<AuthState> {
       final profile = await _databaseService.getCurrentUserProfile();
       final publicKey = await _cryptoService.getPublicKey();
 
+      if (!mounted || epoch != _authEpoch) return false;
       if (profile != null && publicKey != null) {
         final nickname = profile['nickname'] as String;
         final userId = profile['id'] as int;
 
+        // Cached history is immediately available even without a network.
+        state = AuthState(
+            status: AuthStatus.authenticated,
+            nickname: nickname,
+            userId: userId,
+            publicKey: publicKey,
+            email: profile['email'] as String?,
+            displayName: profile['display_name'] as String?,
+            avatarUrl: profile['avatar_url'] as String?);
         // Reconnect to server in background
         // Always connect even if register fails (user already exists)
         try {
-          await _connectionService.register(nickname).catchError((e) {
-            debugPrint('Register skipped (already exists): $e');
-          });
+          await _connectionService.register(nickname);
         } catch (_) {}
 
+        if (!mounted || epoch != _authEpoch) return false;
         _connectionService.connect(nickname);
-        await NotificationService.init();
+        try {
+          await NotificationService.init();
+        } catch (_) {}
         await NotificationService.registerToken(
           _connectionService.serverUrl,
           nickname,
@@ -181,11 +214,15 @@ class AuthNotifier extends StateNotifier<AuthState> {
         );
         debugPrint('Reconnected to server');
 
+        if (!mounted || epoch != _authEpoch) return false;
         state = state.copyWith(
           status: AuthStatus.authenticated,
           nickname: nickname,
           publicKey: publicKey,
           userId: userId,
+          email: profile['email'] as String?,
+          displayName: profile['display_name'] as String?,
+          avatarUrl: profile['avatar_url'] as String?,
         );
         return true;
       }
@@ -193,61 +230,25 @@ class AuthNotifier extends StateNotifier<AuthState> {
     return false;
   }
 
-  /// Performs a complete logout:
-  /// 1. Clears all keys from FlutterSecureStorage
-  /// 2. Deletes the local SQLCipher database
-  /// 3. Disconnects WebSocket
-  /// 4. Unregisters FCM token from server (optional)
-  /// 5. Resets authentication state
-  /// 6. Redirects user to login screen (via state change)
+  /// Sign out preserves the device's private keys and encrypted history.
+  /// Deleting an identity is a separate destructive action, not ordinary logout.
   Future<void> logout() async {
-    try {
-      debugPrint('[Auth] Starting logout...');
-
-      // 1. Disconnect WebSocket first to stop incoming messages
-      _connectionService.disconnect();
-      debugPrint('[Auth] WebSocket disconnected');
-
-      // 2. Unregister FCM token from server (best effort, ignore errors)
+    _authEpoch++;
+    final nickname = state.nickname;
+    await NotificationService.unregisterToken(
+        _connectionService.serverUrl, nickname);
+    await _connectionService.signOut();
+    if (_googleInit != null) {
       try {
-        await NotificationService.unregisterToken(
-          _connectionService.serverUrl,
-          state.nickname,
-        );
-        debugPrint('[Auth] FCM token unregistered');
-      } catch (e) {
-        debugPrint('[Auth] FCM unregister failed (non-fatal): $e');
-      }
-
-      // 3. Clear all cryptographic keys from secure storage
-      await _cryptoService.clearIdentityKeys();
-      debugPrint('[Auth] Crypto keys cleared');
-
-      // 4. Delete the entire local database (SQLCipher encrypted)
-      await _databaseService.deleteDatabase();
-      debugPrint('[Auth] Database deleted');
-
-      // 5. Clear SharedPreferences (has_profile flag and any cached data)
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.clear();
-      debugPrint('[Auth] SharedPreferences cleared');
-
-      // 6. Reset notification service
-      await NotificationService.dispose();
-      debugPrint('[Auth] Notification service disposed');
-
-      // 7. Reset authentication state to initial
-      state = const AuthState(status: AuthStatus.initial);
-      debugPrint('[Auth] Logout completed successfully');
-    } catch (e) {
-      debugPrint('[Auth] Logout error: $e');
-      // Even if logout fails partially, reset state to allow retry
-      state = const AuthState(
-        status: AuthStatus.error,
-        error: 'Ошибка выхода. Попробуйте перезапустить приложение.',
-      );
-      rethrow;
+        await GoogleSignIn.instance.signOut();
+      } catch (_) {}
     }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('signed_out', true);
+    try {
+      await NotificationService.dispose();
+    } catch (_) {}
+    state = AuthState(status: AuthStatus.error, nickname: nickname);
   }
 
   /// Check if server key needs user confirmation (TOFU)

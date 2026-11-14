@@ -1,124 +1,59 @@
 import 'package:flutter/material.dart';
 
-/// Liquid glass ghost logo — frosted, translucent, glowing eyes.
+/// Solid, scalable Shade mascot, readable even in the conversation header.
 class ShadeLogo extends StatelessWidget {
   final double size;
-
   const ShadeLogo({super.key, this.size = 80});
 
   @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: size,
-      height: size,
-      child: CustomPaint(
-        painter: _GlassGhostPainter(),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Semantics(
+      label: 'Shade — призрак',
+      image: true,
+      child: SizedBox(
+          width: size,
+          height: size,
+          child: CustomPaint(painter: _ShadeGhostPainter())));
 }
 
-class _GlassGhostPainter extends CustomPainter {
+class _ShadeGhostPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final s = size.width;
-    final cx = s / 2;
-
-    // ── Ghost body path ─────────────────────────────────
-    final bodyPath = Path();
-    bodyPath.moveTo(cx, s * 0.15);
-    bodyPath.quadraticBezierTo(s * 0.85, s * 0.1, s * 0.82, s * 0.45);
-    bodyPath.lineTo(s * 0.82, s * 0.58);
-    // Wavy bottom
-    bodyPath.quadraticBezierTo(s * 0.76, s * 0.68, s * 0.7, s * 0.6);
-    bodyPath.quadraticBezierTo(s * 0.64, s * 0.7, s * 0.57, s * 0.6);
-    bodyPath.quadraticBezierTo(s * 0.5, s * 0.7, s * 0.43, s * 0.6);
-    bodyPath.quadraticBezierTo(s * 0.36, s * 0.7, s * 0.3, s * 0.6);
-    bodyPath.quadraticBezierTo(s * 0.24, s * 0.68, s * 0.18, s * 0.58);
-    bodyPath.lineTo(s * 0.18, s * 0.45);
-    bodyPath.quadraticBezierTo(s * 0.15, s * 0.1, cx, s * 0.15);
-    bodyPath.close();
-
-    // ── Outer glow ─────────────────────────────────────
-    final glowPaint = Paint()
-      ..color = const Color(0xFF8B5CF6).withOpacity(0.06)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, s * 0.06);
-    canvas.drawPath(bodyPath, glowPaint);
-
-    // ── Glass fill ─────────────────────────────────────
-    final glassPaint = Paint()
-      ..shader = LinearGradient(
-        begin: Alignment.topLeft,
-        end: Alignment.bottomRight,
-        colors: [
-          Colors.white.withOpacity(0.14),
-          Colors.white.withOpacity(0.04),
-          const Color(0xFF8B5CF6).withOpacity(0.07),
-          Colors.white.withOpacity(0.03),
-        ],
-        stops: const [0.0, 0.3, 0.7, 1.0],
-      ).createShader(Rect.fromLTWH(0, 0, s, s));
-    canvas.drawPath(bodyPath, glassPaint);
-
-    // ── Highlight (top left reflection) ─────────────────
-    final highlightPath = Path();
-    highlightPath.moveTo(cx - s * 0.22, s * 0.24);
-    highlightPath.quadraticBezierTo(
-        cx - s * 0.05, s * 0.17, cx + s * 0.12, s * 0.26);
-    highlightPath.quadraticBezierTo(
-        cx - s * 0.05, s * 0.2, cx - s * 0.22, s * 0.24);
-    highlightPath.close();
-
-    final highlightPaint = Paint()..color = Colors.white.withOpacity(0.12);
-    canvas.drawPath(highlightPath, highlightPaint);
-
-    // ── Outline ─────────────────────────────────────────
-    final outlinePaint = Paint()
-      ..color = Colors.white.withOpacity(0.2)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.0
-      ..strokeCap = StrokeCap.round;
-    canvas.drawPath(bodyPath, outlinePaint);
-
-    // Soft violet glow outline
-    final violetPaint = Paint()
-      ..color = const Color(0xFF8B5CF6).withOpacity(0.25)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5
-      ..strokeCap = StrokeCap.round
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 1.5);
-    canvas.drawPath(bodyPath, violetPaint);
-
-    // ── Eyes ────────────────────────────────────────────
-    final eyeY = s * 0.37;
-    final eyeSpacing = s * 0.14;
-    final eyeRadius = s * 0.03;
-
-    for (final sign in [-1.0, 1.0]) {
-      final eyeX = cx + sign * eyeSpacing;
-
-      // Soft glow
-      final glowPaint = Paint()
-        ..color = const Color(0xFF06B6D4).withOpacity(0.4)
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, eyeRadius * 2.5);
-      canvas.drawCircle(Offset(eyeX, eyeY), eyeRadius * 3, glowPaint);
-
-      // Eye core
-      final eyePaint = Paint()
-        ..shader = RadialGradient(
-          colors: [
-            Colors.white,
-            const Color(0xFF22D3EE),
-            const Color(0xFF06B6D4).withOpacity(0.7),
-          ],
-          stops: const [0.0, 0.45, 1.0],
-        ).createShader(
-          Rect.fromCircle(center: Offset(eyeX, eyeY), radius: eyeRadius),
-        );
-      canvas.drawCircle(Offset(eyeX, eyeY), eyeRadius, eyePaint);
-    }
+    canvas.save();
+    canvas.scale(size.width / 100, size.height / 100);
+    final body = Path()
+      ..moveTo(18, 48)
+      ..cubicTo(18, 25, 31, 13, 50, 13)
+      ..cubicTo(70, 13, 82, 27, 82, 48)
+      ..cubicTo(82, 62, 86, 73, 88, 79)
+      ..cubicTo(90, 86, 80, 90, 74, 85)
+      ..lineTo(66, 79)
+      ..cubicTo(61, 92, 49, 94, 43, 81)
+      ..cubicTo(34, 92, 20, 91, 19, 80)
+      ..cubicTo(18, 70, 18, 58, 18, 48)
+      ..close();
+    canvas.drawPath(
+        body,
+        Paint()
+          ..shader = const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFFFFFFFF), Color(0xFFE3E3E3)])
+              .createShader(const Rect.fromLTWH(15, 13, 74, 80)));
+    final ink = Paint()..color = const Color(0xFF181818);
+    canvas.drawOval(const Rect.fromLTWH(32, 38, 11, 18), ink);
+    canvas.drawOval(const Rect.fromLTWH(57, 36, 11, 18), ink);
+    canvas.drawPath(
+        Path()
+          ..moveTo(44, 64)
+          ..quadraticBezierTo(51, 70, 58, 62),
+        Paint()
+          ..color = const Color(0xFF181818)
+          ..style = PaintingStyle.stroke
+          ..strokeCap = StrokeCap.round
+          ..strokeWidth = 3.5);
+    canvas.restore();
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant _ShadeGhostPainter oldDelegate) => false;
 }

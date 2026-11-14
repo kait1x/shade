@@ -1,72 +1,18 @@
-# Known Limitations
+# Known limitations — verified status, 2026-11-14
 
-This document describes known limitations of the Shade messaging system.
+See [audit fixes](docs/AUDIT_FIXES_2026-11-14.md) for fixes and actual checks. The old audit is historical; claims that every security issue was fixed are not a certification.
 
-## Security Limitations
-
-### LOW-01: HSM/Secure Enclave Not Used
-- **Description:** Cryptographic keys are stored in software (OS keychain/Keystore), not in hardware security modules (HSM) or Secure Enclave.
-- **Impact:** Keys could potentially be extracted from device memory if compromised.
-- **Mitigation:** Keys are protected by OS secure storage (iOS Keychain, Android Keystore, Windows DPAPI, macOS Keychain, Linux libsecret).
-- **Future:** Consider HSM integration for high-security deployments.
-- **Note:** Random.secure() instead of Fortuna — NOT A BUG (confirmed by audit)
-
-### LOW-02: Self-Signed Certificate in Production
-- **Status:** FIXED — Server now blocks startup in production if self-signed certificate detected.
-- **Mitigation:** Use Let's Encrypt or commercial certificate in production.
-
-### LOW-03: No 2FA for Admin Panel
-- **Status:** ROADMAP — TOTP 2FA for admin panel planned for future version.
-- **Description:** Admin panel currently has no two-factor authentication.
-
-### LOW-04: Reconnect Throttle
-- **Status:** FIXED — Server now throttles reconnect attempts (5s cooldown between disconnect/reconnect from same IP).
-- **Description:** Prevents rapid reconnect after disconnect from same IP.
-
-### LOW-05: iOS Screenshot Detection
-- **Status:** Platform Limitation (Best Effort)
-- **Description:** iOS does not provide native screenshot detection APIs; client uses workarounds that may not be reliable.
-- **Mitigation:** Best effort implementation; not guaranteed to work on all iOS versions.
-- **Note:** This is an inherent platform limitation.
-
-### MED-09: Firebase Messaging Metadata Exposure
-- **Status:** Platform Limitation (Documented in Privacy Policy)
-- **Description:** Firebase Cloud Messaging (FCM) may expose metadata to Google.
-- **Mitigation:** Documented in privacy policy. Consider self-hosted push or alternative notification services for enhanced privacy.
-- **Note:** Messages are encrypted end-to-end; only metadata (sender/recipient IDs) may be visible to Google.
-
----
-
-## Other Limitations
-
-### LOW-06: Metadata Leakage (Unavoidable for Relay Server)
-- **Description:** As a relay server, Shade necessarily knows:
-  - Which users are communicating (who contacts whom)
-  - When communications occur (timing)
-  - Message size (encrypted, but observable)
-- **Impact:** Traffic analysis can reveal communication patterns.
-- **Mitigation:** Server stores no message content, only relays encrypted blobs. Consider onion routing for advanced privacy.
-- **Note:** This is inherent to relay architecture and cannot be fully eliminated.
-
-### LOW-07: No Perfect Forward Secrecy (PFS)
-- **Description:** Session keys are derived from long-term identity keys. Compromise of a long-term key can decrypt past messages if key material was captured.
-- **Impact:** If identity key is compromised, historical messages may be decryptable.
-- **Mitigation:** Use ephemeral session keys via Double Ratchet algorithm.
-- **Roadmap:** Double Ratchet protocol planned for future version.
-
-### LOW-08: No Post-Quantum Cryptography
-- **Description:** Currently uses RSA-4096 and AES-256-GCM, which are vulnerable to quantum computing attacks (Shor's algorithm).
-- **Impact:** Messages may be decryptable once quantum computers become sufficient.
-- **Mitigation:** Current algorithms are considered secure against classical computers.
-- **Roadmap:** Post-quantum algorithms (Kyber, Dilithium) planned for future version.
-
-## Implementation Notes
-
-- **SQLCipher:** Database encryption enabled on all platforms (MED-03)
-- **Rate Limiting:** Applied to prevent abuse
-- **HSTS:** Preload enabled for all HTTPS connections
-- **CSP:** Strict content security policy enforced
-
-## Reporting Security Issues
-
-For security vulnerabilities, please contact the maintainers through appropriate channels.
+- Google OAuth and real Firebase push delivery still need cloud/device verification. Current debug build does not contain a Web client ID.
+- Debug APK targets the Android emulator host bridge. Configure a reachable HTTPS relay for physical phones.
+- Android minimum is API 24 on Flutter 3.38.10; API 23 is not supported by this build.
+- Release requires a private signing key and explicit server-key pin. Debug signing is never used for release.
+- Android is the verified build target. iOS source changes need Xcode; desktop production SQLCipher is unsupported.
+- Server must run on Node >=22. Docker configuration was reviewed, not executed here.
+- Encryption keys and history remain on the original installation. Multi-device history transfer/recovery is not implemented.
+- Groups are disabled rather than exposing unfinished endpoints. Calls and voice messages are not implemented.
+- TLS platform CA validation remains enabled. The optional `TLS_CERT_SHA256` only adds an exception for a configured DER/host/port; it does not replace CA validation or force all CA-signed certificates to match that digest. Server identity uses a separate `SERVER_PUBLIC_KEY_FINGERPRINT`.
+- The relay knows participant/timing/size metadata. Key distribution still trusts the verified relay; there is no independent peer safety-number verification, Double Ratchet/PFS or independent security audit.
+- iOS cannot generally prevent screenshots like Android FLAG_SECURE; recording/app-switcher privacy is best-effort.
+- Durable replay/deduplication retention is 7 days with bounded queues; writes fail explicitly when storage is unavailable/full. Power-loss durability and production load were not verified.
+- Deleting local history cannot unsend an already in-flight request. Confirmed server deletion is a separate operation requiring a connection.
+- Previously tracked .env files remain in Git history. Rotate any real exposed credentials before deployment; do not blindly change SESSION_SECRET without protecting/migrating encrypted server data.

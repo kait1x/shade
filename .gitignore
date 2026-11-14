@@ -70,3 +70,20 @@ Thumbs.db
 *.tar.xz
 *.tar.zst
 ```
+# Local credentials and generated Flutter plugin state
+client/.flutter-plugins-dependencies
+client/android/local.properties
+server/data/
+server/certs/
+server/firebase-service-account.json
+**/key.properties
+**/*.jks
+!server/.env.example
+flutter-analyze-*.txt
+
+!.env.example
+
+client/config/production.json
+
+# Generated Android build artifacts
+artifacts/*.apk

@@ -1,0 +1,102 @@
+00:00 +0: loading C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/audit_regressions_test.dart
+00:00 +0: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/audit_regressions_test.dart: v5 upgrade preserves outgoing history, ciphertext and pending payload
+00:00 +1: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should generate RSA key pair
+00:00 +2: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should generate RSA key pair
+00:00 +3: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should generate RSA key pair
+00:00 +4: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should generate RSA key pair
+00:00 +5: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should generate RSA key pair
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] readKey rsa_public_key from OS secure storage
+[CryptoService] Keys cleared from secure storage
+00:01 +6: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/database_service_test.dart: real SQLite migration preserves v4 history and supports durable outbox
+00:01 +7: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should encrypt and decrypt data successfully
+00:02 +8: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should encrypt and decrypt data successfully
+00:02 +9: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should encrypt and decrypt data successfully
+00:03 +10: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should encrypt and decrypt data successfully
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] readKey rsa_public_key from OS secure storage
+[CryptoService] readKey rsa_private_key from OS secure storage
+[CryptoService] Keys cleared from secure storage
+00:03 +11: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:03 +12: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:03 +13: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:03 +14: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:04 +15: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] NEW server key detected - user confirmation required
+[CryptoService] NEW server key detected - user confirmation required
+[CryptoService] Server key fingerprint trusted and saved
+[CryptoService] Server key fingerprint verified (TOFU)
+[CryptoService] Server key fingerprint verified (TOFU)
+[CryptoService] Server signature verification error: RSAException: crypto/rsa: verification error
+[CryptoService] NEW server key detected - user confirmation required
+00:05 +16: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:05 +17: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:06 +18: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:06 +18: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should encrypt different texts to different ciphertexts
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] readKey rsa_public_key from OS secure storage
+[CryptoService] Keys cleared from secure storage
+00:06 +19: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:06 +20: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:06 +21: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:06 +22: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] WARNING: Server key fingerprint changed! Possible MitM attack.
+  Stored: d0:17:34:04:57:cd:f9:cd:5e:e3:e7:7e:7e:fc:2e:c0:80:71:28:74:65:89:c0:ee:a2:33:06:6f:ac:fa:4e:ea
+  Got:    2b:aa:c1:bf:18:e1:4f:80:11:1b:8d:16:ef:77:f9:e7:b0:42:de:92:cd:1b:39:28:28:33:b2:b1:61:df:ec:47
+[CryptoService] Keys cleared from secure storage
+00:06 +23: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should fail to decrypt with tampered ciphertext
+00:07 +24: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should fail to decrypt with tampered ciphertext
+00:07 +25: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should fail to decrypt with tampered ciphertext
+00:07 +26: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should fail to decrypt with tampered ciphertext
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] readKey rsa_public_key from OS secure storage
+[CryptoService] readKey rsa_private_key from OS secure storage
+[CryptoService] Keys cleared from secure storage
+00:07 +27: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should handle empty string encryption
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] readKey rsa_public_key from OS secure storage
+[CryptoService] readKey rsa_private_key from OS secure storage
+[CryptoService] Keys cleared from secure storage
+00:08 +28: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should handle unicode and emoji in encryption
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] readKey rsa_public_key from OS secure storage
+[CryptoService] readKey rsa_private_key from OS secure storage
+[CryptoService] Keys cleared from secure storage
+00:09 +29: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Key Exchange Simulation Alice should send encrypted message to Bob
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] Keys cleared from secure storage
+[CryptoService] Keys cleared from secure storage
+00:14 +30: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Key Exchange Simulation Bob should not be able to decrypt message encrypted with Alice's key
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] decryptData FAILED
+[CryptoService] Keys cleared from secure storage
+[CryptoService] Keys cleared from secure storage
+00:18 +31: All tests passed!

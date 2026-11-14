@@ -7,12 +7,14 @@ class SecurityService {
   static const MethodChannel _channel = MethodChannel('com.shade.app/security');
 
   /// Включить защиту от скриншотов и записи экрана
-  /// 
+  ///
   /// На Android: устанавливает флаг FLAG_SECURE
   /// На iOS: делает снимок экрана размытым (через UIWindow)
   static Future<void> enableSecureMode() async {
     try {
       await _channel.invokeMethod('enableSecureMode');
+    } on MissingPluginException {
+      debugPrint('Secure window mode is unsupported on this platform');
     } on PlatformException catch (e) {
       debugPrint('Failed to enable secure mode: ${e.message}');
     }
@@ -22,17 +24,21 @@ class SecurityService {
   static Future<void> disableSecureMode() async {
     try {
       await _channel.invokeMethod('disableSecureMode');
+    } on MissingPluginException {
+      debugPrint('Secure window mode is unsupported on this platform');
     } on PlatformException catch (e) {
       debugPrint('Failed to disable secure mode: ${e.message}');
     }
   }
 
   /// Скрыть приложение из списка недавних (превью)
-  /// 
+  ///
   /// На Android: устанавливает FLAG_excludeFromRecents
   static Future<void> excludeFromRecents() async {
     try {
       await _channel.invokeMethod('excludeFromRecents');
+    } on MissingPluginException {
+      debugPrint('Secure window mode is unsupported on this platform');
     } on PlatformException catch (e) {
       debugPrint('Failed to exclude from recents: ${e.message}');
     }

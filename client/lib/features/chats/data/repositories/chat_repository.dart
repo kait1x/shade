@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -45,6 +44,10 @@ class Message {
   final int senderId;
   final String encryptedContent;
   final DateTime timestamp;
+  final String? networkId;
+  final String status;
+  final bool isRead;
+  final bool? isOutgoing;
 
   const Message({
     required this.id,
@@ -52,10 +55,18 @@ class Message {
     required this.senderId,
     required this.encryptedContent,
     required this.timestamp,
+    this.networkId,
+    this.status = 'sent',
+    this.isRead = false,
+    this.isOutgoing,
   });
 
   factory Message.fromRow(Map<String, dynamic> row) {
     return Message(
+      isRead: row['is_read'] == 1,
+      isOutgoing: row['is_outgoing'] == 1,
+      networkId: row['network_id'] as String?,
+      status: row['status'] as String? ?? 'sent',
       id: row['id'] as int,
       conversationId: row['conversation_id'] as int,
       senderId: row['sender_id'] as int,
@@ -67,6 +78,8 @@ class Message {
 
 /// A decrypted message ready for display.
 class DecryptedMessage {
+  final String? networkId;
+  final String status;
   final int id;
   final String text;
   final DateTime timestamp;
@@ -78,6 +91,8 @@ class DecryptedMessage {
   final String? replySender;
 
   const DecryptedMessage({
+    this.networkId,
+    this.status = 'sent',
     required this.id,
     required this.text,
     required this.timestamp,
@@ -155,6 +170,11 @@ class ChatRepository {
     required String encryptedContent,
     String conversationName = 'Чат',
     String? publicKey,
+    String? networkId,
+    String? networkSender,
+    String status = 'sent',
+    String? networkPayload,
+    String? recipient,
   }) async {
     await ensureConversation(conversationId, conversationName,
         publicKey: publicKey);
@@ -162,19 +182,40 @@ class ChatRepository {
       conversationId: conversationId,
       senderId: senderId,
       encryptedContent: encryptedContent,
+      networkId: networkId,
+      networkSender: networkSender,
+      status: status,
+      outgoing: true,
+      networkPayload: networkPayload,
+      recipient: recipient,
     );
   }
 
-  Future<List<Message>> getMessages(int conversationId, {int limit = 20, int offset = 0}) async {
-    final rows = await _db.getMessages(conversationId, limit: limit, offset: offset);
+  Future<List<Message>> getMessages(int conversationId,
+      {int limit = 20, int offset = 0}) async {
+    final rows =
+        await _db.getMessages(conversationId, limit: limit, offset: offset);
     return rows.map(Message.fromRow).toList();
   }
 
   /// Deletes a message by ID.
   Future<void> deleteMessage(int msgId) async {
     final db = await _db.database;
-    await db.delete('messages', where: 'id = ?', whereArgs: [msgId]);
+    await db.transaction((txn) async {
+      final rows =
+          await txn.query('messages', where: 'id = ?', whereArgs: [msgId]);
+      if (rows.isNotEmpty &&
+          rows.first['network_id'] != null &&
+          rows.first['is_outgoing'] == 1) {
+        await txn.delete('outbox',
+            where: 'network_id = ?', whereArgs: [rows.first['network_id']]);
+      }
+      await txn.delete('messages', where: 'id = ?', whereArgs: [msgId]);
+    });
   }
+
+  Future<void> markRead(int conversationId, List<int> messageIds) =>
+      _db.markMessagesAsRead(conversationId, messageIds: messageIds);
 
   Future<int> getMessageCount(int conversationId) =>
       _db.getMessageCount(conversationId);
@@ -198,7 +239,14 @@ class ChatRepository {
       final last = await _getLastMessage(row['id'] as int);
       if (last != null) {
         try {
-          final plain = await _crypto.decryptMessage(last.encryptedContent);
+          final content = await _crypto.decryptMessage(last.encryptedContent);
+          var plain = content.startsWith('IMG:') ? '📷 Фото' : content;
+          try {
+            final decoded = jsonDecode(content);
+            if (decoded is Map && decoded['t'] is String) {
+              plain = decoded['t'] as String;
+            }
+          } catch (_) {}
           preview = Message(
             id: last.id,
             conversationId: last.conversationId,
@@ -231,9 +279,11 @@ class ChatRepository {
           final b64 = plain.substring(4);
           result.add(DecryptedMessage(
             id: msg.id,
+            networkId: msg.networkId,
+            status: msg.status,
             text: '',
             timestamp: msg.timestamp,
-            isMine: msg.senderId == mySenderId,
+            isMine: msg.isOutgoing ?? (msg.senderId == mySenderId),
             decryptSuccess: true,
             isImage: true,
             imageData: base64Decode(b64),
@@ -260,9 +310,11 @@ class ChatRepository {
 
           result.add(DecryptedMessage(
             id: msg.id,
+            networkId: msg.networkId,
+            status: msg.status,
             text: text,
             timestamp: msg.timestamp,
-            isMine: msg.senderId == mySenderId,
+            isMine: msg.isOutgoing ?? (msg.senderId == mySenderId),
             decryptSuccess: true,
             replyText: replyText,
             replySender: replySender,
@@ -272,9 +324,11 @@ class ChatRepository {
         debugPrint('[ChatRepository] decrypt error');
         result.add(DecryptedMessage(
           id: msg.id,
+          networkId: msg.networkId,
+          status: msg.status,
           text: '[Не удалось расшифровать]',
           timestamp: msg.timestamp,
-          isMine: msg.senderId == mySenderId,
+          isMine: msg.isOutgoing ?? (msg.senderId == mySenderId),
           decryptSuccess: false,
         ));
       }

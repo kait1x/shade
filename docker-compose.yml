@@ -8,12 +8,13 @@ services:
     ports:
       - "3443:3443"
       - "3000:3000"
-      - "3001:3001"
     volumes:
       - ./server/data:/app/data
-      - ./server/certs:/app/certs
+      - ./server/certs:/app/certs:ro
     environment:
-      - DASHBOARD_PASS=${DASHBOARD_PASS:-admin}
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://45.81.255.81:3001}
-      - SESSION_SECRET=${SESSION_SECRET:-auto}
-      - NODE_ENV=development
+      DASHBOARD_PASS: ${DASHBOARD_PASS:?Set a unique admin password of at least 8 characters}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-https://localhost}
+      SESSION_SECRET: ${SESSION_SECRET:?Set a stable random session secret}
+      GOOGLE_WEB_CLIENT_ID: ${GOOGLE_WEB_CLIENT_ID:?Set the OAuth Web client ID}
+      NODE_ENV: ${NODE_ENV:-production}
+      ENABLE_INSECURE_TEST_PORT: "false"

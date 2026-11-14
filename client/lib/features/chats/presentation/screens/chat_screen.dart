@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:math';
+import 'package:shade/features/home/presentation/widgets/chat_list_view.dart';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -12,6 +14,8 @@ import 'package:shade/features/chats/data/repositories/chat_repository.dart';
 import 'package:shade/features/chats/presentation/widgets/message_bubble.dart';
 import 'package:shade/features/chats/presentation/widgets/message_input.dart';
 import 'package:shade/main.dart';
+import 'package:shade/core/widgets/shade_ui.dart';
+import 'package:shade/features/profile/presentation/screens/profile_screen.dart';
 
 /// Arguments passed to [ChatScreen] via GoRouter `extra`.
 class ChatScreenArgs {
@@ -28,6 +32,7 @@ class ChatScreenArgs {
 
 /// A single decrypted message ready for display.
 class DisplayMessage {
+  final String? networkId;
   final int id;
   final String text;
   final DateTime timestamp;
@@ -40,6 +45,7 @@ class DisplayMessage {
   final String? replySender;
 
   const DisplayMessage({
+    this.networkId,
     required this.id,
     required this.text,
     required this.timestamp,
@@ -106,7 +112,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   StreamSubscription<MessageDeletedEvent>? _deleteSub;
   StreamSubscription<Map<String, dynamic>>? _messageStatusSub;
   Timer? _typingTimeout;
-  
+
   // Pagination state
   static const int _pageSize = 20;
   int _loadedCount = 0;
@@ -130,63 +136,22 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
     _listenForIncoming();
     _watchUserStatus();
     _listenForMessageStatus();
-
-    // Send read receipt for all messages from this user
-    if (recipientUsername != currentUsername &&
-        _connectionService.isConnected) {
-      _connectionService.sendMessageStatus('read', recipientUsername);
-    }
   }
 
   void _listenForMessageStatus() {
     _messageStatusSub = _connectionService.messageStatusUpdates.listen((data) {
-      final status = data['status'] as String? ?? 'sent';
-      final msgId = data['msgId'] as String?;
-      final from = data['from'] as String?;
-
-      // Update message status in UI
-      if (from == recipientUsername || msgId != null) {
-        final updated = state.messages.map((m) {
-          // Mark all our messages as read if read receipt
-          if (status == 'read' && m.isMine) {
-            return DisplayMessage(
-              id: m.id,
-              text: m.text,
-              timestamp: m.timestamp,
-              isMine: m.isMine,
-              decryptSuccess: m.decryptSuccess,
-              isImage: m.isImage,
-              imageData: m.imageData,
-              status: 'read',
-              replyText: m.replyText,
-              replySender: m.replySender,
-            );
-          }
-          // Mark as delivered
-          if (status == 'delivered' && m.isMine && m.status == 'sent') {
-            return DisplayMessage(
-              id: m.id,
-              text: m.text,
-              timestamp: m.timestamp,
-              isMine: m.isMine,
-              decryptSuccess: m.decryptSuccess,
-              isImage: m.isImage,
-              imageData: m.imageData,
-              status: 'delivered',
-              replyText: m.replyText,
-              replySender: m.replySender,
-            );
-          }
-          return m;
-        }).toList();
-        state = state.copyWith(messages: updated);
-      }
+      if (data['from'] != recipientUsername) return;
+      unawaited(_loadMessages());
     });
   }
 
+  StreamSubscription? _connectionSub;
   StreamSubscription? _statusSub;
 
   void _watchUserStatus() {
+    _connectionSub = _connectionService.connectionChanges.listen((online) {
+      if (online) unawaited(_loadMessages());
+    });
     if (recipientUsername == currentUsername) return;
 
     // Tell server we're watching this user
@@ -214,11 +179,6 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
       // Only handle messages from our conversation partner
       if (incoming.from != recipientUsername) return;
 
-      // Send delivered receipt
-      if (_connectionService.isConnected) {
-        _connectionService.sendMessageStatus('delivered', incoming.from);
-      }
-
       // Message already saved to DB by ConnectionService._handleIncomingMessage
       // Just reload and decrypt
       await _loadMessages();
@@ -237,14 +197,15 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
     });
 
     // Listen for message deletions from other user
-    _deleteSub = _connectionService.messageDeleted.listen((event) {
+    _deleteSub = _connectionService.messageDeleted.listen((event) async {
       if (event.from == recipientUsername) {
-        final msgId = int.tryParse(event.msgId);
-        if (msgId != null) {
-          final updated = state.messages.where((m) => m.id != msgId).toList();
-          state = state.copyWith(messages: updated);
-          _chatRepository.deleteMessage(msgId);
+        final matching = state.messages
+            .where((m) => m.networkId == event.msgId && !m.isMine)
+            .toList();
+        for (final msg in matching) {
+          await _chatRepository.deleteMessage(msg.id);
         }
+        await _loadMessages();
       }
     });
   }
@@ -262,7 +223,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   /// Load initial messages (latest page)
   Future<void> _loadMessages() async {
     try {
-      state = state.copyWith(isLoading: true, error: null);
+      state = state.copyWith(isLoading: state.messages.isEmpty, error: null);
 
       final rawMessages = await _chatRepository.getMessages(
         conversationId,
@@ -277,10 +238,15 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         mySenderId: currentSenderId,
       );
 
+      if (_isDisposed) return;
+      unawaited(_markDisplayedRead(rawMessages));
+      if (_isDisposed) return;
       state = state.copyWith(
         messages: decrypted
             .map((d) => DisplayMessage(
                   id: d.id,
+                  networkId: d.networkId,
+                  status: d.status,
                   text: d.text,
                   timestamp: d.timestamp,
                   isMine: d.isMine,
@@ -294,10 +260,29 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         isLoading: false,
       );
     } catch (e) {
+      if (_isDisposed) return;
       state = state.copyWith(
         isLoading: false,
         error: e.toString(),
       );
+    }
+  }
+
+  Future<void> _markDisplayedRead(List<Message> messages) async {
+    if (_isDisposed || !_connectionService.isConnected) return;
+    final unread = messages
+        .where((m) =>
+            !(m.isOutgoing ?? (m.senderId == currentSenderId)) &&
+            m.networkId != null &&
+            !m.isRead)
+        .toList();
+    if (unread.isEmpty) return;
+    final confirmed = await _connectionService.sendMessageStatus(
+        'read', recipientUsername,
+        msgIds: unread.map((m) => m.networkId!).toList());
+    if (confirmed) {
+      await _chatRepository.markRead(
+          conversationId, unread.map((m) => m.id).toList());
     }
   }
 
@@ -327,9 +312,13 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         mySenderId: currentSenderId,
       );
 
+      if (_isDisposed) return;
+      unawaited(_markDisplayedRead(rawMessages));
       final newMessages = decrypted
           .map((d) => DisplayMessage(
                 id: d.id,
+                networkId: d.networkId,
+                status: d.status,
                 text: d.text,
                 timestamp: d.timestamp,
                 isMine: d.isMine,
@@ -352,151 +341,91 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
     }
   }
 
-  /// Encrypts [plainText], persists locally, and sends via WebSocket.
+  /// Both payload copies are encrypted before committing. A durable outbox
+  /// prevents a temporary disconnect from silently losing a message.
+  Future<void> _sendPayload(String payload) async {
+    try {
+      final myPublicKey = await _cryptoService.getPublicKey();
+      if (myPublicKey == null) throw StateError('No public key');
+      final isSelfChat = recipientPublicKey == myPublicKey;
+      final recipientCopy =
+          await _cryptoService.encryptData(payload, recipientPublicKey);
+      if (utf8.encode(recipientCopy).length > 10 * 1024 * 1024) {
+        throw StateError(
+            'Фото слишком большое. Выберите изображение поменьше.');
+      }
+      final localCopy = isSelfChat
+          ? recipientCopy
+          : await _cryptoService.encryptData(payload, myPublicKey);
+      final random = Random.secure();
+      final networkId =
+          base64UrlEncode(List.generate(24, (_) => random.nextInt(256)))
+              .replaceAll('=', '');
+      await _chatRepository.sendMessage(
+        conversationId: conversationId,
+        senderId: currentSenderId,
+        encryptedContent: localCopy,
+        conversationName: recipientUsername,
+        networkId: networkId,
+        networkSender: currentUsername,
+        status: isSelfChat ? 'read' : 'queued',
+        recipient: isSelfChat ? null : recipientUsername,
+        networkPayload: isSelfChat ? null : recipientCopy,
+      );
+      if (_isDisposed) return;
+      state = state.copyWith(clearReply: true);
+      await _loadMessages();
+      unawaited(_connectionService.flushOutbox());
+    } catch (e) {
+      if (!_isDisposed) state = state.copyWith(error: e.toString());
+    }
+  }
+
   Future<void> sendAndEncrypt(String plainText) async {
-    try {
-      final myPublicKey = await _cryptoService.getPublicKey();
-      if (myPublicKey == null) throw StateError('No public key');
-
-      final isSelfChat = recipientPublicKey == myPublicKey;
-
-      // Build payload with optional reply
-      final replyTo = state.replyTo;
-      final payload = replyTo != null
-          ? jsonEncode({
-              't': plainText,
-              'r': {
-                's': replyTo.isMine ? 'me' : recipientUsername,
-                't': replyTo.isImage ? 'Фото' : replyTo.text,
-              }
-            })
-          : plainText;
-
-      // Encrypt for recipient (for network transmission)
-      final encryptedForRecipient = await _cryptoService.encryptData(
-        payload,
-        recipientPublicKey,
-      );
-
-      // Encrypt for self (for local display)
-      final encryptedForSelf = isSelfChat
-          ? encryptedForRecipient // same key — reuse
-          : await _cryptoService.encryptData(payload, myPublicKey);
-
-      // Save locally
-      await _chatRepository.sendMessage(
-        conversationId: conversationId,
-        senderId: currentSenderId,
-        encryptedContent: encryptedForSelf,
-        conversationName: recipientUsername,
-      );
-
-      // Send recipient-encrypted version over the network (skip for self-chat)
-      if (!isSelfChat) {
-        try {
-          if (_connectionService.isConnected) {
-            _connectionService.sendMessage(
-                recipientUsername, encryptedForRecipient);
-          }
-        } catch (_) {
-          debugPrint('[ChatMessages] WS send failed, message saved locally');
-        }
-      }
-
-      // Add sent message to UI immediately (no full reload)
-      final newMsg = DisplayMessage(
-        id: DateTime.now().millisecondsSinceEpoch,
-        text: plainText,
-        timestamp: DateTime.now(),
-        isMine: true,
-        decryptSuccess: true,
-        replyText:
-            replyTo != null ? (replyTo.isImage ? 'Фото' : replyTo.text) : null,
-        replySender: replyTo != null
-            ? (replyTo.isMine ? 'Вы' : recipientUsername)
-            : null,
-      );
-      state = state.copyWith(
-        messages: [...state.messages, newMsg],
-        clearReply: true,
-      );
-    } catch (e) {
-      state = state.copyWith(error: e.toString());
-    }
+    if (plainText.trim().isEmpty) return;
+    final reply = state.replyTo;
+    await _sendPayload(reply == null
+        ? plainText
+        : jsonEncode({
+            't': plainText,
+            'r': {
+              's': reply.isMine ? currentUsername : recipientUsername,
+              't': reply.isImage ? 'Фото' : reply.text
+            },
+          }));
   }
 
-  /// Reloads messages from the database.
   Future<void> refresh() => _loadMessages();
-
-  /// Encrypts and sends an image.
-  Future<void> sendImage(List<int> imageBytes) async {
-    try {
-      final myPublicKey = await _cryptoService.getPublicKey();
-      if (myPublicKey == null) throw StateError('No public key');
-
-      final isSelfChat = recipientPublicKey == myPublicKey;
-      final b64 = base64.encode(imageBytes);
-      final payload = 'IMG:$b64';
-
-      // Encrypt for recipient
-      final encryptedForRecipient = await _cryptoService.encryptData(
-        payload,
-        recipientPublicKey,
-      );
-
-      // Encrypt for self
-      final encryptedForSelf = isSelfChat
-          ? encryptedForRecipient
-          : await _cryptoService.encryptData(payload, myPublicKey);
-
-      // Save locally
-      await _chatRepository.sendMessage(
-        conversationId: conversationId,
-        senderId: currentSenderId,
-        encryptedContent: encryptedForSelf,
-        conversationName: recipientUsername,
-      );
-
-      // Send via WebSocket
-      if (!isSelfChat) {
-        try {
-          if (_connectionService.isConnected) {
-            _connectionService.sendMessage(
-                recipientUsername, encryptedForRecipient);
-          }
-        } catch (_) {}
-      }
-
-      // Add to UI
-      final newMsg = DisplayMessage(
-        id: DateTime.now().millisecondsSinceEpoch,
-        text: '',
-        timestamp: DateTime.now(),
-        isMine: true,
-        decryptSuccess: true,
-        isImage: true,
-        imageData: Uint8List.fromList(imageBytes),
-      );
-      state = state.copyWith(
-        messages: [...state.messages, newMsg],
-      );
-    } catch (e) {
-      state = state.copyWith(error: e.toString());
-    }
-  }
+  Future<void> sendImage(List<int> imageBytes) =>
+      _sendPayload('IMG:${base64Encode(imageBytes)}');
 
   /// Deletes a message locally and optionally for everyone.
   Future<void> deleteMessage(int msgId, {required bool forEveryone}) async {
-    // Remove from local state
-    final updated = state.messages.where((m) => m.id != msgId).toList();
-    state = state.copyWith(messages: updated);
-
-    // Remove from database
+    final message = state.messages.where((m) => m.id == msgId).firstOrNull;
+    if (message == null) return;
+    if (forEveryone) {
+      if (!message.isMine ||
+          message.networkId == null ||
+          message.status == 'queued') {
+        state = state.copyWith(
+            error:
+                'Ожидающее отправки сообщение можно отменить локальным удалением.');
+        return;
+      }
+      final confirmed = await _connectionService.sendDeleteMessage(
+          recipientUsername, message.networkId!);
+      if (_isDisposed) return;
+      if (!confirmed) {
+        state = state.copyWith(
+            error:
+                'Сервер не подтвердил удаление для всех. Проверьте сеть и повторите.');
+        return;
+      }
+    }
     await _chatRepository.deleteMessage(msgId);
-
-    // If for everyone, notify via server
-    if (forEveryone && _connectionService.isConnected) {
-      _connectionService.sendDeleteMessage(recipientUsername, msgId.toString());
+    if (!_isDisposed) {
+      state = state.copyWith(
+          messages: state.messages.where((m) => m.id != msgId).toList());
     }
   }
 
@@ -515,6 +444,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
     _isDisposed = true;
     _connectionService.unwatchUser(recipientUsername);
     _statusSub?.cancel();
+    _connectionSub?.cancel();
     _deleteSub?.cancel();
     _messageStatusSub?.cancel();
     _wsSub?.cancel();
@@ -525,8 +455,8 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
 }
 
 /// Family provider for the chat messages state.
-final chatMessagesProvider = StateNotifierProvider.family<ChatMessagesNotifier,
-    ChatMessagesState, ChatMessagesParams>(
+final chatMessagesProvider = StateNotifierProvider.autoDispose
+    .family<ChatMessagesNotifier, ChatMessagesState, ChatMessagesParams>(
   (ref, params) {
     return ChatMessagesNotifier(
       conversationId: params.conversationId,
@@ -580,6 +510,17 @@ class ChatScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    ref.listen(
+        chatMessagesProvider(ChatMessagesParams(
+            conversationId: conversationId,
+            currentSenderId:
+                (ref.read(authNotifierProvider).nickname ?? '').hashCode.abs(),
+            recipientPublicKey: args.recipientPublicKey,
+            recipientUsername: args.recipientUsername,
+            currentUsername: ref.read(authNotifierProvider).nickname ?? '')),
+        (_, __) {
+      ref.invalidate(conversationsProvider);
+    });
     // Clear notifications for this conversation
     NotificationService.cancelForConversation(conversationId.toString());
 
@@ -601,100 +542,80 @@ class ChatScreen extends ConsumerWidget {
     return Scaffold(
       resizeToAvoidBottomInset: true,
       appBar: AppBar(
-        leadingWidth: 56,
-        title: Row(
-          children: [
-            // Avatar
-            Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [
-                    ShadeColors.violet.withOpacity(0.7),
-                    ShadeColors.cyan.withOpacity(0.4),
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Center(
-                child: Text(
-                  args.conversationName.isNotEmpty
-                      ? args.conversationName[0].toUpperCase()
-                      : '?',
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            // Name + status
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    args.conversationName,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                  if (messagesState.userStatus != null)
+        leading: const BackButton(),
+        leadingWidth: 48,
+        titleSpacing: 0,
+        title: InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: args.conversationName == 'Избранное'
+                ? null
+                : () => Navigator.of(context).push(MaterialPageRoute<void>(
+                    builder: (_) => ProfileScreen(
+                        username: args.recipientUsername,
+                        viewerUsername: currentUsername,
+                        publicKey: args.recipientPublicKey))),
+            child: Row(children: [
+              ShadeAvatar(
+                  name: args.conversationName,
+                  size: 40,
+                  saved: args.conversationName == 'Избранное'),
+              const SizedBox(width: 12),
+              Expanded(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    Text(args.conversationName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 4),
                     Text(
-                      messagesState.userStatus!.displayText,
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: messagesState.userStatus!.online
+                        messagesState.isRecipientTyping
+                            ? 'печатает…'
+                            : (messagesState.userStatus?.displayText ??
+                                (args.conversationName == 'Избранное'
+                                    ? 'Ваши личные заметки'
+                                    : 'Личная переписка')),
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w400,
+                            color: messagesState.userStatus?.online == true ||
+                                    messagesState.isRecipientTyping
                                 ? ShadeColors.greenAccent
-                                : ShadeColors.textMuted,
-                          ),
-                    )
-                  else
-                    Text(
-                      'E2EE · RSA 4096',
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                            color: ShadeColors.greenAccent,
-                          ),
-                    ),
-                ],
-              ),
-            ),
-          ],
-        ),
+                                : ShadeColors.textSecondary)),
+                  ])),
+            ])),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh_rounded, size: 20),
-            tooltip: 'Обновить',
-            onPressed: () => notifier.refresh(),
-          ),
-          const SizedBox(width: 8),
+              tooltip: 'Обновить переписку',
+              icon: const Icon(Icons.refresh_rounded, size: 22),
+              onPressed: () => notifier.refresh()),
+          const SizedBox(width: 8)
         ],
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(1),
-          child: Container(
-            height: 0.5,
-            color: ShadeColors.greyBorder,
-          ),
-        ),
       ),
       body: Column(
         children: [
           // Messages area
           Expanded(
-            child: _MessagesArea(
+            child: ShadeConversationBackground(
+                child: _MessagesArea(
               messagesState: messagesState,
               onRefresh: () => notifier.refresh(),
               notifier: notifier,
               conversationId: conversationId,
               recipientUsername: args.recipientUsername,
               onReply: (msg) => notifier.setReply(msg),
-            ),
+            )),
           ),
+          if (messagesState.error != null && messagesState.messages.isNotEmpty)
+            Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                child: Text(messagesState.error!,
+                    style: TextStyle(
+                        color: Theme.of(context).colorScheme.error,
+                        fontSize: 12))),
           // Reply preview
           if (messagesState.replyTo != null)
             Container(
@@ -775,7 +696,7 @@ class _MessagesArea extends StatelessWidget {
     // Show messages immediately, even while decrypting new ones
     final msgs = messagesState.messages;
 
-    if (messagesState.error != null) {
+    if (messagesState.error != null && msgs.isEmpty) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -840,15 +761,15 @@ class _MessagesArea extends StatelessWidget {
             ),
             const SizedBox(height: 16),
             const Text(
-              'Start an encrypted conversation',
+              'Начните разговор',
               style: TextStyle(
                 fontSize: 15,
                 color: ShadeColors.textSecondary,
               ),
             ),
             const SizedBox(height: 6),
-            Text(
-              'Messages are end-to-end encrypted',
+            const Text(
+              'Напишите что-нибудь хорошее.',
               style: TextStyle(
                 fontSize: 12,
                 color: ShadeColors.textMuted,
@@ -865,8 +786,8 @@ class _MessagesArea extends StatelessWidget {
     return NotificationListener<ScrollNotification>(
       onNotification: (notification) {
         // Load more messages when scrolling to the top
-        if (notification is ScrollStartNotification &&
-            notification.metrics.pixels == 0) {
+        if (notification is ScrollUpdateNotification &&
+            notification.metrics.extentAfter < 100) {
           notifier.loadMoreMessages();
           return true;
         }
@@ -875,7 +796,8 @@ class _MessagesArea extends StatelessWidget {
       child: ListView.builder(
         reverse: true,
         padding: const EdgeInsets.only(top: 8, bottom: 8),
-        itemCount: msgCount + (hasTyping ? 1 : 0) + (_isLoadingMoreIndicator ? 1 : 0),
+        itemCount:
+            msgCount + (hasTyping ? 1 : 0) + (_isLoadingMoreIndicator ? 1 : 0),
         itemBuilder: (context, index) {
           // Loading indicator at the top
           if (_isLoadingMoreIndicator && index == 0) {
@@ -886,7 +808,7 @@ class _MessagesArea extends StatelessWidget {
               ),
             );
           }
-          
+
           // Typing bubble at the bottom (index 0 in reversed list)
           final adjustedIndex = _isLoadingMoreIndicator ? index - 1 : index;
           if (hasTyping && adjustedIndex == 0) {
@@ -894,25 +816,36 @@ class _MessagesArea extends StatelessWidget {
           }
           final msgIndex = hasTyping ? adjustedIndex - 1 : adjustedIndex;
           final reversedIndex = msgCount - 1 - msgIndex;
-          
+
           if (reversedIndex < 0 || reversedIndex >= msgCount) {
             return const SizedBox.shrink();
           }
-          
+
           final msg = msgs[reversedIndex];
-          return MessageBubble(
-            key: ValueKey(msg.id),
-            text: msg.text,
-            timestamp: msg.timestamp,
-            isMine: msg.isMine,
-            isEncrypted: msg.decryptSuccess,
-            isImage: msg.isImage,
-            imageData: msg.imageData,
-            status: msg.status,
-            onLongPress: () => _showDeleteMenu(context, msg, notifier),
-            replyText: msg.replyText,
-            replySender: msg.replySender,
-          );
+          final previous =
+              reversedIndex > 0 ? msgs[reversedIndex - 1].timestamp : null;
+          final startsDay = previous == null ||
+              previous.year != msg.timestamp.year ||
+              previous.month != msg.timestamp.month ||
+              previous.day != msg.timestamp.day;
+          return Column(
+              key: ValueKey(msg.id),
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (startsDay) ShadeDateSeparator(date: msg.timestamp),
+                MessageBubble(
+                  text: msg.text,
+                  timestamp: msg.timestamp,
+                  isMine: msg.isMine,
+                  isEncrypted: msg.decryptSuccess,
+                  isImage: msg.isImage,
+                  imageData: msg.imageData,
+                  status: msg.status,
+                  onLongPress: () => _showDeleteMenu(context, msg, notifier),
+                  replyText: msg.replyText,
+                  replySender: msg.replySender,
+                )
+              ]);
         },
       ),
     );
@@ -1008,7 +941,7 @@ class _TypingBubbleState extends State<_TypingBubble>
           borderRadius: BorderRadius.circular(20),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.3),
+              color: Colors.black.withValues(alpha: 0.3),
               blurRadius: 8,
               offset: const Offset(0, 2),
             ),
@@ -1033,8 +966,8 @@ class _TypingBubbleState extends State<_TypingBubble>
                       width: 8,
                       height: 8,
                       decoration: BoxDecoration(
-                        color:
-                            ShadeColors.violet.withOpacity(0.6 + bounce * 0.4),
+                        color: ShadeColors.violet
+                            .withValues(alpha: 0.6 + bounce * 0.4),
                         shape: BoxShape.circle,
                       ),
                     ),

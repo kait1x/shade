@@ -11,6 +11,8 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
 require('dotenv').config();
+const { createAuthProof } = require('./auth-proof');
+const authProof = createAuthProof();
 
 // ── Firebase Admin SDK (optional) ─────────────────────────────
 let admin = null;
@@ -22,6 +24,7 @@ try {
   });
   console.log('[firebase] initialized');
 } catch (e) {
+  admin = null;
   console.log('[firebase] disabled — push notifications unavailable');
 }
 
@@ -153,14 +156,26 @@ const io = new Server(server || http.createServer(app), {
   transports: ['websocket'],
   pingTimeout: 60000,
   pingInterval: 25000,
-  maxHttpBufferSize: 100e6,
+  maxHttpBufferSize: 11 * 1024 * 1024,
 });
 
-app.set('trust proxy', 1);
+app.set('trust proxy', process.env.TRUST_PROXY === '1' ? 1 : false);
 app.use(cors(corsOptions));
 app.use(cookieParser());
 app.use(express.json({ limit: '1mb' }));
 app.use(express.raw({ limit: '10mb', type: 'application/octet-stream' }));
+
+// Every mutation route receives an object, including empty-body requests.
+// Express 4 does not automatically catch rejected async route promises.
+app.use((req, res, next) => {
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    if (req.body == null) req.body = {};
+    if (typeof req.body !== 'object' || Array.isArray(req.body) || Buffer.isBuffer(req.body)) {
+      return res.status(400).json({ error: 'Expected a JSON object' });
+    }
+  }
+  next();
+});
 
 // ── Security Headers ───────────────────────────────────────
 app.use((req, res, next) => {
@@ -169,7 +184,7 @@ app.use((req, res, next) => {
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload'); // MED-02: Submit domain to hstspreload.org for full preload
   const wsHost = process.env.WS_HOST || 'wss://localhost';
-  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' " + wsHost + "'"); // MED-01: CSP connect-src restricted
+  res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' " + wsHost); // MED-01: CSP connect-src restricted
   res.removeHeader('X-Powered-By');
   next();
 });
@@ -192,7 +207,7 @@ const authLimiter = rateLimit({
 // HIGH-02: Лимиты регистрации - 3 в минуту, 10 в час
 const registerLimiterMinute = rateLimit({
   windowMs: 60 * 1000,
-  max: 3,
+  max: 10,
   message: { error: 'Too many registration attempts, please wait' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -200,7 +215,7 @@ const registerLimiterMinute = rateLimit({
 
 const registerLimiterHour = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 10,
+  max: 30,
   message: { error: 'Registration limit exceeded, try again later' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -444,7 +459,7 @@ function loadMap(filename) {
         data = _decryptData(encryptedData, SESSION_SECRET);
         // HIGH-03: Verify HMAC integrity
         _verifyHmac(filename, data, SESSION_SECRET);
-      } else if (filename === 'fcm_tokens.json') {
+      } else if ((filename === 'fcm_tokens.json' || filename === 'messaging.json')) {
         const encryptedData = fs.readFileSync(file, 'utf8');
         data = _decryptData(encryptedData, SESSION_SECRET);
       } else {
@@ -466,6 +481,7 @@ function loadMap(filename) {
     }
   } catch (e) {
     console.error('[db] load error:', filename, e.message);
+    if (filename === 'messaging.json') throw new Error('Cannot load durable messaging state; restore a verified backup');
   }
   return new Map();
 }
@@ -485,18 +501,18 @@ async function saveMap(filename, map) {
     if (filename === 'users.json') {
       const encrypted = _encryptData(data, SESSION_SECRET);
       const tmpFile = file + '.tmp';
-      await fs.promises.writeFile(tmpFile, encrypted);
+      await fs.promises.writeFile(tmpFile, encrypted, { mode: 0o600, flush: true });
       await fs.promises.rename(tmpFile, file);
       // HIGH-03: Save HMAC for integrity check
       _saveHmac(filename, data, SESSION_SECRET);
-    } else if (filename === 'fcm_tokens.json') {
+    } else if ((filename === 'fcm_tokens.json' || filename === 'messaging.json')) {
       const encrypted = _encryptData(data, SESSION_SECRET);
       const tmpFile = file + '.tmp';
-      await fs.promises.writeFile(tmpFile, encrypted);
+      await fs.promises.writeFile(tmpFile, encrypted, { mode: 0o600, flush: true });
       await fs.promises.rename(tmpFile, file);
     } else {
       const tmpFile = file + '.tmp';
-      await fs.promises.writeFile(tmpFile, JSON.stringify(data));
+      await fs.promises.writeFile(tmpFile, JSON.stringify(data), { mode: 0o600, flush: true });
       await fs.promises.rename(tmpFile, file);
       // HIGH-03: Save HMAC for integrity check
       if (filename === 'last_seen.json' || filename === 'groups.json') {
@@ -505,6 +521,7 @@ async function saveMap(filename, map) {
     }
   } catch (e) {
     console.error('[db] save error:', filename, e.message);
+    return false;
   } finally {
     release();
   }
@@ -517,7 +534,17 @@ const FCM_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const groups = loadMap('groups.json');
 const lastSeen = loadMap('last_seen.json');
 const onlineUsers = new Map();
-const offlineBuffer = new Map();
+const messagingSnapshot = loadMap('messaging.json');
+const directReceipts = new Map(messagingSnapshot.get('receipts') || []);
+const offlineBuffer = messagingSnapshot.has('queues')
+  ? new Map(messagingSnapshot.get('queues')) : loadMap('offline.json');
+const directMessaging = require('./direct-messaging').createDirectMessaging({
+  io, users, onlineUsers, offlineBuffer, receipts: directReceipts,
+  encrypt: _encryptMetadata, decrypt: _decryptMetadata, push: sendFcmPush,
+  persist: () => saveMap('messaging.json', new Map([
+    ['queues', [...offlineBuffer]], ['receipts', [...directReceipts]],
+  ])),
+});
 // MED-03: Offline message TTL 7 days
 const OFFLINE_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const sessions = new Map();
@@ -537,19 +564,7 @@ function scheduleOfflineCleanup() {
   if (offlineCleanupScheduled) return;
   offlineCleanupScheduled = true;
   setInterval(() => {
-    const cutoff = Date.now() - OFFLINE_MESSAGE_TTL_MS;
-    for (const [user, messages] of offlineBuffer) {
-      const filtered = messages.filter(m => {
-        const ts = m.timestamp || 0;
-        return ts > cutoff;
-      });
-      if (filtered.length === 0) {
-        offlineBuffer.delete(user);
-      } else {
-        offlineBuffer.set(user, filtered);
-      }
-    }
-    saveMap('offline.json', offlineBuffer);
+    void directMessaging.sweep().catch(() => console.error('[db] queue cleanup failed'));
   }, 24 * 60 * 60 * 1000); // Cleanup every 24 hours
 }
 
@@ -603,7 +618,7 @@ function _decryptMetadata(encryptedEnvelope) {
       id: metadata.id,
       from: metadata.from,
       timestamp: metadata.ts,
-      data: null // actual message data is in envelope.d
+      data: encryptedEnvelope.m
     };
   } catch (e) {
     console.error('[offline] Failed to decrypt metadata:', e.message);
@@ -704,45 +719,27 @@ function generateSessionToken(username) {
 }
 
 // Track used refresh token nonces to detect family reuse
-const usedRefreshNonces = new Set();
-const REFRESH_NONCE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
-async function generateRefreshToken(username, oldToken = null) {
-  const release = await refreshTokenMutex.acquire();
-  try {
-    const token = crypto.randomBytes(64).toString('hex');
-    const familyId = crypto.randomBytes(16).toString('hex');
-    const expiresAt = Date.now() + REFRESH_TOKEN_DURATION;
-    const user = users.get(username);
-    const tokenVersion = user?.tokenVersion || 1;
-    
-    // If replacing old token, record old nonce to detect family reuse
-    if (oldToken) {
-      const oldData = refreshTokens.get(oldToken);
-      if (oldData && oldData.familyId) {
-        usedRefreshNonces.add(oldData.familyId);
-      }
-      refreshTokens.delete(oldToken);
-    }
-    
-    refreshTokens.set(token, { username, expiresAt, tokenVersion, familyId });
-    // HIGH-04: LRU cache for token maps + cleanup usedRefreshNonces
-    if (refreshTokens.size > MAX_REFRESH_TOKENS) {
-      const keysToRemove = Array.from(refreshTokens.keys()).slice(0, refreshTokens.size - MAX_REFRESH_TOKENS);
-      for (const k of keysToRemove) {
-        const t = refreshTokens.get(k);
-        if (t && t.familyId) usedRefreshNonces.delete(t.familyId);
-        refreshTokens.delete(k);
-      }
-    }
-    return token;
-  } finally {
-    release();
+// Called while the refresh route holds refreshTokenMutex; synchronous by design.
+const consumedRefreshTokens = new Map();
+function generateRefreshToken(username, oldToken = null) {
+  const old = oldToken ? refreshTokens.get(oldToken) : null;
+  const familyId = old?.familyId || crypto.randomBytes(16).toString('hex');
+  const expiresAt = old?.expiresAt || Date.now() + REFRESH_TOKEN_DURATION;
+  if (oldToken && old) {
+    consumedRefreshTokens.set(oldToken, { ...old });
+    refreshTokens.delete(oldToken);
   }
+  const token = crypto.randomBytes(64).toString('hex');
+  refreshTokens.set(token, { username, expiresAt, tokenVersion: users.get(username)?.tokenVersion || 1, familyId });
+  for (const [key, value] of consumedRefreshTokens) if (value.expiresAt <= Date.now()) consumedRefreshTokens.delete(key);
+  lruTrim(refreshTokens, MAX_REFRESH_TOKENS);
+  lruTrim(consumedRefreshTokens, MAX_REFRESH_TOKENS * 2);
+  return token;
 }
 
 function validateSessionToken(username, token) {
-  if (!token) return false;
+  if (!token || sessions.get(username) !== token) return false;
   const parts = token.split(':');
   if (parts.length !== 4) return false;
   const [tokenUsername, timestampStr, nonce, signature] = parts;
@@ -765,52 +762,48 @@ function validateSessionToken(username, token) {
   }
 }
 
-async function validateRefreshToken(token) {
-  const release = await refreshTokenMutex.acquire();
-  try {
-    if (!token) return null;
-    const data = refreshTokens.get(token);
-    if (!data) return null;
-    if (Date.now() > data.expiresAt) {
-      refreshTokens.delete(token);
-      return null;
-    }
-    // Check tokenVersion
-    const user = users.get(data.username);
-    const userVersion = user?.tokenVersion || 1;
-    if (data.tokenVersion !== userVersion) {
-      refreshTokens.delete(token);
-      console.log('[refresh] token invalidated due to tokenVersion mismatch for', data.username);
-      return null;
-    }
-    // HIGH-07: Check family reuse (if this family was already used, invalidate entire family)
-    if (data.familyId && usedRefreshNonces.has(data.familyId)) {
-      // Family reuse detected - invalidate all tokens for this user
-      for (const [t, d] of refreshTokens) {
-        if (d.username === data.username) {
-          refreshTokens.delete(t);
-        }
-      }
-      console.log('[refresh] Family reuse detected - invalidated all tokens for', data.username);
-      // Возвращаем объект с кодом ошибки вместо null для обработки на клиенте
-      return { error: 'TOKEN_FAMILY_REUSE_DETECTED', message: 'Security violation: token reuse detected' };
-    }
-    return { username: data.username, tokenVersion: data.tokenVersion };
-  } finally {
-    release();
+function validateRefreshToken(token) {
+  if (typeof token !== 'string' || !token) return null;
+  const consumed = consumedRefreshTokens.get(token);
+  if (consumed && consumed.expiresAt > Date.now()) {
+    for (const [key, value] of refreshTokens) if (value.familyId === consumed.familyId) refreshTokens.delete(key);
+    revokeUserSessions(consumed.username);
+    return { error: 'TOKEN_FAMILY_REUSE_DETECTED', message: 'Sign in again' };
   }
+  const data = refreshTokens.get(token);
+  if (!data || data.expiresAt <= Date.now() || data.tokenVersion !== (users.get(data.username)?.tokenVersion || 1)) {
+    refreshTokens.delete(token);
+    return null;
+  }
+  return data;
+}
+
+function revokeUserSessions(username) {
+  const socketId = onlineUsers.get(username);
+  // Remove ownership BEFORE disconnect, so its handler cannot create grace credentials.
+  onlineUsers.delete(username);
+  sessions.delete(username);
+  gracePeriodSessions.delete(username);
+  fcmTokens.delete(username);
+  for (const [token, value] of refreshTokens) if (value.username === username) refreshTokens.delete(token);
+  for (const [token, value] of consumedRefreshTokens) if (value.username === username) consumedRefreshTokens.delete(token);
+  if (socketId) io.sockets.sockets.get(socketId)?.disconnect(true);
+  const timestamp = Date.now();
+  lastSeen.set(username, timestamp);
+  for (const watcher of watchers.get(username) || []) io.to(watcher).emit('statusUpdate', { username, online: false, lastSeen: timestamp });
 }
 
 // ── Middleware ──────────────────────────────────────────────
 function requireUserAuth(req, res, next) {
   const sessionToken = req.headers['x-session-token'];
-  const username = req.headers['x-username'] || req.params.username || req.body.username;
+  const username = req.headers['x-username'] || req.body?.username;
   if (!sessionToken || !username) {
     return res.status(401).json({ error: 'Authentication required' });
   }
   if (!validateSessionToken(username, sessionToken)) {
     return res.status(403).json({ error: 'Invalid or expired session' });
   }
+  req.auth = Object.freeze({ username });
   next();
 }
 
@@ -840,7 +833,7 @@ function _verifyAdminToken(token, signature) {
 
 function requireAuth(req, res, next) {
   // MED-07: Username-based backoff for admin
-  const username = req.params.username || req.body.username || 'admin';
+  const username = req.params.username || req.body?.username || 'admin';
   const userBackoff = adminBackoff.get(username) || { backoff: 0 };
   if (userBackoff.backoff > 0) {
     const waitTime = Math.min(1000 * Math.pow(2, userBackoff.backoff), 30000);
@@ -863,7 +856,7 @@ function requireAuth(req, res, next) {
         }
       }
     }
-    adminSessions.delete(sessionCookie);
+    adminSessions.delete(sessionCookie.split('.')[0]);
   }
   
   // Update backoff on failure
@@ -1175,7 +1168,7 @@ app.post('/admin/login', (req, res) => {
 app.post('/admin/logout', (req, res) => {
   const sessionCookie = req.cookies?.[ADMIN_COOKIE_NAME];
   if (sessionCookie) {
-    adminSessions.delete(sessionCookie);
+    adminSessions.delete(sessionCookie.split('.')[0]);
   }
   res.clearCookie(ADMIN_COOKIE_NAME);
   res.json({ ok: true });
@@ -1233,11 +1226,32 @@ app.get('/api/server/public-key', (req, res) => {
 });
 
 // Register user
-app.post('/register', (req, res) => {
+app.post('/auth/challenge', rateLimit({ windowMs: 60000, max: 30 }), (req, res) => {
+  const username = typeof req.body.username === 'string' ? req.body.username.toLowerCase().trim() : '';
+  const challenge = authProof.issue(username);
+  if (!challenge) return res.status(400).json({ error: 'Invalid nickname or challenge limit exceeded' });
+  res.json({ challenge });
+});
+
+app.post('/register', async (req, res) => {
+  const nickname = typeof req.body.username === 'string' ? req.body.username.toLowerCase().trim() : '';
+  if (!authProof.verify({ ...req.body, username: nickname })) {
+    return res.status(403).json({ error: 'Fresh private-key proof required' });
+  }
+  let googleProfile = null;
+  if (req.body.googleIdToken) {
+    try { googleProfile = await authProof.googleProfile(req.body.googleIdToken); }
+    catch { return res.status(401).json({ error: 'Google sign-in failed. Check server OAuth configuration.' }); }
+  }
+  // Existing installations may reconnect with a fresh private-key proof. New
+  // registrations require Google unless the owner explicitly enables legacy mode.
+  if (!users.has(nickname) && !googleProfile && process.env.ALLOW_LEGACY_REGISTRATION !== 'true') {
+    return res.status(401).json({ error: 'Sign in with Google to create your account' });
+  }
   dbMutex.acquire().then((release) => {
     try {
       const { username, publicKey, signature } = req.body;
-      const nick = (username || '').toLowerCase().trim();
+      const nick = nickname;
       if (!/^[a-z0-9_]{3,32}$/.test(nick)) {
         release();
         return res.status(400).json({
@@ -1285,6 +1299,13 @@ app.post('/register', (req, res) => {
         release();
         return res.status(400).json({ error: 'Invalid public key' });
       }
+      if (googleProfile) {
+        const linked = [...users.entries()].find(([key, user]) => user.googleSub === googleProfile.googleSub && key !== username_norm);
+        if (linked) {
+          release();
+          return res.status(409).json({ error: 'This Google account already has a nickname. Use the original device/profile.' });
+        }
+      }
       let existingKey = null;
       let existing = null;
       for (const [key, value] of users) {
@@ -1295,6 +1316,10 @@ app.post('/register', (req, res) => {
         }
       }
       if (existing) {
+        if (googleProfile && existing.googleSub && existing.googleSub !== googleProfile.googleSub) {
+          release();
+          return res.status(403).json({ error: 'Google account does not match this profile' });
+        }
         if (existing.publicKey !== publicKey) {
           release();
           return res.status(409).json({ error: 'Nickname already taken' });
@@ -1304,11 +1329,15 @@ app.post('/register', (req, res) => {
           users.set(username_norm, existing);
           saveMap('users.json', users);
         }
+        if (googleProfile) {
+          Object.assign(existing, googleProfile);
+          saveMap('users.json', users);
+        }
         const token = generateSessionToken(username_norm);
         sessions.set(username_norm, token);
         console.log('[register] reissued token');
         release();
-        return res.json({ ok: true, username: username_norm, token });
+        return res.json({ ok: true, username: username_norm, token, refreshToken: generateRefreshToken(username_norm), profile: { email: existing.email, displayName: existing.displayName, avatarUrl: existing.avatarUrl } });
       }
 let serverSignature = null;
        // CRIT-03: Decrypt private key on-demand, sign, then wipe immediately
@@ -1317,7 +1346,7 @@ let serverSignature = null;
            const decrypted = _decryptMasterKey(fs.readFileSync(MASTER_KEY_FILE, 'utf8'), SESSION_SECRET);
            const privateKeyBuffer = Buffer.from(decrypted.privateKey, 'utf8');
            const sign = crypto.createSign('sha256');
-           sign.update(publicKey);
+           sign.update(Buffer.from(`shade-user-key:v1:${username_norm}:${publicKey}`).toString('base64'));
            sign.end();
            const sig = sign.sign({
              key: privateKeyBuffer,
@@ -1336,6 +1365,8 @@ serverSignature = sig.toString('base64');
         publicKey,
         signature,
         serverSignature,
+        serverSignatureVersion: 3,
+        ...googleProfile,
         registeredAt: Date.now(),
         tokenVersion: 1,
       });
@@ -1344,7 +1375,7 @@ serverSignature = sig.toString('base64');
       sessions.set(username_norm, token);
       console.log('[register] new user');
       release();
-      res.json({ ok: true, username: username_norm, token });
+      res.json({ ok: true, username: username_norm, token, refreshToken: generateRefreshToken(username_norm), profile: googleProfile || {} });
     } catch (e) {
       console.error('[register] error:', e.message);
       release();
@@ -1354,42 +1385,17 @@ serverSignature = sig.toString('base64');
 });
 
 app.post('/logout', requireUserAuth, async (req, res) => {
+  const username = req.auth.username;
+  if (req.body?.username && req.body.username !== username) return res.status(403).json({ error: 'Identity mismatch' });
   const release = await usersMutex.acquire();
   try {
-    const username = req.params.username || req.body.username;
-    if (username) {
-      sessions.delete(username);
-      fcmTokens.delete(username);
-      // MED-03: Очищаем буфер офлайн-сообщений при logout
-      offlineBuffer.delete(username);
-      // HIGH-05: Инвалидируем ВСЕ сессии пользователя через tokenVersion++
-      // HIGH-01: Users Map mutex protection
-      const user = users.get(username);
-      if (user) {
-        user.tokenVersion = (user.tokenVersion || 0) + 1;
-        users.set(username, user);
-        saveMap('users.json', users);
-        // HIGH-01: Invalidate all family refresh tokens on logout
-        const familyId = crypto.randomBytes(16).toString('hex');
-        usedRefreshNonces.add(familyId);
-        // Инвалидируем все refresh токены
-        for (const [token, data] of refreshTokens) {
-          if (data.username === username) {
-            refreshTokens.delete(token);
-            if (data.familyId) {
-              usedRefreshNonces.add(data.familyId);
-            }
-          }
-        }
-        console.log('[logout] All sessions invalidated, tokenVersion:', user.tokenVersion);
-      }
-      saveMap('fcm_tokens.json', fcmTokens);
-      console.log('[logout] user logged out');
-    }
-    res.json({ ok: true });
-  } finally {
-    release();
-  }
+    revokeUserSessions(username);
+    const user = users.get(username);
+    if (user) user.tokenVersion = (user.tokenVersion || 1) + 1;
+    const saved = await Promise.all([saveMap('users.json', users), saveMap('fcm_tokens.json', fcmTokens), saveMap('last_seen.json', lastSeen)]);
+    // Queued messages survive ordinary sign-out.
+    res.status(saved.includes(false) ? 503 : 200).json({ ok: !saved.includes(false) });
+  } finally { release(); }
 });
 
 app.post('/refresh', async (req, res) => {
@@ -1399,7 +1405,7 @@ app.post('/refresh', async (req, res) => {
     if (!refreshToken) {
       return res.status(400).json({ error: 'Missing refresh token' });
     }
-    const data = await validateRefreshToken(refreshToken);
+    const data = validateRefreshToken(refreshToken);
     if (!data) {
       return res.status(403).json({ error: 'Invalid or expired refresh token' });
     }
@@ -1410,7 +1416,7 @@ app.post('/refresh', async (req, res) => {
     // Token rotation: delete old and generate new with family tracking
     const newSessionToken = generateSessionToken(data.username);
     sessions.set(data.username, newSessionToken);
-    const newRefreshToken = await generateRefreshToken(data.username, refreshToken);
+    const newRefreshToken = generateRefreshToken(data.username, refreshToken);
     console.log('[refresh] token refreshed for', data.username);
     res.json({ ok: true, token: newSessionToken, refreshToken: newRefreshToken });
   } finally {
@@ -1418,55 +1424,19 @@ app.post('/refresh', async (req, res) => {
   }
 });
 
-app.post('/fcm/register', (req, res) => {
-  const { username, token } = req.body;
-  // Support both x-session-token and Authorization: Bearer <token>
-  let sessionToken = req.headers['x-session-token'];
-  if (!sessionToken && req.headers['authorization']) {
-    const auth = req.headers['authorization'];
-    if (auth.startsWith('Bearer ')) {
-      sessionToken = auth.substring(7);
-    }
-  }
-  if (!username || !token) {
-    return res.status(400).json({ error: 'Missing data' });
-  }
-  if (!sessionToken || !validateSessionToken(username, sessionToken)) {
-    return res.status(403).json({ error: 'Invalid or expired session' });
-  }
-  const sessionUsername = sessionToken.split(':')[0];
-  if (sessionUsername !== username) {
-    console.warn('[fcm] Username mismatch: session=' + sessionUsername + ' req=' + username);
-    return res.status(403).json({ error: 'Username mismatch' });
-  }
-  // MED-08: Store token with timestamp for TTL tracking
-  fcmTokens.set(username, { token: token, timestamp: Date.now() });
-  saveMap('fcm_tokens.json', fcmTokens);
-  console.log('[fcm] token registered for', username);
-  res.json({ ok: true });
+app.post('/fcm/register', requireUserAuth, async (req, res) => {
+  const { token, format } = req.body;
+  if (format !== 'fcm-v1' || typeof token !== 'string' || token.length < 16 || token.length > 4096 || !/^[a-zA-Z0-9_:.-]+$/.test(token)) return res.status(400).json({ error: 'Invalid FCM token format' });
+  fcmTokens.set(req.auth.username, { token, format, timestamp: Date.now() });
+  const saved = await saveMap('fcm_tokens.json', fcmTokens);
+  res.status(saved === false ? 503 : 200).json({ ok: saved !== false });
 });
 
-app.post('/fcm/unregister', (req, res) => {
-  const { username, token } = req.body;
-  const sessionToken = req.headers['x-session-token'];
-  if (!username || !token) {
-    return res.status(400).json({ error: 'Missing data' });
-  }
-  if (!sessionToken || !validateSessionToken(username, sessionToken)) {
-    return res.status(403).json({ error: 'Invalid or expired session' });
-  }
-  const sessionUsername = sessionToken.split(':')[0];
-  if (sessionUsername !== username) {
-    console.warn('[fcm] Username mismatch: session=' + sessionUsername + ' req=' + username);
-    return res.status(403).json({ error: 'Username mismatch' });
-  }
-  const storedToken = fcmTokens.get(username);
-  if (storedToken === token) {
-    fcmTokens.delete(username);
-    saveMap('fcm_tokens.json', fcmTokens);
-    console.log('[fcm] token unregistered');
-  }
-  res.json({ ok: true });
+app.post('/fcm/unregister', requireUserAuth, async (req, res) => {
+  const stored = fcmTokens.get(req.auth.username);
+  if (stored?.token === req.body.token) fcmTokens.delete(req.auth.username);
+  const saved = await saveMap('fcm_tokens.json', fcmTokens);
+  res.status(saved === false ? 503 : 200).json({ ok: saved !== false });
 });
 
 app.get('/user/:username', requireUserAuth, (req, res) => {
@@ -1495,12 +1465,13 @@ app.get('/user/:username', requireUserAuth, (req, res) => {
       });
     }
     
-if (!user.serverSignature && fs.existsSync(MASTER_KEY_FILE)) {
+if (user.serverSignatureVersion !== 3 && fs.existsSync(MASTER_KEY_FILE)) {
        try {
 // CRIT-03: Decrypt private key on-demand, sign, then wipe immediately
          const decrypted = _decryptMasterKey(fs.readFileSync(MASTER_KEY_FILE, 'utf8'), SESSION_SECRET);
          const privateKeyBuffer = Buffer.from(decrypted.privateKey, 'utf8');
-user.serverSignature = crypto.sign('sha256', Buffer.from(user.publicKey), privateKeyBuffer).toString('base64');
+user.serverSignatureVersion = 3;
+user.serverSignature = crypto.sign('sha256', Buffer.from(Buffer.from(`shade-user-key:v1:${req.params.username}:${user.publicKey}`).toString('base64')), { key: privateKeyBuffer, padding: crypto.constants.RSA_PKCS1_PSS_PADDING, saltLength: 32 }).toString('base64');
           // CRIT-02: Wipe both Buffer and original PEM string
           _wipeKey(privateKeyBuffer);
           decrypted.privateKey = '';
@@ -1517,6 +1488,7 @@ user.serverSignature = crypto.sign('sha256', Buffer.from(user.publicKey), privat
       publicKey: user.publicKey,
       signature: user.signature,
       serverSignature: user.serverSignature || null,
+      serverSignatureVersion: user.serverSignatureVersion || 0,
       online: isOnline,
       lastSeen: lastSeenTime,
     });
@@ -1531,7 +1503,7 @@ user.serverSignature = crypto.sign('sha256', Buffer.from(user.publicKey), privat
 async function sendFcmPush(username, from) {
   if (!admin) return;
   const tokenData = fcmTokens.get(username);
-  if (!tokenData || !isFcmTokenValid(tokenData)) {
+  if (!tokenData || tokenData.format !== 'fcm-v1' || !isFcmTokenValid(tokenData)) {
     // MED-08: Token expired or invalid - skip push
     if (tokenData) {
       fcmTokens.delete(username);
@@ -1542,14 +1514,16 @@ async function sendFcmPush(username, from) {
   // Extract token from data structure
   const token = typeof tokenData === 'string' ? tokenData : tokenData.token;
   try {
-    // HIGH-03: Silent push to minimize metadata
+    // Generic visible notification; message contents remain client-encrypted.
     await admin.messaging().send({
-      token: token,
+      token,
+      notification: { title: 'Shade', body: 'Новое сообщение' },
+      android: { priority: 'high', notification: { channelId: 'shade_messages' } },
+      apns: { payload: { aps: { sound: 'default' } } },
       data: {
         type: 'new_message',
         from: from,
       },
-      content_available: true,
     });
     console.log('[fcm] push sent');
   } catch (e) {
@@ -1559,41 +1533,8 @@ async function sendFcmPush(username, from) {
 
 // ── Group endpoints ──────────────────────────────────────────
 
-app.post('/group/create', (req, res) => {
-  const { name, members } = req.body;
-  const sessionToken = req.headers['x-session-token'];
-  const username = req.headers['x-username'];
-  // HIGH-02: Auth required for group creation
-  if (!sessionToken || !username || !validateSessionToken(username, sessionToken)) {
-    return res.status(401).json({ error: 'Authentication required' });
-  }
-  if (!name || !Array.isArray(members) || members.length < 2) {
-    return res.status(400).json({ error: 'Need name and at least 2 members' });
-  }
-  // MED-04: Max group size 200
-  const MAX_GROUP_SIZE = 200;
-  if (members.length > MAX_GROUP_SIZE) {
-    return res.status(400).json({ error: 'Maximum group size is ' + MAX_GROUP_SIZE });
-  }
-  const groupId = Date.now().toString();
-  groups.set(groupId, {
-    name,
-    members: new Set(members),
-    createdAt: Date.now(),
-  });
-  saveMap('groups.json', groups);
-  console.log('[group] created');
-  res.json({ ok: true, groupId, name, members });
-});
-
-app.get('/group/:id', (req, res) => {
-  const group = groups.get(req.params.id);
-  if (!group) return res.status(404).json({ error: 'Group not found' });
-  res.json({
-    id: req.params.id,
-    name: group.name,
-    members: [...group.members],
-  });
+app.all(['/group/create', '/group/:id'], requireUserAuth, (_req, res) => {
+  res.status(410).json({ error: 'Groups are not available in this version' });
 });
 
 // ── WebSocket ────────────────────────────────────────────────
@@ -1610,15 +1551,16 @@ const GLOBAL_WS_MAX_PER_SEC = 10;
 io.on('connection', (socket) => {
   // MED-06: Global WS rate limit 10/sec
   const now = Date.now();
-  const globalCount = globalWsRateLimit.get(now) || 0;
+  const bucket = Math.floor(now / 1000);
+  const globalCount = globalWsRateLimit.get(bucket) || 0;
   if (globalCount >= GLOBAL_WS_MAX_PER_SEC) {
     console.warn('[ws] Global rate limit exceeded');
     socket.emit('error', { message: 'Too many connections, please try again later' });
     socket.disconnect();
     return;
   }
-  globalWsRateLimit.set(now, globalCount + 1);
-  setTimeout(() => globalWsRateLimit.delete(now), 1000);
+  globalWsRateLimit.set(bucket, globalCount + 1);
+  setTimeout(() => globalWsRateLimit.delete(bucket), 1000);
   
   // MED-07: Ограничение 5 одновременных подключений с одного IP
   const clientIp = socket.handshake.address || socket.conn.remoteAddress || 'unknown';
@@ -1630,6 +1572,11 @@ io.on('connection', (socket) => {
     return;
   }
   wsConnectionsPerIp.set(clientIp, currentCount + 1);
+  socket.on('disconnect', () => {
+    lastDisconnectTime.set(clientIp, Date.now());
+    const count = wsConnectionsPerIp.get(clientIp) || 1;
+    wsConnectionsPerIp.set(clientIp, Math.max(0, count - 1));
+  });
   // HIGH-02: Global reconnect rate limit 10/min per IP
   const reconnectAttempts = reconnectRateLimit.get(clientIp) || [];
   const nowReconnect = Date.now();
@@ -1651,11 +1598,7 @@ io.on('connection', (socket) => {
     socket.disconnect();
     return;
   }
-  socket.on('disconnect', () => {
-    lastDisconnectTime.set(clientIp, Date.now());
-    const count = wsConnectionsPerIp.get(clientIp) || 1;
-    wsConnectionsPerIp.set(clientIp, Math.max(0, count - 1));
-  });
+
   
   console.log('[ws] connected:', socket.id);
 
@@ -1672,6 +1615,12 @@ io.on('connection', (socket) => {
   
   socket.use((packet, next) => {
     const eventName = packet[0];
+    if (eventName !== 'register' && (!socket.username || onlineUsers.get(socket.username) !== socket.id || !validateSessionToken(socket.username, sessions.get(socket.username)))) {
+      socket.emit('authError', { error: 'Authentication required' });
+      const ack = packet[packet.length - 1];
+      if (typeof ack === 'function') ack({ ok: false, error: 'Authentication required' });
+      return;
+    }
     const now = Date.now();
     let rateInfo = wsRateLimits.get(socket.id);
     if (!rateInfo || now > rateInfo.resetTime) {
@@ -1768,6 +1717,8 @@ io.on('connection', (socket) => {
       setTimeout(() => socket.disconnect(true), 1000);
       return;
     }
+    const previous = onlineUsers.get(username);
+    if (previous && previous !== socket.id) io.sockets.sockets.get(previous)?.disconnect(true);
     onlineUsers.set(username, socket.id);
     socket.username = username;
     lastSeen.set(username, Date.now());
@@ -1779,184 +1730,26 @@ io.on('connection', (socket) => {
         io.to(sid).emit('statusUpdate', { username, online: true, lastSeen: Date.now() });
       }
     }
-    const queued = offlineBuffer.get(username);
-    if (queued && queued.length > 0) {
-      for (const msg of queued) {
-        socket.emit('message', msg);
-      }
-      offlineBuffer.delete(username);
-    }
+    socket.emit('registered', { username });
+    void directMessaging.replay(socket).catch(() => socket.emit('error', { message: 'Sync unavailable' }));
   });
 
-  socket.on('message', (payload) => {
-    // MED-04: Раздельные лимиты для текста и файлов
-    const MAX_TEXT_SIZE = 50 * 1024 * 1024;  // 50MB для текстовых сообщений
-    const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB для файлов
-    if (!payload || !payload.to || !payload.data) return;
-    
-    // CRIT-02: Validate encrypted payload format before relay
-    if (typeof payload.data === 'string') {
-      try {
-        const parsed = JSON.parse(payload.data);
-        if (typeof parsed !== 'object' || parsed === null) {
-          socket.emit('error', { message: 'Invalid encrypted payload' });
-          console.log('[security] invalid payload: not an object');
-          return;
-        }
-        const keyBase64 = parsed.k;
-        const dataBase64 = parsed.d;
-        if (!keyBase64 || typeof keyBase64 !== 'string' || keyBase64.trim() === '') {
-          socket.emit('error', { message: 'Invalid encrypted payload: missing key' });
-          console.log('[security] invalid payload: empty key');
-          return;
-        }
-        if (!dataBase64 || typeof dataBase64 !== 'string' || dataBase64.trim() === '') {
-          socket.emit('error', { message: 'Invalid encrypted payload: missing data' });
-          console.log('[security] invalid payload: empty data');
-          return;
-        }
-      } catch (e) {
-        socket.emit('error', { message: 'Invalid encrypted payload' });
-        console.log('[security] invalid payload: not valid JSON');
-        return;
-      }
-    }
-    
-    const dataSize = Buffer.byteLength(JSON.stringify(payload.data), 'utf8');
-    const isFileOrImage = payload.data.type === 'file' || payload.data.type === 'image';
-    const limit = isFileOrImage ? MAX_FILE_SIZE : MAX_TEXT_SIZE;
-    if (dataSize > limit) {
-      socket.emit('error', { message: isFileOrImage ? 'File too large (max 10MB)' : 'Message too large (max 1MB)' });
-      console.log('[security] oversized message rejected, type:', isFileOrImage ? 'file' : 'text');
-      return;
-    }
-    if (payload.data.type === 'file' || payload.data.type === 'image') {
-      const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.pdf', '.txt'];
-      const fileName = payload.data.fileName || '';
-      const ext = path.extname(fileName).toLowerCase();
-      if (!allowedExtensions.includes(ext)) {
-        socket.emit('error', { message: 'File type not allowed' });
-        console.log('[security] blocked file type:', ext);
-        return;
-      }
-    }
-    const from = socket.username || 'unknown';
-    const msgId = Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
-    const envelope = {
-      id: msgId,
-      from: from,
-      data: payload.data,
-      timestamp: Date.now(),
-    };
-    if (from === payload.to) {
-      console.log('[skip] self-message');
-      return;
-    }
-    const targetSocketId = onlineUsers.get(payload.to);
-    if (targetSocketId) {
-      io.to(targetSocketId).emit('message', envelope);
-      console.log('[relay] message delivered');
-      socket.emit('messageStatus', { msgId, status: 'delivered' });
-    } else {
-      if (!offlineBuffer.has(payload.to)) {
-        offlineBuffer.set(payload.to, []);
-      }
-      // MED-03: Encrypt offline metadata before storing
-      offlineBuffer.get(payload.to).push(_encryptMetadata(envelope));
-      console.log('[queue] message buffered (metadata encrypted)');
-      sendFcmPush(payload.to, from);
-    }
+  directMessaging.attach(socket);
+
+  socket.on('groupMessage', (_payload, ack) => {
+    if (typeof ack === 'function') ack({ ok: false, error: 'Groups are not available in this version' });
+    else socket.emit('error', { message: 'Groups are not available in this version' });
   });
 
-  socket.on('delivered', (msgId) => {
-    if (!socket.username || !msgId) return;
-    socket.broadcast.emit('messageStatus', { msgId, status: 'delivered' });
-  });
-
-  socket.on('read', (data) => {
-    if (!socket.username || !data || !data.from) return;
-    const senderSocketId = onlineUsers.get(data.from);
-    if (senderSocketId) {
-      io.to(senderSocketId).emit('messageStatus', {
-        msgIds: data.msgIds || [],
-        status: 'read',
-        from: socket.username,
-      });
-    }
-  });
-
-  socket.on('deleteMessage', (payload) => {
-    if (!payload || !payload.to || !payload.msgId) return;
-    const from = socket.username || 'unknown';
-    if (payload.forEveryone) {
-      const targetSocketId = onlineUsers.get(payload.to);
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('messageDeleted', {
-          msgId: payload.msgId,
-          from: from,
-        });
-      }
-      console.log('[delete] message deleted for everyone');
-    }
-  });
-
-  socket.on('groupMessage', (payload) => {
-    if (!socket.username) {
-      socket.emit('error', { message: 'Authentication required' });
-      return;
-    }
-    if (!payload || !payload.groupId || !payload.data) return;
-    const from = socket.username || 'unknown';
-    const group = groups.get(payload.groupId);
-    if (!group) {
-      console.log('[group] unknown group');
-      return;
-    }
-    const envelope = {
-      from,
-      data: payload.data,
-      groupId: payload.groupId,
-      timestamp: Date.now(),
-    };
-    for (const member of group.members) {
-      if (member === from) continue;
-      const memberSocketId = onlineUsers.get(member);
-      if (memberSocketId) {
-        io.to(memberSocketId).emit('groupMessage', envelope);
-      } else {
-        if (!offlineBuffer.has(member)) {
-          offlineBuffer.set(member, []);
-        }
-        offlineBuffer.get(member).push(envelope);
-        sendFcmPush(member, from);
-      }
-    }
-    console.log('[group] message delivered');
-  });
-
-  // MED-08: Explicit WS logout handler
   socket.on('logout', () => {
     if (!socket.username) return;
     const username = socket.username;
-    sessions.delete(username);
-    gracePeriodSessions.delete(username);
-    onlineUsers.delete(username);
-    lastSeen.set(username, Date.now());
-    saveMap('last_seen.json', lastSeen);
+    revokeUserSessions(username);
     const user = users.get(username);
-    if (user) {
-      user.tokenVersion = (user.tokenVersion || 0) + 1;
-      users.set(username, user);
-      saveMap('users.json', users);
-    }
-    for (const [token, data] of refreshTokens) {
-      if (data.username === username) {
-        refreshTokens.delete(token);
-      }
-    }
-    console.log('[ws] Explicit logout for:', username);
-    socket.emit('loggedOut', { ok: true });
-    socket.disconnect();
+    if (user) user.tokenVersion = (user.tokenVersion || 1) + 1;
+    void saveMap('users.json', users);
+    void saveMap('fcm_tokens.json', fcmTokens);
+    void saveMap('last_seen.json', lastSeen);
   });
 
   socket.on('typing', (payload) => {
@@ -1997,6 +1790,7 @@ io.on('connection', (socket) => {
       const username = socket.username;
       const existingSession = sessions.get(username);
       
+      if (onlineUsers.get(username) !== socket.id) return;
       onlineUsers.delete(username);
       
       if (existingSession) {
@@ -2124,7 +1918,7 @@ app.post('/admin/revoke/:username', requireAuth, async (req, res) => {
         refreshTokens.delete(token);
       }
     }
-    sessions.delete(foundKey);
+    revokeUserSessions(foundKey);
     console.log(`[AUDIT] Admin revoked tokens for: ${foundKey} (tokenVersion=${newVersion})`);
     res.json({ ok: true, message: `All tokens revoked. New tokenVersion: ${newVersion}` });
   } finally {
@@ -2152,10 +1946,11 @@ app.delete('/admin/user/:username', requireAuth, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
     console.log(`[AUDIT] Admin deleted user: ${foundKey}`);
+    revokeUserSessions(foundKey);
     users.delete(foundKey);
     // HIGH-01: Users Map mutex protection
     onlineUsers.delete(foundKey);
-    sessions.delete(foundKey);
+    revokeUserSessions(foundKey);
     lastSeen.delete(foundKey);
     fcmTokens.delete(foundKey);
     saveMap('users.json', users);
@@ -2767,6 +2562,7 @@ server.listen(PORT, '0.0.0.0', () => {
 });
 
 // ── HTTP WebSocket server (for testing without TLS) ──────────
+if (process.env.ENABLE_INSECURE_TEST_PORT === 'true' && process.env.NODE_ENV !== 'production') {
 const HTTP_WS_PORT = process.env.HTTP_WS_PORT || 3001;
 const httpWsServer = http.createServer(app);
 io.attach(httpWsServer, {
@@ -2774,8 +2570,10 @@ io.attach(httpWsServer, {
   transports: ['websocket'],
   pingTimeout: 60000,
   pingInterval: 25000,
-  maxHttpBufferSize: 100e6,
+  maxHttpBufferSize: 11 * 1024 * 1024,
 });
 httpWsServer.listen(HTTP_WS_PORT, '0.0.0.0', () => {
   console.log(`Shade HTTP WebSocket server on :${HTTP_WS_PORT}`);
 });
+
+}

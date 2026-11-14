@@ -1,13 +1,9 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math' show Random;
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:fast_rsa/fast_rsa.dart';
-import 'package:encrypt/encrypt.dart' as enc;
 import 'package:pointycastle/export.dart' as pc;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:crypto/crypto.dart' as crypto;
 
 /// Криптографически стойкий генератор случайных чисел на базе PointyCastle Fortuna PRNG.
@@ -26,7 +22,8 @@ class _SecureRandom {
   static void _ensureSeeded() {
     if (_seeded) return;
     final random = Random.secure();
-    final entropy = Uint8List.fromList(List.generate(32, (_) => random.nextInt(256)));
+    final entropy =
+        Uint8List.fromList(List.generate(32, (_) => random.nextInt(256)));
     _fortuna.seed(pc.KeyParameter(entropy));
     entropy.fillRange(0, entropy.length, 0);
     _seeded = true;
@@ -39,13 +36,6 @@ class _SecureRandom {
   }
 
   // HIGH-04: Wipe password with Uint8List
-  static Uint8List wipePassword(Uint8List password) {
-    // Заполняем нулями для безопасного стирания
-    for (int i = 0; i < password.length; i++) {
-      password[i] = 0;
-    }
-    return password;
-  }
 }
 
 enum ServerKeyTrustStatus {
@@ -76,7 +66,6 @@ class ServerKeyFingerprintResult {
 ///   RSA.verifyPSS(signature, message, hash, saltLength, publicKey)
 class CryptoService {
   final FlutterSecureStorage _secureStorage;
-  final String? _password;
 
   static const String _privKeyAlias = 'rsa_private_key';
   static const String _pubKeyAlias = 'rsa_public_key';
@@ -84,14 +73,12 @@ class CryptoService {
   static const int _aesKeyLen = 32;
   static const int _aesNonceLen = 12; // GCM nonce
   static const int _aesGcmTagBits = 128; // 16-byte auth tag
-  static const String _keysFileName = '.shade_keys.enc';
 
-  CryptoService({FlutterSecureStorage? storage, String? password})
+  CryptoService({FlutterSecureStorage? storage})
       : _secureStorage = storage ??
             const FlutterSecureStorage(
               aOptions: AndroidOptions(encryptedSharedPreferences: true),
-            ),
-        _password = password;
+            );
 
   // ══════════════════════════════════════════════════════════════
   //  KEY GENERATION
@@ -111,7 +98,7 @@ class CryptoService {
   }
 
   /// Очищает все ключи идентификации из защищённого хранилища.
-  /// 
+  ///
   /// Должно вызываться при выходе из системы для удаления криптографического
   /// материала с устройства. После вызова пользователь должен заново
   /// сгенерировать ключи для использования приложения.
@@ -139,7 +126,7 @@ class CryptoService {
 
     // AES-256-GCM шифрование (включает 16-байтный тег аутентификации)
     final plainBytes = Uint8List.fromList(utf8.encode(plainText));
-    final cipher = pc.GCMBlockCipher(pc.AESFastEngine())
+    final cipher = pc.GCMBlockCipher(pc.AESEngine())
       ..init(
         true,
         pc.AEADParameters(
@@ -191,7 +178,7 @@ class CryptoService {
         final nonce = Uint8List.fromList(envelope.sublist(1 + _aesKeyLen));
         final ciphertextWithTag = base64.decode(encryptedDataB64);
 
-        final cipher = pc.GCMBlockCipher(pc.AESFastEngine())
+        final cipher = pc.GCMBlockCipher(pc.AESEngine())
           ..init(
             false,
             pc.AEADParameters(
@@ -199,10 +186,12 @@ class CryptoService {
           );
         return utf8.decode(cipher.process(ciphertextWithTag));
       } else {
-        throw Exception('Unknown envelope format - CBC mode no longer supported');
+        throw Exception(
+            'Unknown envelope format - CBC mode no longer supported');
       }
     } catch (e) {
-      if (e.toString().contains('AEADBadTagException') || e.toString().contains('Tag')) {
+      if (e.toString().contains('AEADBadTagException') ||
+          e.toString().contains('Tag')) {
         throw Exception('Message authentication failed. Data may be tampered.');
       }
       debugPrint('[CryptoService] decryptData FAILED');
@@ -274,14 +263,21 @@ class CryptoService {
   Future<bool> verifyPublicKeySignature(
     String publicKey,
     String serverSignature,
-    String serverPublicKey,
-  ) async {
-    if (serverSignature == null || serverSignature.isEmpty) {
-      debugPrint('[CryptoService] No server signature provided - possible MitM!');
+    String serverPublicKey, {
+    required String username,
+    required String serverOrigin,
+  }) async {
+    if (serverSignature.isEmpty) {
+      debugPrint(
+          '[CryptoService] No server signature provided - possible MitM!');
       return false;
     }
     try {
-      final dataB64 = base64.encode(utf8.encode(publicKey));
+      final trust = await _checkServerKeyFingerprint(serverPublicKey,
+          serverOrigin: serverOrigin);
+      if (trust.status != ServerKeyTrustStatus.trusted) return false;
+      final dataB64 =
+          base64.encode(utf8.encode('shade-user-key:v1:$username:$publicKey'));
       final isValid = await RSA.verifyPSS(
         serverSignature,
         dataB64,
@@ -294,8 +290,7 @@ class CryptoService {
         return false;
       }
       // TOFU: verify server public key fingerprint - throws if confirmation needed
-      final fpResult = await _checkServerKeyFingerprint(serverPublicKey);
-      return fpResult.status == ServerKeyTrustStatus.trusted;
+      return true;
     } catch (e) {
       debugPrint('[CryptoService] Server signature verification error: $e');
       return false;
@@ -303,9 +298,12 @@ class CryptoService {
   }
 
   /// Проверяет ключ сервера и возвращает результат для UI (диалог подтверждения)
-  Future<ServerKeyFingerprintResult> checkServerKeyForConfirmation(String serverPublicKey) async {
+  Future<ServerKeyFingerprintResult> checkServerKeyForConfirmation(
+      String serverPublicKey,
+      {String serverOrigin = 'default'}) async {
     try {
-      final fpResult = await _checkServerKeyFingerprint(serverPublicKey);
+      final fpResult = await _checkServerKeyFingerprint(serverPublicKey,
+          serverOrigin: serverOrigin);
       return fpResult;
     } catch (e) {
       return ServerKeyFingerprintResult(
@@ -319,40 +317,23 @@ class CryptoService {
   /// [FIX] HIGH #2: Используем PIN-код из сборки как единственный источник истины.
   /// TOFU используется только как fallback если PIN не сконфигурирован.
   /// Возвращает результат с статусом проверки для показа диалога подтверждения.
-  Future<ServerKeyFingerprintResult> _checkServerKeyFingerprint(String serverPublicKey) async {
+  Future<ServerKeyFingerprintResult> _checkServerKeyFingerprint(
+      String serverPublicKey,
+      {String serverOrigin = 'default'}) async {
     try {
       final fingerprint = await _sha256Fingerprint(serverPublicKey);
-      
-      // [FIX] Приоритет 1: PIN-код из сборки (--dart-define=SHADED_PIN_SHA256=...)
-      const pinnedFromBuild = String.fromEnvironment('SHADED_PIN_SHA256', defaultValue: '');
-      
-      if (pinnedFromBuild.isNotEmpty) {
-        // Есть PIN из сборки - проверяем строго
-        if (fingerprint != pinnedFromBuild) {
-          debugPrint('[CryptoService] CRITICAL: Server key MISMATCH! Possible MitM attack!');
-          debugPrint('  Expected: $pinnedFromBuild');
-          debugPrint('  Got:      $fingerprint');
-          return ServerKeyFingerprintResult(
-            status: ServerKeyTrustStatus.mismatchDetected,
-            fingerprint: fingerprint,
-          );
-        } else {
-          debugPrint('[CryptoService] Server key fingerprint verified (from build config)');
-          return ServerKeyFingerprintResult(
-            status: ServerKeyTrustStatus.trusted,
-            fingerprint: fingerprint,
-          );
-        }
-      }
-      
+
       // HIGH-03: Server key fingerprint via build config
       // Проверяем --dart-define=SERVER_PUBLIC_KEY_FINGERPRINT
-      final buildConfigFingerprint = String.fromEnvironment('SERVER_PUBLIC_KEY_FINGERPRINT', defaultValue: '');
-      
+      const buildConfigFingerprint = String.fromEnvironment(
+          'SERVER_PUBLIC_KEY_FINGERPRINT',
+          defaultValue: '');
+
       if (buildConfigFingerprint.isNotEmpty) {
         // Приоритет: предустановленный fingerprint из билда
         if (fingerprint != buildConfigFingerprint) {
-          debugPrint('[CryptoService] CRITICAL: Server key MISMATCH! Build config vs actual');
+          debugPrint(
+              '[CryptoService] CRITICAL: Server key MISMATCH! Build config vs actual');
           debugPrint('  Expected: $buildConfigFingerprint');
           debugPrint('  Got:      $fingerprint');
           return ServerKeyFingerprintResult(
@@ -361,36 +342,40 @@ class CryptoService {
             storedFingerprint: buildConfigFingerprint,
           );
         }
-        debugPrint('[CryptoService] Server key fingerprint verified (build config)');
+        debugPrint(
+            '[CryptoService] Server key fingerprint verified (build config)');
         return ServerKeyFingerprintResult(
           status: ServerKeyTrustStatus.trusted,
           fingerprint: fingerprint,
         );
       }
-      
+
       // [FIX] Приоритет 2: TOFU как fallback (только для разработки!)
-      const isProduction = const bool.fromEnvironment('dart.vm.product', defaultValue: false);
+      const isProduction =
+          bool.fromEnvironment('dart.vm.product', defaultValue: false);
       // HIGH-06: Require pin in production, no TOFU
       if (isProduction) {
         debugPrint('[CryptoService] CRITICAL: TOFU not allowed in production!');
-        debugPrint('[CryptoService] Set --dart-define=SHADED_PIN_SHA256=<sha256-fingerprint>');
+        debugPrint(
+            '[CryptoService] Set --dart-define=SERVER_PUBLIC_KEY_FINGERPRINT=<colon-hex-sha256>');
         return ServerKeyFingerprintResult(
           status: ServerKeyTrustStatus.mismatchDetected,
           fingerprint: fingerprint,
         );
       }
-      const storage = FlutterSecureStorage();
-      const key = 'server_pubkey_fingerprint';
-      final stored = await storage.read(key: key);
+      final key = 'server_pubkey_fingerprint:$serverOrigin';
+      final stored = await _secureStorage.read(key: key);
       if (stored == null) {
         // Впервые видим ключ сервера - требуется подтверждение пользователя
-        debugPrint('[CryptoService] NEW server key detected - user confirmation required');
+        debugPrint(
+            '[CryptoService] NEW server key detected - user confirmation required');
         return ServerKeyFingerprintResult(
           status: ServerKeyTrustStatus.newKeyRequiresConfirmation,
           fingerprint: fingerprint,
         );
       } else if (stored != fingerprint) {
-        debugPrint('[CryptoService] WARNING: Server key fingerprint changed! Possible MitM attack.');
+        debugPrint(
+            '[CryptoService] WARNING: Server key fingerprint changed! Possible MitM attack.');
         debugPrint('  Stored: $stored');
         debugPrint('  Got:    $fingerprint');
         return ServerKeyFingerprintResult(
@@ -414,17 +399,21 @@ class CryptoService {
     }
   }
 
-/// Подтверждает доверие к ключу сервера (сохраняет fingerprint)
-  Future<void> trustServerKey(String fingerprint) async {
-    const storage = FlutterSecureStorage();
-    const key = 'server_pubkey_fingerprint';
-    await storage.write(key: key, value: fingerprint);
+  /// Подтверждает доверие к ключу сервера (сохраняет fingerprint)
+  Future<void> trustServerKey(String fingerprint,
+      {String serverOrigin = 'default'}) async {
+    final key = 'server_pubkey_fingerprint:$serverOrigin';
+    await _secureStorage.write(key: key, value: fingerprint);
     debugPrint('[CryptoService] Server key fingerprint trusted and saved');
   }
 
   /// Вычисляет отпечаток SHA-256 публичного PEM-ключа (убирает заголовки/подвалы, пробелы).
   Future<String> _sha256Fingerprint(String pem) async {
-    final lines = pem.split('\n').where((l) => !l.contains('BEGIN') && !l.contains('END') && l.trim().isNotEmpty).join();
+    final lines = pem
+        .split('\n')
+        .where((l) =>
+            !l.contains('BEGIN') && !l.contains('END') && l.trim().isNotEmpty)
+        .join();
     final bytes = base64.decode(lines);
     final hash = crypto.sha256.convert(bytes);
     return hash.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(':');
@@ -539,176 +528,13 @@ class CryptoService {
       await _secureStorage.write(key: alias, value: normalized);
       debugPrint('[CryptoService] writeKey $alias to OS secure storage');
     } catch (e) {
-      debugPrint('[CryptoService] ERROR: Cannot write to OS secure storage: $e');
+      debugPrint(
+          '[CryptoService] ERROR: Cannot write to OS secure storage: $e');
       // HIGH-01: No fallback - throw error to prevent unsafe storage
-      throw Exception('Failed to write key to OS secure storage. Keys must be protected by OS keychain.');
-    }
-  }
-
-  // FEATURE: Password fallback is a last resort when OS Keychain is unavailable on desktop.
-  // Keys are encrypted with PBKDF2+ AES-256-GCM before writing to disk.
-  // HIGH-07: No password fallback in production
-  Future<void> _writeToPasswordFallback(String alias, String value) async {
-    final isProduction = const bool.fromEnvironment('dart.vm.product', defaultValue: false);
-    if (isProduction) {
-      throw Exception('FATAL: OS Keychain required in production. Cannot use password fallback.');
-    }
-    if (_password == null) {
       throw Exception(
-        'Secure storage unavailable on desktop. Cannot safely store keys. '
-        'Please ensure your OS keychain/keystore is accessible.',
-      );
-    }
-    debugPrint('[CryptoService] Secure storage unavailable. Using password fallback.');
-    final existing = await _readFromEncryptedFile();
-    String privKey = value;
-    String pubKey = value;
-    if (existing != null) {
-      final parts = existing.split('|||SHADE_SEP|||');
-      if (parts.length == 2) {
-        privKey = alias == _privKeyAlias ? value : parts[0];
-        pubKey = alias == _pubKeyAlias ? value : parts[1];
-      }
-    } else {
-      privKey = alias == _privKeyAlias ? value : '';
-      pubKey = alias == _pubKeyAlias ? value : '';
-    }
-    await _writeToEncryptedFile(privKey, pubKey);
-  }
-
-  /// Generates cryptographically secure random bytes using PointyCastle Fortuna.
-  static Uint8List _randomBytes(int length) {
-    return _SecureRandom.nextBytes(length);
-  }
-
-  // ══════════════════════════════════════════════════════════════
-  // HIGH-07: No password fallback in production
-  Future<String?> _readFromEncryptedFile() async {
-    final isProduction = const bool.fromEnvironment('dart.vm.product', defaultValue: false);
-    if (isProduction) {
-      throw Exception('FATAL: OS Keychain required in production. Cannot use password fallback.');
-    }
-    if (_password == null) return null;
-    try {
-      final dir = await _getSecureStorageDir();
-      final file = File('${dir.path}/$_keysFileName');
-      if (!await file.exists()) return null;
-      final encryptedData = await file.readAsBytes();
-      return _decryptWithPassword(encryptedData, _password!);
-    } catch (e) {
-      debugPrint('[CryptoService] Failed to read encrypted keys file: $e');
-      return null;
+          'Failed to write key to OS secure storage. Keys must be protected by OS keychain.');
     }
   }
 
-  Future<Directory> _getSecureStorageDir() async {
-    if (Platform.isMacOS) {
-      final appSupport = await getApplicationSupportDirectory();
-      final dir = Directory('${appSupport.path}/shade');
-      if (!await dir.exists()) await dir.create(recursive: true);
-      return dir;
-    } else if (Platform.isWindows) {
-      final appData = await getApplicationDocumentsDirectory();
-      final dir = Directory('${appData.path}/shade');
-      if (!await dir.exists()) await dir.create(recursive: true);
-      return dir;
-    } else if (Platform.isLinux) {
-      final dataDir = await getApplicationSupportDirectory();
-      final dir = Directory('${dataDir.path}/shade');
-      if (!await dir.exists()) await dir.create(recursive: true);
-      return dir;
-    } else {
-      final dir = await getApplicationDocumentsDirectory();
-      return dir;
-    }
-  }
-
-  Future<void> _writeToEncryptedFile(String privateKey, String publicKey) async {
-    if (_password == null) return;
-    try {
-      final dir = await _getSecureStorageDir();
-      final file = File('${dir.path}/$_keysFileName');
-      final data = '$privateKey|||SHADE_SEP|||$publicKey';
-      final encrypted = _encryptWithPassword(data, _password!);
-      await file.writeAsBytes(encrypted);
-      debugPrint('[CryptoService] Keys written to encrypted file');
-    } catch (e) {
-      debugPrint('[CryptoService] Failed to write encrypted keys file: $e');
-    }
-  }
-
-  // HIGH-04: Secure memory via ffi where available
-  // Используем malloc/free для безопасного выделения памяти вне Dart heap
-  static bool _useFfi = false;
-  static dynamic _ffiLib;
-  
-  static Future<void> _initSecureMemory() async {
-    try {
-      // Пытаемся загрузить ffi для работы с malloc/free
-      // ffi не добавлен в pubspec.yaml - используем fallback
-      _useFfi = false;
-    } catch (_) {
-      _useFfi = false;
-    }
-  }
-  
-  /// Выделяет безопасную память вне Dart heap
-  static Uint8List _secureAlloc(int size) {
-    if (_useFfi && _ffiLib != null) {
-      // FFI: malloc(size) - память выделяется вне Dart GC
-      // final ptr = _ffiLib.calloc(size);
-      // return Uint8List.fromList(ptr.asTypedList(size));
-    }
-    // Fallback: стандартное выделение
-    return Uint8List(size);
-  }
-  
-  /// Освобождает безопасную память
-  static void _secureFree(Uint8List data) {
-    if (_useFfi && _ffiLib != null) {
-      // FFI: free(ptr)
-    }
-    // Fallback: заполняем нулями
-    _SecureRandom.wipePassword(data);
-  }
-
-  Uint8List _encryptWithPassword(String plaintext, String password) {
-    final salt = _randomBytes(32);
-    final key = _deriveKeyPBKDF2(password, salt);
-    // HIGH-04: Стираем ключ после использования
-    _SecureRandom.wipePassword(key);
-    final nonce = _randomBytes(_aesNonceLen);
-    final iv = enc.IV(nonce);
-    final keyObj = enc.Key(key);
-    final encrypter = enc.Encrypter(enc.AES(keyObj, mode: enc.AESMode.gcm));
-    final encrypted = encrypter.encrypt(plaintext, iv: iv);
-    final result = Uint8List(salt.length + nonce.length + encrypted.bytes.length);
-    result.setRange(0, salt.length, salt);
-    result.setRange(salt.length, salt.length + nonce.length, nonce);
-    result.setRange(salt.length + nonce.length, result.length, encrypted.bytes);
-    return result;
-  }
-
-  String _decryptWithPassword(Uint8List ciphertext, String password) {
-    final salt = ciphertext.sublist(0, 32);
-    final nonce = ciphertext.sublist(32, 32 + _aesNonceLen);
-    final encrypted = ciphertext.sublist(32 + _aesNonceLen);
-    final key = _deriveKeyPBKDF2(password, salt);
-    final iv = enc.IV(nonce);
-    final keyObj = enc.Key(key);
-    final encrypter = enc.Encrypter(enc.AES(keyObj, mode: enc.AESMode.gcm));
-    final result = encrypter.decrypt(enc.Encrypted(encrypted), iv: iv);
-    // HIGH-04: Стираем ключ после использования
-    _SecureRandom.wipePassword(key);
-    return result;
-  }
-
-  Uint8List _deriveKeyPBKDF2(String password, Uint8List salt) {
-    // HIGH-03: PBKDF2 2.1M for desktop (OWASP 2023)
-    const iterations = 2100000;
-    const keyLength = 32;
-    final pbkdf2 = pc.PBKDF2KeyDerivator(pc.HMac(pc.SHA256Digest(), 64));
-    pbkdf2.init(pc.Pbkdf2Parameters(salt, iterations, keyLength));
-    return pbkdf2.process(Uint8List.fromList(utf8.encode(password)));
-  }
+  static Uint8List _randomBytes(int length) => _SecureRandom.nextBytes(length);
 }

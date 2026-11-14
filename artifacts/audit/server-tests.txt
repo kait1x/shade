@@ -1,0 +1,32 @@
+
+> shade-server@1.0.0 test
+> node --test test/*.test.js
+
+✔ private-key login proof cannot be replayed or used for another nickname (50.8942ms)
+✔ Google verifier requires configured audience, subject and verified email (1.6951ms)
+✔ real TLS relay: three clients, receipt isolation, retry, offline restart and auth rejection (6157.4363ms)
+ℹ ◇ injected env (1) from .env // tip: ⌘ override existing { override: true }
+[firebase] disabled — push notifications unavailable
+[tls] HTTPS certificates loaded
+[session] SESSION_SECRET loaded from environment variable
+[session] SESSION_SECRET saved to file for persistence
+[server] Master key loaded and decrypted
+[tls] HTTP redirect on :64566 → :64565
+Shade https server on :64565
+[register] public key validated
+[register] reissued token
+[register] public key validated
+[register] reissued token
+[ws] connected: 2Jx_9wsEH9VQlbueAAAA
+[ws] user online
+[ws] connected: noMTaQuo_K4iSF7IAAAB
+[ws] user online
+
+ℹ tests 3
+ℹ suites 0
+ℹ pass 3
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 6666.0811

@@ -1,0 +1,11 @@
+{
+  "deliveredMessageReplayedAfterRestart": true,
+  "offlineSenderReceiptNotReplayed": true,
+  "normalLogoutStatus": 200,
+  "normalLogoutTokenStillValid": true,
+  "crossAccountLogoutStatus": 200,
+  "victimTokenInvalidated": true,
+  "nonMemberCanSendGroupMessage": true,
+  "adminCookieSurvivesLogout": true,
+  "refreshRequestHung": true
+}

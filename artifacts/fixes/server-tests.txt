@@ -1,0 +1,51 @@
+
+> shade-server@1.0.0 test
+> node --test test/*.test.js
+
+✔ regressions: logout identity, admin revocation, refresh, durable receipts and disabled groups (19679.2596ms)
+ℹ ◇ injected env (1) from .env // tip: ⌘ suppress logs { quiet: true }
+[firebase] disabled — push notifications unavailable
+[tls] HTTPS certificates loaded
+[session] SESSION_SECRET loaded from environment variable
+[session] SESSION_SECRET saved to file for persistence
+[server] Master key loaded and decrypted
+[tls] HTTP redirect on :62155 → :62154
+Shade https server on :62154
+[register] public key validated
+[register] reissued token
+[ws] connected: DR9GaqUhsFHKMipwAAAA
+[ws] user online
+[admin] Session created for IP: 127.0.0.1
+
+✔ private-key login proof cannot be replayed or used for another nickname (27.1553ms)
+✔ Google verifier requires configured audience, subject and verified email (0.6113ms)
+✔ failed durable write rolls back both queue and receipt; retry delivers exactly once (5.0981ms)
+✔ failed read write does not lose pending delivery or send a false read status (1.6504ms)
+✔ only recipient can acknowledge or remove queued messages (1.5527ms)
+✔ failed deletion preserves receipt and queue for a safe retry (1.1521ms)
+✔ real TLS relay: three clients, receipt isolation, retry, offline restart and auth rejection (15949.8801ms)
+ℹ ◇ injected env (1) from .env // tip: ⌘ enable debugging { debug: true }
+[firebase] disabled — push notifications unavailable
+[tls] HTTPS certificates loaded
+[session] SESSION_SECRET loaded from environment variable
+[session] SESSION_SECRET saved to file for persistence
+[server] Master key loaded and decrypted
+[tls] HTTP redirect on :62153 → :62152
+Shade https server on :62152
+[register] public key validated
+[register] reissued token
+[register] public key validated
+[register] reissued token
+[ws] connected: 4gXeuui1uV0_QP4xAAAA
+[ws] user online
+[ws] connected: RMShjc2YIna8Va3BAAAB
+[ws] user online
+
+ℹ tests 8
+ℹ suites 0
+ℹ pass 8
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 20235.2964

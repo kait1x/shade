@@ -1,3 +1,5 @@
+import 'package:shade/core/routing/navigation_keys.dart';
+import 'package:shade/core/services/crypto_service.dart';
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -21,6 +23,7 @@ class NotificationOverlay extends ConsumerStatefulWidget {
 
 class _NotificationOverlayState extends ConsumerState<NotificationOverlay> {
   StreamSubscription<IncomingMessage>? _sub;
+  ConnectionService? _connection;
 
   @override
   void initState() {
@@ -29,16 +32,58 @@ class _NotificationOverlayState extends ConsumerState<NotificationOverlay> {
   }
 
   void _listen() {
+    if (!mounted) return;
     final conn = ref.read(connectionServiceProvider);
+    _connection = conn;
+    conn.onServerKeyConfirmation = (trust) async {
+      final dialogContext = shadeNavigatorKey.currentState?.overlay?.context;
+      if (!mounted || dialogContext == null) return false;
+      final firstUse =
+          trust.status == ServerKeyTrustStatus.newKeyRequiresConfirmation;
+      return await showDialog<bool>(
+              context: dialogContext,
+              barrierDismissible: false,
+              builder: (context) => AlertDialog(
+                    title: Text(firstUse
+                        ? 'Первое подключение к серверу'
+                        : 'Ключ сервера не подтверждён'),
+                    content: SingleChildScrollView(
+                        child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                          Text(firstUse
+                              ? 'Сверьте отпечаток с владельцем сервера. Подтверждайте только знакомый сервер.'
+                              : 'Отпечаток отличается от доверенного или release-сборка не содержит pin. Подключение к ключам пользователей заблокировано.'),
+                          const SizedBox(height: 12),
+                          Text(conn.serverUrl),
+                          const SizedBox(height: 12),
+                          SelectableText(trust.fingerprint),
+                        ])),
+                    actions: [
+                      TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('Закрыть')),
+                      if (firstUse)
+                        FilledButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            child: const Text('Доверять серверу'))
+                    ],
+                  )) ??
+          false;
+    };
     _sub = conn.notifications.listen((msg) {
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context).clearSnackBars();
-      ScaffoldMessenger.of(context).showSnackBar(
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      if (messenger == null) return;
+      messenger.clearSnackBars();
+      messenger.showSnackBar(
         SnackBar(
           content: Row(
             children: [
-              const Icon(Icons.lock_rounded, size: 16, color: ShadeColors.greenAccent),
+              const Icon(Icons.lock_rounded,
+                  size: 16, color: ShadeColors.greenAccent),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -62,6 +107,7 @@ class _NotificationOverlayState extends ConsumerState<NotificationOverlay> {
 
   @override
   void dispose() {
+    _connection?.onServerKeyConfirmation = null;
     _sub?.cancel();
     super.dispose();
   }

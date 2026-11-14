@@ -1,11 +1,14 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shade/core/services/crypto_service.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   group('CryptoService Tests', () {
     late CryptoService cryptoService;
 
     setUp(() async {
+      FlutterSecureStorage.setMockInitialValues({});
       cryptoService = CryptoService();
       await cryptoService.generateIdentityKeys();
     });
@@ -18,7 +21,8 @@ void main() {
       final publicKey = await cryptoService.getPublicKey();
       expect(publicKey, isNotNull);
       expect(publicKey!.isNotEmpty, true);
-      expect(publicKey.contains('BEGIN PUBLIC KEY'), true);
+      expect(RegExp(r'-----BEGIN (RSA )?PUBLIC KEY-----').hasMatch(publicKey),
+          true);
     });
 
     test('should encrypt and decrypt data successfully', () async {
@@ -29,12 +33,14 @@ void main() {
       expect(myPublicKey, isNotNull);
       expect(myPrivateKey, isNotNull);
 
-      final encrypted = await cryptoService.encryptData(plainText, myPublicKey!);
+      final encrypted =
+          await cryptoService.encryptData(plainText, myPublicKey!);
       expect(encrypted, isNotNull);
       expect(encrypted.isNotEmpty, true);
       expect(encrypted != plainText, true);
 
-      final decrypted = await cryptoService.decryptData(encrypted, myPrivateKey!);
+      final decrypted =
+          await cryptoService.decryptData(encrypted, myPrivateKey!);
       expect(decrypted, equals(plainText));
     });
 
@@ -45,7 +51,7 @@ void main() {
       final publicKey = await cryptoService.getPublicKey();
 
       final encrypted1 = await cryptoService.encryptData(text1, publicKey!);
-      final encrypted2 = await cryptoService.encryptData(text2, publicKey!);
+      final encrypted2 = await cryptoService.encryptData(text2, publicKey);
 
       expect(encrypted1 != encrypted2, true);
     });
@@ -57,7 +63,7 @@ void main() {
       final privateKey = await cryptoService.getPrivateKey();
       final encrypted = await cryptoService.encryptData(plainText, publicKey!);
 
-      final tampered = encrypted.substring(0, encrypted.length - 5) + 'XXXXX';
+      final tampered = '${encrypted.substring(0, encrypted.length - 5)}XXXXX';
 
       expect(
         () => cryptoService.decryptData(tampered, privateKey!),
@@ -91,12 +97,15 @@ void main() {
   group('CryptoService Key Exchange Simulation', () {
     late CryptoService alice;
     late CryptoService bob;
+    late Map<String, String> aliceKeys;
+    late Map<String, String> bobKeys;
 
     setUp(() async {
+      FlutterSecureStorage.setMockInitialValues({});
       alice = CryptoService();
       bob = CryptoService();
-      await alice.generateIdentityKeys();
-      await bob.generateIdentityKeys();
+      aliceKeys = await alice.generateIdentityKeys();
+      bobKeys = await bob.generateIdentityKeys();
     });
 
     tearDown(() async {
@@ -107,23 +116,27 @@ void main() {
     test('Alice should send encrypted message to Bob', () async {
       const message = 'Hey Bob, this is a secret!';
 
-      final bobPublicKey = await bob.getPublicKey();
-      final bobPrivateKey = await bob.getPrivateKey();
+      final bobPublicKey = bobKeys['publicKey'];
+      final bobPrivateKey = bobKeys['privateKey'];
 
       final encryptedForBob = await alice.encryptData(message, bobPublicKey!);
 
-      final decryptedByBob = await bob.decryptData(encryptedForBob, bobPrivateKey!);
+      final decryptedByBob =
+          await bob.decryptData(encryptedForBob, bobPrivateKey!);
 
       expect(decryptedByBob, equals(message));
     });
 
-    test('Bob should not be able to decrypt message encrypted with Alice\'s key', () async {
+    test(
+        'Bob should not be able to decrypt message encrypted with Alice\'s key',
+        () async {
       const message = 'This is for Alice only';
 
-      final alicePublicKey = await alice.getPublicKey();
-      final bobPrivateKey = await bob.getPrivateKey();
+      final alicePublicKey = aliceKeys['publicKey'];
+      final bobPrivateKey = bobKeys['privateKey'];
 
-      final encryptedForAlice = await alice.encryptData(message, alicePublicKey!);
+      final encryptedForAlice =
+          await alice.encryptData(message, alicePublicKey!);
 
       expect(
         () => bob.decryptData(encryptedForAlice, bobPrivateKey!),

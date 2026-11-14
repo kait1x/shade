@@ -1,10 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show HttpClient, Platform, SecurityContext, X509Certificate;
+import 'dart:io';
 import 'package:crypto/crypto.dart' show sha256;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:shade/core/services/tls_policy.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart' as http_io;
 import 'package:socket_io_client/socket_io_client.dart' as io;
@@ -20,11 +20,13 @@ class PublicKeyBundle {
   final String publicKey;
   final String signature;
   final String? serverSignature;
+  final int serverSignatureVersion;
 
   const PublicKeyBundle({
     required this.publicKey,
     required this.signature,
     this.serverSignature,
+    this.serverSignatureVersion = 0,
   });
 
   factory PublicKeyBundle.fromJson(Map<String, dynamic> json) {
@@ -32,6 +34,7 @@ class PublicKeyBundle {
       publicKey: json['publicKey'] as String,
       signature: json['signature'] as String,
       serverSignature: json['serverSignature'] as String?,
+      serverSignatureVersion: json['serverSignatureVersion'] as int? ?? 0,
     );
   }
 }
@@ -86,11 +89,13 @@ class UserStatusUpdate {
 }
 
 class IncomingMessage {
+  final String id;
   final String from;
   final String data; // encrypted payload JSON
   final DateTime timestamp;
 
   const IncomingMessage({
+    required this.id,
     required this.from,
     required this.data,
     required this.timestamp,
@@ -98,6 +103,7 @@ class IncomingMessage {
 
   factory IncomingMessage.fromJson(Map<String, dynamic> json) {
     return IncomingMessage(
+      id: json['id'] as String,
       from: json['from'] as String,
       data: json['data'] as String,
       timestamp: DateTime.fromMillisecondsSinceEpoch(json['timestamp'] as int),
@@ -136,50 +142,11 @@ class MessageDeletedEvent {
 ///   5. messages stream — incoming encrypted messages (auto-saved to DB)
 // ── HTTP Client with certificate pinning ───────────────────
 
-/// SHA-256 fingerprint of the server's TLS certificate (DER format, base64).
-/// Pass via: --dart-define=SHADED_PIN_SHA256=<base64>
-/// 
-/// To obtain the fingerprint from your server:
-/// ```bash
-/// openssl s_client -connect your-server.com:443 -servername your-server.com \
-///   | openssl x509 -pubkey -noout \
-///   | openssl pkey -pubin -outform der \
-///   | openssl dgst -sha256 -binary \
-///   | openssl base64
-/// ```
-const _pinSha256 =
-    String.fromEnvironment('SHADED_PIN_SHA256', defaultValue: '');
+const _certificateDigest = String.fromEnvironment('TLS_CERT_SHA256');
 
-/// Creates an HTTP client with certificate pinning or TOFU fallback.
-http.Client _createHttpClient() {
-final client = HttpClient();
-
-      client.badCertificateCallback = (X509Certificate cert, String host, int port) {
-        debugPrint('[ConnectionService] Accepting certificate for: $host');
-        return true;
-      };
-
-     return http_io.IOClient(client);
-}
-
-// TOFU: store/retrieve certificate fingerprint
-const _certFingerprintKey = 'server_cert_fingerprint';
-
-Future<String?> _getStoredCertificateFingerprint() async {
-  try {
-    final storage = const FlutterSecureStorage();
-    return await storage.read(key: _certFingerprintKey);
-  } catch (_) {
-    return null;
-  }
-}
-
-Future<void> _storeCertificateFingerprint(String fingerprint) async {
-  try {
-    final storage = const FlutterSecureStorage();
-    await storage.write(key: _certFingerprintKey, value: fingerprint);
-  } catch (_) {}
-}
+http.Client _createHttpClient(String url) =>
+    http_io.IOClient(ShadeHttpOverrides(Uri.parse(url), _certificateDigest)
+        .createHttpClient(null));
 
 class ConnectionService {
   final String serverUrl;
@@ -191,8 +158,17 @@ class ConnectionService {
   String? _username;
   String? _sessionToken;
   String? _serverPublicKey;
+  Future<bool> Function(ServerKeyFingerprintResult)? onServerKeyConfirmation;
+  Future<bool>? _confirmingServerKey;
   Timer? _reconnectTimer;
   bool _isDisposed = false;
+  bool _signedOut = false;
+  int _sessionGeneration = 0;
+
+  final _connectionCtrl = StreamController<bool>.broadcast();
+  final Set<String> _watchedUsers = {};
+  Timer? _outboxTimer;
+  bool _flushing = false;
 
   final _messageCtrl = StreamController<IncomingMessage>.broadcast();
   final _notificationCtrl = StreamController<IncomingMessage>.broadcast();
@@ -203,33 +179,22 @@ class ConnectionService {
 
   bool _isConnected = false;
 
-  // CRIT-02: Проверка PIN при старте приложения до любых сетевых вызовов
-  static final String _pinnedFingerprint = String.fromEnvironment('SHADED_PIN_SHA256', defaultValue: '');
-  static final bool _isProduction = bool.fromEnvironment('dart.vm.product', defaultValue: false);
-
   ConnectionService({
     required this.serverUrl,
     required CryptoService cryptoService,
     required DatabaseService databaseService,
-    })  : _crypto = cryptoService,
+  })  : _crypto = cryptoService,
         _db = databaseService,
-        _httpClient = _createHttpClient() {
-    // CRIT-02: Проверяем PIN при инициализации ДО любых сетевых вызовов
-    _validatePinAtStartup();
+        _httpClient = _createHttpClient(serverUrl) {
+    if (Uri.parse(serverUrl).scheme != 'https') {
+      throw ArgumentError('Shade relay requires HTTPS');
+    }
   }
 
-  /// CRIT-02: Валидирует PIN при старте приложения
-  void _validatePinAtStartup() {
-    if (_pinnedFingerprint.isEmpty) {
-      if (_isProduction) {
-        debugPrint('[ConnectionService] CRITICAL: No PIN configured in production!');
-        debugPrint('[ConnectionService] Set --dart-define=SHADED_PIN_SHA256=<fingerprint>');
-      } else {
-        debugPrint('[ConnectionService] WARNING: No PIN configured - running in debug mode');
-      }
-    } else {
-      debugPrint('[ConnectionService] PIN configured: ${_pinnedFingerprint.substring(0, 20)}...');
-    }
+  Stream<bool> get connectionChanges => _connectionCtrl.stream;
+  void _setConnected(bool value) {
+    _isConnected = value;
+    if (!_connectionCtrl.isClosed) _connectionCtrl.add(value);
   }
 
   // ── Server public key (cached) ─────────────────────────
@@ -241,30 +206,35 @@ class ConnectionService {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         final publicKey = data['publicKey'] as String?;
-        
-        const pinnedFingerprint = String.fromEnvironment('SHADED_PIN_SHA256', defaultValue: '');
-        final isProduction = const bool.fromEnvironment('dart.vm.product', defaultValue: false);
-        
-        if (pinnedFingerprint.isEmpty) {
-          if (isProduction) {
-            throw Exception(
-              'Certificate pin required for production. '
-              'Set --dart-define=SHADED_PIN_SHA256=<sha256-fingerprint>',
-            );
-          } else {
-            debugPrint('[ConnectionService] WARNING: No certificate pin configured in debug mode');
-            debugPrint('[ConnectionService] Set --dart-define=SHADED_PIN_SHA256=... for production');
-          }
-        }
-        
+
+        const pinnedFingerprint =
+            String.fromEnvironment('SERVER_PUBLIC_KEY_FINGERPRINT');
         if (publicKey != null) {
           final verified = _verifyServerKeyPin(publicKey, pinnedFingerprint);
           if (!verified) {
-            debugPrint('[ConnectionService] Server key fingerprint MISMATCH - possible MitM!');
+            debugPrint(
+                '[ConnectionService] Server key fingerprint MISMATCH - possible MitM!');
             return null;
           }
+          final trust = await _crypto.checkServerKeyForConfirmation(publicKey,
+              serverOrigin: serverUrl);
+          if (trust.status != ServerKeyTrustStatus.trusted) {
+            final callback = onServerKeyConfirmation;
+            if (callback == null) return null;
+            final confirmation = _confirmingServerKey ??= callback(trust);
+            final accepted = await confirmation;
+            _confirmingServerKey = null;
+            if (!accepted ||
+                trust.status !=
+                    ServerKeyTrustStatus.newKeyRequiresConfirmation) {
+              return null;
+            }
+            await _crypto.trustServerKey(trust.fingerprint,
+                serverOrigin: serverUrl);
+          }
           _serverPublicKey = publicKey;
-          debugPrint('[ConnectionService] Server public key cached and verified');
+          debugPrint(
+              '[ConnectionService] Server public key cached and verified');
           return _serverPublicKey;
         }
       }
@@ -285,7 +255,8 @@ class ConnectionService {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         final publicKey = data['publicKey'] as String?;
         if (publicKey != null) {
-          return await _crypto.checkServerKeyForConfirmation(publicKey);
+          return await _crypto.checkServerKeyForConfirmation(publicKey,
+              serverOrigin: serverUrl);
         }
       }
     } catch (e) {
@@ -296,24 +267,31 @@ class ConnectionService {
 
   /// Trust the server key after user confirmation.
   Future<void> trustServerKey(String fingerprint) async {
-    await _crypto.trustServerKey(fingerprint);
+    await _crypto.trustServerKey(fingerprint, serverOrigin: serverUrl);
   }
 
   // [FIX] CRIT #2: Verify server key fingerprint against pinned value
   bool _verifyServerKeyPin(String publicKey, String? pinnedFingerprint) {
     if (pinnedFingerprint == null || pinnedFingerprint.isEmpty) {
-      debugPrint('[ConnectionService] No pinned fingerprint - skipping verification');
+      debugPrint(
+          '[ConnectionService] No pinned fingerprint - skipping verification');
       return true; // Allow if no pin configured
     }
     try {
       // Вычисляем SHA-256 fingerprint публичного ключа
-      final lines = publicKey.split('\n').where((l) => !l.contains('BEGIN') && !l.contains('END') && l.trim().isNotEmpty).join();
+      final lines = publicKey
+          .split('\n')
+          .where((l) =>
+              !l.contains('BEGIN') && !l.contains('END') && l.trim().isNotEmpty)
+          .join();
       final bytes = base64.decode(lines);
       final hash = sha256.convert(bytes);
-      final fingerprint = hash.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(':');
-      
+      final fingerprint =
+          hash.bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join(':');
+
       if (fingerprint != pinnedFingerprint) {
-        debugPrint('[ConnectionService] WARNING: Server key fingerprint MISMATCH!');
+        debugPrint(
+            '[ConnectionService] WARNING: Server key fingerprint MISMATCH!');
         debugPrint('  Expected: $pinnedFingerprint');
         debugPrint('  Got:      $fingerprint');
         return false;
@@ -341,6 +319,7 @@ class ConnectionService {
 
   /// Watch a user's online status (real-time via WebSocket).
   void watchUser(String username) {
+    _watchedUsers.add(username);
     if (_socket != null && _isConnected) {
       _socket!.emit('watch', username);
     }
@@ -348,38 +327,87 @@ class ConnectionService {
 
   /// Stop watching a user's status.
   void unwatchUser(String username) {
+    _watchedUsers.remove(username);
     if (_socket != null && _isConnected) {
       _socket!.emit('unwatch', username);
     }
   }
 
   /// Send read/delivered status for messages.
-  void sendMessageStatus(String type, String from, {List<String>? msgIds}) {
-    if (_socket == null || !_isConnected) return;
-    if (type == 'read') {
-      _socket!.emit('read', {'from': from, 'msgIds': msgIds});
-    } else if (type == 'delivered' && msgIds != null && msgIds.isNotEmpty) {
-      _socket!.emit('delivered', msgIds.first);
+  Future<bool> sendMessageStatus(String type, String from,
+      {List<String>? msgIds}) async {
+    final socket = _socket;
+    if (socket == null ||
+        !_isConnected ||
+        !['read', 'delivered'].contains(type) ||
+        msgIds == null ||
+        msgIds.isEmpty) {
+      return false;
+    }
+    final response = Completer<dynamic>();
+    socket.emitWithAck(type, {'from': from, 'msgIds': msgIds}, ack: (data) {
+      if (!response.isCompleted) response.complete(data);
+    });
+    try {
+      final data = await response.future.timeout(const Duration(seconds: 10));
+      return data is Map &&
+          data['ok'] == true &&
+          data['msgIds'] is List &&
+          msgIds.every((id) => (data['msgIds'] as List).contains(id));
+    } catch (_) {
+      return false;
     }
   }
 
   /// Delete a message for everyone.
-  void sendDeleteMessage(String to, String msgId) {
-    if (_socket == null || !_isConnected) return;
-    _socket!
-        .emit('deleteMessage', {'to': to, 'msgId': msgId, 'forEveryone': true});
+  Future<bool> sendDeleteMessage(String to, String msgId) async {
+    final socket = _socket;
+    if (socket == null || !_isConnected) return false;
+    final result = Completer<dynamic>();
+    socket.emitWithAck(
+        'deleteMessage', {'to': to, 'msgId': msgId, 'forEveryone': true},
+        ack: (data) {
+      if (!result.isCompleted) result.complete(data);
+    });
+    try {
+      final data = await result.future.timeout(const Duration(seconds: 10));
+      return data is Map && data['ok'] == true;
+    } catch (_) {
+      return false;
+    }
   }
 
   // ── REST ────────────────────────────────────────────────────
 
   /// Registers the current user on the server.
-  Future<void> register(String username) async {
+  Future<Map<String, dynamic>> register(String username,
+      {String? googleIdToken, bool automatic = false}) async {
+    if (_isDisposed || (automatic && _signedOut)) {
+      throw StateError('Session closed');
+    }
+    if (!automatic) {
+      _signedOut = false;
+      _sessionGeneration++;
+    }
+    final generation = _sessionGeneration;
     final publicKey = await _crypto.getPublicKey();
     if (publicKey == null) {
       throw StateError('No public key — generate identity first');
     }
 
+    username = username.trim().toLowerCase();
     final signature = await _crypto.signPublicKey();
+    final challengeResponse = await _retryPost(
+        Uri.parse('$serverUrl/auth/challenge'),
+        body: jsonEncode({'username': username}));
+    if (challengeResponse.statusCode != 200) {
+      throw StateError('Не удалось получить запрос входа. Повторите позже.');
+    }
+    final challenge = jsonDecode(challengeResponse.body)['challenge'] as String;
+    final privateKey = await _crypto.getPrivateKey();
+    if (privateKey == null) throw StateError('Identity keys not found');
+    final proof = await _crypto.signData(
+        'shade-register:v1:$username:$challenge', privateKey);
 
     final response = await _retryPost(
       Uri.parse('$serverUrl/register'),
@@ -387,6 +415,9 @@ class ConnectionService {
         'username': username,
         'publicKey': publicKey,
         'signature': signature,
+        'challenge': challenge,
+        'proof': proof,
+        if (googleIdToken != null) 'googleIdToken': googleIdToken,
       }),
     );
 
@@ -397,9 +428,12 @@ class ConnectionService {
     }
 
     final body = jsonDecode(response.body);
+    if (_isDisposed || _signedOut || generation != _sessionGeneration) {
+      throw StateError('Login was cancelled');
+    }
     _username = username;
     _sessionToken = body['token'];
-    debugPrint('[ConnectionService] Registered');
+    return Map<String, dynamic>.from(body['profile'] as Map? ?? {});
   }
 
   /// Fetches the public key bundle for [username] and verifies the server signature.
@@ -414,29 +448,34 @@ class ConnectionService {
       final bundle = PublicKeyBundle.fromJson(json);
 
       // User doesn't exist (server returns null publicKey for non-existent users)
-      if (bundle.publicKey == null || bundle.publicKey!.isEmpty) {
+      if (bundle.publicKey.isEmpty) {
         debugPrint('[ConnectionService] User not found: $username');
         return null;
       }
 
       // If server signature exists, verify it
-      if (bundle.serverSignature != null && bundle.serverSignature!.isNotEmpty) {
+      if (bundle.serverSignatureVersion == 3 &&
+          bundle.serverSignature != null &&
+          bundle.serverSignature!.isNotEmpty) {
         final serverPubKey = await _getServerPublicKey();
         if (serverPubKey != null) {
           final valid = await _crypto.verifyPublicKeySignature(
-            bundle.publicKey!,
+            bundle.publicKey,
             bundle.serverSignature!,
             serverPubKey,
+            username: username,
+            serverOrigin: serverUrl,
           );
           if (!valid) {
-            debugPrint('[ConnectionService] Invalid server signature for $username');
+            debugPrint(
+                '[ConnectionService] Invalid server signature for $username');
             return null;
           }
         } else {
-          debugPrint('[ConnectionService] Cannot verify: no server public key, returning bundle anyway');
+          return null;
         }
       } else {
-        debugPrint('[ConnectionService] No server signature for $username, returning bundle');
+        return null;
       }
       return bundle;
     } catch (e) {
@@ -467,6 +506,7 @@ class ConnectionService {
 
   /// Opens the WebSocket and auto-reconnects on failure.
   void connect(String username) {
+    if (_isDisposed || _signedOut) return;
     // Always disconnect old socket first
     if (_socket != null) {
       _socket!.disconnect();
@@ -477,118 +517,162 @@ class ConnectionService {
 
     _username = username;
 
-    _socket = io.io(
-      serverUrl,
-      io.OptionBuilder()
-          .setTransports(['websocket'])
-          .disableAutoConnect()
-          .setReconnectionAttempts(-1)
-          .setReconnectionDelay(2000)
-          .setReconnectionDelayMax(15000)
-          .setTimeout(20000)
-          .build(),
-    );
+    HttpOverrides.runWithHttpOverrides(() {
+      _socket = io.io(
+        serverUrl,
+        io.OptionBuilder()
+            .setTransports(['websocket'])
+            .disableAutoConnect()
+            .enableForceNew()
+            .setReconnectionAttempts(-1)
+            .setReconnectionDelay(2000)
+            .setReconnectionDelayMax(15000)
+            .setTimeout(20000)
+            .build(),
+      );
 
-    _socket!.onConnect((_) {
-      _isConnected = true;
-      _cancelReconnect();
-      _socket!.emit('register', {
-        'username': username,
-        'token': _sessionToken ?? '',
+      _socket!.onConnect((_) {
+        _cancelReconnect();
+        _socket!.emit('register', {
+          'username': username,
+          'token': _sessionToken ?? '',
+        });
+        debugPrint('[ConnectionService] WS connected');
       });
-      debugPrint('[ConnectionService] WS connected');
-    });
 
-    _socket!.on('message', _handleIncomingMessage);
-
-    // Typing indicator events
-    _socket!.on('typing', (data) {
-      final from = (data as Map)['from'] as String;
-      if (!_typingCtrl.isClosed) _typingCtrl.add(from);
-    });
-
-    _socket!.on('stopTyping', (data) {
-      // The UI will handle the timeout
-    });
-
-    _socket!.on('messageStatus', (data) {
-      try {
-        final map = Map<String, dynamic>.from(data as Map);
-        final status = map['status'] as String? ?? 'sent';
-        final msgId = map['msgId'] as String?;
-        final from = map['from'] as String?;
-
-        if (!_messageStatusCtrl.isClosed) {
-          _messageStatusCtrl
-              .add({'status': status, 'msgId': msgId, 'from': from});
+      _socket!.on('registered', (_) {
+        _setConnected(true);
+        for (final username in _watchedUsers) {
+          _socket!.emit('watch', username);
         }
-      } catch (_) {}
-    });
+        unawaited(flushOutbox());
+        _outboxTimer?.cancel();
+        _outboxTimer =
+            Timer.periodic(const Duration(seconds: 5), (_) => flushOutbox());
+      });
+      _socket!.on('sessionRefreshed', (data) {
+        _sessionToken = (data as Map)['token'] as String;
+        if (_username != null) {
+          unawaited(NotificationService.registerToken(
+              serverUrl, _username!, _sessionToken));
+        }
+      });
+      _socket!.on('message', _handleIncomingMessage);
 
-    _socket!.on('authError', (data) async {
-      debugPrint('[ConnectionService] WS auth error — re-registering');
-      _sessionToken = null;
-      disconnect();
-      // Re-register to get new session token, then reconnect
-      if (_username != null) {
+      // Typing indicator events
+      _socket!.on('typing', (data) {
+        final from = (data as Map)['from'] as String;
+        if (!_typingCtrl.isClosed) _typingCtrl.add(from);
+      });
+
+      _socket!.on('stopTyping', (data) {
+        // The UI will handle the timeout
+      });
+
+      _socket!.on('messageStatus', (data) async {
         try {
-          await register(_username!);
-          connect(_username!);
-        } catch (e) {
-          debugPrint('[ConnectionService] Re-register failed: $e');
+          final map = Map<String, dynamic>.from(data as Map);
+          final status = map['status'] as String? ?? 'sent';
+          final msgId = map['msgId'] as String?;
+          final from = map['from'] as String?;
+
+          if (msgId != null) await _db.updateMessageStatus(msgId, status);
+          if (!_messageStatusCtrl.isClosed) {
+            _messageStatusCtrl
+                .add({'status': status, 'msgId': msgId, 'from': from});
+          }
+        } catch (_) {}
+      });
+
+      _socket!.on('authError', (data) async {
+        if (_signedOut || _isDisposed) return;
+        final username = _username;
+        final generation = _sessionGeneration;
+        _sessionToken = null;
+        disconnect();
+        if (username == null) return;
+        try {
+          await register(username, automatic: true);
+          if (!_signedOut && !_isDisposed && generation == _sessionGeneration) {
+            connect(username);
+          }
+        } catch (_) {
+          debugPrint('[ConnectionService] Session recovery unavailable');
         }
-      }
-    });
+      });
 
-    _socket!.on('statusUpdate', (data) {
-      try {
-        final update = UserStatusUpdate.fromJson(
-          Map<String, dynamic>.from(data as Map),
-        );
-        if (!_statusCtrl.isClosed) _statusCtrl.add(update);
-      } catch (_) {}
-    });
+      _socket!.on('statusUpdate', (data) {
+        try {
+          final update = UserStatusUpdate.fromJson(
+            Map<String, dynamic>.from(data as Map),
+          );
+          if (!_statusCtrl.isClosed) _statusCtrl.add(update);
+        } catch (_) {}
+      });
 
-    _socket!.on('messageDeleted', (data) {
-      try {
-        final event = MessageDeletedEvent.fromJson(
-          Map<String, dynamic>.from(data as Map),
-        );
-        if (!_deleteCtrl.isClosed) _deleteCtrl.add(event);
-      } catch (_) {}
-    });
+      _socket!.on('messageDeleted', (data) async {
+        try {
+          final event = MessageDeletedEvent.fromJson(
+            Map<String, dynamic>.from(data as Map),
+          );
+          await _db.deleteIncomingMessage(event.from, event.msgId);
+          if (!_deleteCtrl.isClosed) _deleteCtrl.add(event);
+        } catch (_) {}
+      });
 
-    _socket!.onDisconnect((reason) {
-      _isConnected = false;
-      debugPrint('[ConnectionService] WS disconnected: $reason');
-      _scheduleReconnect();
-    });
+      _socket!.onDisconnect((reason) {
+        _setConnected(false);
+        _outboxTimer?.cancel();
+        debugPrint('[ConnectionService] WS disconnected: $reason');
+        _scheduleReconnect();
+      });
 
-    _socket!.onError((err) {
-      debugPrint('[ConnectionService] WS error: $err');
-    });
+      _socket!.onError((err) {
+        debugPrint('[ConnectionService] WS error: $err');
+      });
 
-    _socket!.onConnectError((err) {
-      debugPrint('[ConnectionService] WS connect error: $err');
-      _scheduleReconnect();
-    });
+      _socket!.onConnectError((err) {
+        debugPrint('[ConnectionService] WS connect error: $err');
+        _scheduleReconnect();
+      });
 
-    _socket!.connect();
+      _socket!.connect();
+    }, ShadeHttpOverrides(Uri.parse(serverUrl), _certificateDigest));
   }
 
-  /// Sends an encrypted payload to [to] via WebSocket.
-  void sendMessage(String to, String encryptedPayload) {
-    // MED-05: Client-side size validation
-    final payloadBytes = encryptedPayload.length;
-    const MAX_TEXT_SIZE = 1 * 1024 * 1024; // 1MB for text
-    const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB for files
-    if (payloadBytes > MAX_FILE_SIZE) {
-      throw RangeError('Payload too large: $payloadBytes bytes (max $MAX_FILE_SIZE)');
+  /// Retries durable outgoing ciphertext with the SAME network ID after a
+  /// disconnect/ACK loss. Server deduplication makes this safe.
+  Future<void> flushOutbox() async {
+    if (_flushing || !_isConnected || _socket == null) return;
+    _flushing = true;
+    try {
+      for (final row in await _db.getOutbox()) {
+        if (!_isConnected || _socket == null) break;
+        if (!await _db.isPendingMessage(row['network_id'] as String)) continue;
+        if (!_isConnected || _socket == null) break;
+        final result = Completer<dynamic>();
+        _socket!.emitWithAck('message', {
+          'id': row['network_id'],
+          'to': row['recipient'],
+          'data': row['payload'],
+        }, ack: (data) {
+          if (!result.isCompleted) result.complete(data);
+        });
+        final ack = await result.future.timeout(const Duration(seconds: 10));
+        if (ack is! Map || ack['ok'] != true) break;
+        final id = row['network_id'] as String;
+        final status = ack['status'] as String? ?? 'sent';
+        await _db.updateMessageStatus(id, status);
+        if (!_messageStatusCtrl.isClosed) {
+          _messageStatusCtrl
+              .add({'msgId': id, 'status': status, 'from': row['recipient']});
+        }
+      }
+    } catch (e) {
+      debugPrint('[ConnectionService] Outbox retained for retry: $e');
+    } finally {
+      _flushing = false;
     }
-    if (_socket == null || !_isConnected) {
-      throw StateError('Not connected');
-    }
-    _socket!.emit('message', {'to': to, 'data': encryptedPayload});
   }
 
   /// Sends typing indicator to [to].
@@ -603,17 +687,39 @@ class ConnectionService {
     _socket!.emit('stopTyping', {'to': to});
   }
 
+  Future<void> signOut() async {
+    _signedOut = true;
+    _sessionGeneration++;
+    final token = _sessionToken, username = _username;
+    disconnect();
+    _sessionToken = null;
+    _username = null;
+    try {
+      if (token != null && username != null) {
+        await _httpClient.post(Uri.parse('$serverUrl/logout'), headers: {
+          'x-session-token': token,
+          'x-username': username,
+        }).timeout(const Duration(seconds: 5));
+      }
+    } catch (_) {
+      debugPrint('[ConnectionService] Remote logout could not be confirmed');
+    }
+  }
+
   void disconnect() {
     _cancelReconnect();
+    _outboxTimer?.cancel();
     _socket?.disconnect();
     _socket?.dispose();
     _socket = null;
-    _isConnected = false;
+    _setConnected(false);
   }
 
   void dispose() {
     _isDisposed = true;
     disconnect();
+    _httpClient.close();
+    _connectionCtrl.close();
     _messageCtrl.close();
     _notificationCtrl.close();
     _typingCtrl.close();
@@ -626,6 +732,7 @@ class ConnectionService {
 
   /// Saves incoming message to DB, then broadcasts to UI listeners.
   Future<void> _handleIncomingMessage(dynamic raw) async {
+    if (_signedOut || _isDisposed) return;
     try {
       final msg = IncomingMessage.fromJson(
         Map<String, dynamic>.from(raw as Map),
@@ -638,13 +745,22 @@ class ConnectionService {
         return;
       }
 
+      if (await _db.hasNetworkMessage(msg.id, sender: msg.from)) {
+        sendMessageStatus('delivered', msg.from, msgIds: [msg.id]);
+        return;
+      }
       // Persist into encrypted DB
-      final convId = await _ensureConversation(msg.from);
+      final convId = await ensureConversation(msg.from);
       await _db.insertMessage(
         conversationId: convId,
         senderId: msg.from.hashCode.abs(),
         encryptedContent: msg.data,
+        networkId: msg.id,
+        networkSender: msg.from,
+        timestamp: msg.timestamp.millisecondsSinceEpoch,
       );
+
+      sendMessageStatus('delivered', msg.from, msgIds: [msg.id]);
 
       // Notify UI
       if (!_messageCtrl.isClosed) {
@@ -666,7 +782,7 @@ class ConnectionService {
     }
   }
 
-  Future<int> _ensureConversation(String withUser) async {
+  Future<int> ensureConversation(String withUser) async {
     final convs = await _db.getConversations();
     for (final c in convs) {
       if (c['name'] == withUser) return c['id'] as int;
@@ -742,7 +858,9 @@ class ConnectionService {
           headers['x-session-token'] = _sessionToken!;
           headers['x-username'] = _username!;
         }
-        return await _httpClient.get(uri, headers: headers).timeout(const Duration(seconds: 15));
+        return await _httpClient
+            .get(uri, headers: headers)
+            .timeout(const Duration(seconds: 15));
       } catch (e) {
         if (i == _maxRetries - 1) rethrow;
         debugPrint('[ConnectionService] GET retry ${i + 1}/$_maxRetries');

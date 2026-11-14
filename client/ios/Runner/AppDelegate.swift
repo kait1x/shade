@@ -3,6 +3,8 @@ import Flutter
 
 @main
 class AppDelegate: FlutterAppDelegate {
+  private var secureModeEnabled = false
+  private var captureObservers: [NSObjectProtocol] = []
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
@@ -10,7 +12,9 @@ class AppDelegate: FlutterAppDelegate {
     GeneratedPluginRegistrant.register(with: self)
     
     // Канал для управления безопасностью (скриншоты, превью в многозадачности)
-    let controller = window?.rootViewController as! FlutterViewController
+    guard let controller = window?.rootViewController as? FlutterViewController else {
+      return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+    }
     let securityChannel = FlutterMethodChannel(
       name: "com.shade.app/security",
       binaryMessenger: controller.binaryMessenger
@@ -36,71 +40,32 @@ class AppDelegate: FlutterAppDelegate {
   }
   
   private func enableSecureMode() {
-    // На iOS нет прямого аналога FLAG_SECURE, но можно защитить приложение от скриншотов
-    // и размыть контент в multitasking через UIScreenCaptureController
-    
-    // [FIX] Защита от скриншотов: обнаружение через уведомления
-    NotificationCenter.default.addObserver(
-      forName: UIApplication.userDidTakeScreenshotNotification,
-      object: nil,
-      queue: .main
-    ) { [weak self] _ in
-      print("⚠️ Screenshot detected! User took a screenshot.")
-      // Показываем размытие при обнаружении скриншота
-      self?.showBlurForCapture()
-    }
-    
-    // [FIX] Обнаружение записи экрана (screen capture)
-    NotificationCenter.default.addObserver(
-      forName: UIScreen.capturedDidChangeNotification,
-      object: nil,
-      queue: .main
-    ) { [weak self] _ in
-      if UIScreen.main.isCaptured {
-        print("⚠️ Screen capture/recording detected!")
-        self?.showBlurForCapture()
-      } else {
-        self?.hideBlurForCapture()
-      }
-    }
-    
-    // Размытие в multitasking: создаём overlay view который показывается при переходе в background
-    self?.addBlurOverlay()
-    
-    print("Secure mode enabled")
+    guard !secureModeEnabled else { return }
+    secureModeEnabled = true
+    captureObservers.append(NotificationCenter.default.addObserver(
+      forName: UIScreen.capturedDidChangeNotification, object: nil, queue: .main
+    ) { [weak self] _ in self?.updatePrivacyOverlay() })
+    updatePrivacyOverlay()
   }
-  
-  // [FIX] Мгновенное размытие при обнаружении захвата экрана
-  private func showBlurForCapture() {
-    guard let window = self?.window else { return }
-    if let blurView = window.viewWithTag(99999) {
-      blurView.alpha = 1.0
-    } else {
-      // Если размытия нет, создаём
-      self?.addBlurOverlay()
-      if let blurView = window.viewWithTag(99999) {
-        blurView.alpha = 1.0
-      }
-    }
+
+  private func updatePrivacyOverlay() {
+    guard secureModeEnabled, let window = window else { return }
+    addBlurOverlay()
+    window.viewWithTag(99999)?.alpha =
+      (UIApplication.shared.applicationState != .active || UIScreen.main.isCaptured) ? 1 : 0
   }
-  
-  // Скрытие размытия
-  private func hideBlurForCapture() {
-    guard let window = self?.window else { return }
-    if let blurView = window.viewWithTag(99999) {
-      blurView.alpha = 0.0
-    }
-  }
-  
+
   private func disableSecureMode() {
-    // Удаляем blur overlay при отключении secure mode
-    self?.removeBlurOverlay()
-    print("Secure mode disabled")
+    secureModeEnabled = false
+    captureObservers.forEach { NotificationCenter.default.removeObserver($0) }
+    captureObservers.removeAll()
+    removeBlurOverlay()
   }
-  
+
   private func addBlurOverlay() {
-    guard let window = self?.window else { return }
+    guard let window = window else { return }
     
+    guard window.viewWithTag(99999) == nil else { return }
     // Создаём визуальный эффект размытия
     let blurEffect = UIBlurEffect(style: .systemUltraThinMaterialDark)
     let blurView = UIVisualEffectView(effect: blurEffect)
@@ -113,7 +78,7 @@ class AppDelegate: FlutterAppDelegate {
   }
   
   private func removeBlurOverlay() {
-    guard let window = self?.window else { return }
+    guard let window = window else { return }
     
     // Находим и удаляем blur overlay по tag
     if let blurView = window.viewWithTag(99999) {
@@ -129,29 +94,19 @@ class AppDelegate: FlutterAppDelegate {
   }
 }
 
-// MARK: - Lifecycle extensions for secure mode
+// Screen recordings and app-switcher snapshots are obscured best-effort.
+// iOS does not offer a general Android FLAG_SECURE equivalent for screenshots.
 extension AppDelegate {
   override func applicationWillResignActive(_ application: UIApplication) {
-    // Показываем blur overlay когда приложение уходит в background
-    addBlurOverlay()
+    super.applicationWillResignActive(application)
+    if secureModeEnabled { addBlurOverlay(); window?.viewWithTag(99999)?.alpha = 1 }
   }
-  
   override func applicationDidEnterBackground(_ application: UIApplication) {
-    // Убеждаемся что blur overlay виден в multitasking
-    if let window = window, let blurView = window.viewWithTag(99999) {
-      blurView.alpha = 1.0
-    }
+    super.applicationDidEnterBackground(application)
+    if secureModeEnabled { addBlurOverlay(); window?.viewWithTag(99999)?.alpha = 1 }
   }
-  
-  override func applicationWillEnterForeground(_ application: UIApplication) {
-    // Скрываем blur overlay когда приложение возвращается на передний план
-    if let window = window, let blurView = window.viewWithTag(99999) {
-      blurView.alpha = 0.0
-    }
-  }
-  
   override func applicationDidBecomeActive(_ application: UIApplication) {
-    // Полностью удаляем blur overlay когда приложение активно
-    removeBlurOverlay()
+    super.applicationDidBecomeActive(application)
+    updatePrivacyOverlay()
   }
 }

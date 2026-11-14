@@ -1,269 +1,225 @@
+import 'dart:async';
 import 'dart:convert';
-import 'package:fast_rsa/fast_rsa.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart';
+import 'package:shade/core/services/tls_policy.dart';
 
-/// Callback when user taps a notification. Payload = conversationId.
-typedef NotificationTapCallback = void Function(String conversationId);
+/// Local IDs use their decimal representation; remote notifications use user:<nick>.
+typedef NotificationTapCallback = void Function(String target);
 
-/// Combined notification service: Firebase FCM + local notifications.
-///
-/// - FCM: works when app is fully closed (requires Firebase)
-/// - Local: works when app is in background (no external services)
-///
-/// This gives maximum reliability while keeping setup simple.
 class NotificationService {
-  static final FlutterLocalNotificationsPlugin _localPlugin =
-      FlutterLocalNotificationsPlugin();
-
+  static final _localPlugin = FlutterLocalNotificationsPlugin();
+  static final List<StreamSubscription<dynamic>> _subscriptions = [];
   static String? _fcmToken;
   static bool _initialized = false;
+  static Future<void>? _initializing;
+  static int _epoch = 0;
   static NotificationTapCallback? _onTap;
-
+  static String? _pendingTap;
+  static String? _serverUrl, _username, _sessionToken;
   static String? get fcmToken => _fcmToken;
 
-  /// Set callback for notification taps.
-  static void setTapHandler(NotificationTapCallback callback) {
+  static void setTapHandler(NotificationTapCallback? callback) {
     _onTap = callback;
+    if (callback != null && _pendingTap != null) {
+      final target = _pendingTap!;
+      _pendingTap = null;
+      scheduleMicrotask(() {
+        if (_onTap == callback) callback(target);
+      });
+    }
   }
 
-  /// Initialize both local notifications and Firebase FCM.
-  /// Call once at app startup (after user authentication).
+  static void _dispatchTap(String? target) {
+    if (target == null || target.isEmpty) return;
+    if (_onTap != null) {
+      _onTap!(target);
+    } else {
+      _pendingTap = target;
+    }
+  }
+
+  static String? targetForData(Map<String, dynamic> data) {
+    final from = data['from'];
+    return from is String && RegExp(r'^[a-z0-9_]{3,32}$').hasMatch(from)
+        ? 'user:$from'
+        : null;
+  }
+
   static Future<void> init() async {
     if (_initialized) return;
+    if (_initializing != null) return _initializing;
+    final epoch = _epoch;
+    _initializing = _initialize(epoch);
+    try {
+      await _initializing;
+    } finally {
+      if (_epoch == epoch) _initializing = null;
+    }
+  }
 
-    // ── Local notifications ─────────────────────────────────
-    const androidSettings =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
-    const iosSettings = DarwinInitializationSettings(
-      requestAlertPermission: true,
-      requestBadgePermission: true,
-      requestSoundPermission: true,
-    );
-    const settings = InitializationSettings(
-      android: androidSettings,
-      iOS: iosSettings,
-    );
-
+  static Future<void> _initialize(int epoch) async {
     await _localPlugin.initialize(
-      settings,
-      onDidReceiveNotificationResponse: (response) {
-        final payload = response.payload;
-        if (payload != null && payload.isNotEmpty && _onTap != null) {
-          _onTap!(payload);
-        }
-      },
-    );
-    debugPrint('[NotificationService] Local notifications initialized');
-
-    // ── Firebase FCM ────────────────────────────────────────
+        const InitializationSettings(
+            android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+            iOS: DarwinInitializationSettings()),
+        onDidReceiveNotificationResponse: (response) {
+      if (epoch == _epoch) _dispatchTap(response.payload);
+    });
+    final launch = await _localPlugin.getNotificationAppLaunchDetails();
+    if (epoch != _epoch) return;
+    if (launch?.didNotificationLaunchApp == true) {
+      _dispatchTap(launch?.notificationResponse?.payload);
+    }
+    const channel = AndroidNotificationChannel('shade_messages', 'Messages',
+        description: 'Incoming messages', importance: Importance.high);
+    await _localPlugin
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(channel);
     try {
       await Firebase.initializeApp();
-
+      if (epoch != _epoch) return;
       final messaging = FirebaseMessaging.instance;
-
-      final fcmSettings = await messaging.requestPermission(
-        alert: true,
-        badge: true,
-        sound: true,
-      );
-
-      if (fcmSettings.authorizationStatus == AuthorizationStatus.denied) {
-        debugPrint('[NotificationService] FCM permission denied');
-      } else {
+      final permission = await messaging.requestPermission();
+      if (epoch != _epoch) return;
+      if (permission.authorizationStatus != AuthorizationStatus.denied) {
         _fcmToken = await messaging.getToken();
-        debugPrint('[NotificationService] FCM token registered');
-
-        messaging.onTokenRefresh.listen((token) {
+        if (epoch != _epoch) return;
+        _subscriptions.add(messaging.onTokenRefresh.listen((token) {
+          if (epoch != _epoch) return;
           _fcmToken = token;
-          debugPrint('[NotificationService] FCM token refreshed');
-        });
-
-        // Show local notification for foreground FCM messages
-        FirebaseMessaging.onMessage.listen((message) {
-          _showLocalNotification(
-            title: 'Shade',
-            body: 'Новое сообщение',
-            payload: message.data['conversationId']?.toString(),
-          );
-        });
-
-        // Handle notification tap when app was terminated
-        messaging.getInitialMessage().then((message) {
-          if (message != null) {
-            final convId = message.data['conversationId']?.toString();
-            if (convId != null && _onTap != null) {
-              _onTap!(convId);
-            }
-          }
-        });
-
-        // Handle notification tap when app is in background
-        FirebaseMessaging.onMessageOpenedApp.listen((message) {
-          final convId = message.data['conversationId']?.toString();
-          if (convId != null && _onTap != null) {
-            _onTap!(convId);
-          }
-        });
-
-        debugPrint('[NotificationService] FCM initialized');
+          unawaited(_registerCurrentToken());
+        }));
+        _subscriptions.add(FirebaseMessaging.onMessage.listen((message) {
+          if (epoch != _epoch) return;
+          unawaited(_showLocalNotification(
+              title: 'Shade',
+              body: 'Новое сообщение',
+              payload: targetForData(message.data)));
+        }));
+        _subscriptions
+            .add(FirebaseMessaging.onMessageOpenedApp.listen((message) {
+          if (epoch == _epoch) _dispatchTap(targetForData(message.data));
+        }));
+        final initial = await messaging.getInitialMessage();
+        if (epoch != _epoch) return;
+        if (initial != null) _dispatchTap(targetForData(initial.data));
+        await _registerCurrentToken();
       }
-    } catch (e) {
-      debugPrint('[NotificationService] FCM init failed: $e');
+    } catch (_) {
+      debugPrint(
+          '[NotificationService] Push unavailable; local notifications remain available');
     }
-
-    _initialized = true;
+    if (epoch == _epoch) _initialized = true;
   }
 
-  /// Register FCM token with Shade server.
-  /// HIGH-05: Encrypt FCM token with server's public key before sending.
-  static Future<void> registerToken(String serverUrl, String username, [String? sessionToken]) async {
-    if (_fcmToken == null) return;
+  /// FCM needs the original device token. TLS protects transport and the relay
+  /// encrypts token storage; no incompatible extra RSA envelope is transmitted.
+  static Future<void> registerToken(String serverUrl, String username,
+      [String? sessionToken]) async {
+    _serverUrl = serverUrl;
+    _username = username;
+    _sessionToken = sessionToken;
+    await _registerCurrentToken();
+  }
 
+  static Future<bool> _registerCurrentToken() async {
+    final url = _serverUrl,
+        username = _username,
+        session = _sessionToken,
+        token = _fcmToken;
+    if (url == null || username == null || session == null || token == null) {
+      return false;
+    }
+    return _tokenRequest(url, username, session, token, 'register');
+  }
+
+  static Future<bool> _tokenRequest(String url, String username, String session,
+      String token, String action) async {
+    if (Uri.parse(url).scheme != 'https') return false;
+    final client = IOClient(ShadeHttpOverrides(
+            Uri.parse(url), const String.fromEnvironment('TLS_CERT_SHA256'))
+        .createHttpClient(null));
     try {
-      // HIGH-05: Get server public key to encrypt FCM token
-      String? serverPubKey;
-      try {
-        final response = await http.get(
-          Uri.parse('$serverUrl/api/server/public-key'),
-        );
-        if (response.statusCode == 200) {
-          final data = jsonDecode(response.body) as Map<String, dynamic>;
-          serverPubKey = data['publicKey'] as String?;
-        }
-      } catch (_) {}
-
-      String? tokenToSend;
-      if (serverPubKey != null) {
-        try {
-          tokenToSend = await RSA.encryptOAEP(
-            _fcmToken!,
-            '',
-            Hash.SHA256,
-            serverPubKey,
-          );
-          debugPrint('[NotificationService] FCM token encrypted');
-        } catch (e) {
-          debugPrint('[NotificationService] ERROR: Failed to encrypt FCM token. Push notifications disabled.');
-          return;
-        }
-      }
-
-      if (tokenToSend == null) {
-        debugPrint('[NotificationService] ERROR: No server public key. Push notifications disabled.');
-        return;
-      }
-
-      // HIGH-05: Sign FCM request with session token
-      final headers = <String, String>{'Content-Type': 'application/json'};
-      if (sessionToken != null && sessionToken.isNotEmpty) {
-        headers['Authorization'] = 'Bearer $sessionToken';
-      }
-      await http.post(
-        Uri.parse('$serverUrl/fcm/register'),
-        headers: headers,
-        body: jsonEncode({
-          'username': username,
-          'token': tokenToSend,
-        }),
-      );
-      debugPrint('[NotificationService] FCM token registered');
-    } catch (e) {
-      debugPrint('[NotificationService] Token registration failed: $e');
+      final response = await client
+          .post(Uri.parse('$url/fcm/$action'),
+              headers: {
+                'Content-Type': 'application/json',
+                'x-session-token': session,
+                'x-username': username
+              },
+              body: jsonEncode({'token': token, 'format': 'fcm-v1'}))
+          .timeout(const Duration(seconds: 10));
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    } finally {
+      client.close();
     }
   }
 
-  /// Show a local notification (works without FCM).
-  static Future<void> showMessageNotification({
-    required String from,
-    required String conversationId,
-  }) async {
-    await _showLocalNotification(
-      title: 'Shade',
-      body: 'Новое сообщение от $from',
-      payload: conversationId,
-    );
-  }
+  static Future<void> showMessageNotification(
+          {required String from, required String conversationId}) =>
+      _showLocalNotification(
+          title: 'Shade',
+          body: 'Новое сообщение от $from',
+          payload: conversationId);
 
-  static Future<void> _showLocalNotification({
-    required String title,
-    required String body,
-    String? payload,
-  }) async {
-    const androidDetails = AndroidNotificationDetails(
-      'shade_messages',
-      'Messages',
-      channelDescription: 'Incoming messages',
-      importance: Importance.high,
-      priority: Priority.high,
-      showWhen: true,
-    );
-
-    const iosDetails = DarwinNotificationDetails(
-      presentAlert: true,
-      presentBadge: true,
-      presentSound: true,
-    );
-
-    const details = NotificationDetails(
-      android: androidDetails,
-      iOS: iosDetails,
-    );
-
-    await _localPlugin.show(
-      payload?.hashCode ?? 0,
-      title,
-      body,
-      details,
-      payload: payload,
-    );
-  }
-
-  /// Cancel notifications for a specific conversation.
-  static Future<void> cancelForConversation(String conversationId) async {
-    await _localPlugin.cancel(conversationId.hashCode);
-  }
-
-  /// Cancel all notifications.
-  static Future<void> cancelAll() async {
-    await _localPlugin.cancelAll();
-  }
-
-  /// Unregister FCM token from Shade server (called during logout).
-  static Future<void> unregisterToken(String serverUrl, String? username) async {
-    if (_fcmToken == null || username == null) return;
-
+  static Future<void> _showLocalNotification(
+      {required String title, required String body, String? payload}) async {
+    if (!_initialized && _initializing == null) return;
     try {
-      await http.post(
-        Uri.parse('$serverUrl/fcm/unregister'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'username': username,
-          'token': _fcmToken,
-        }),
-      );
-      debugPrint('[NotificationService] FCM token unregistered');
-    } catch (e) {
-      debugPrint('[NotificationService] Token unregister failed (non-fatal): $e');
+      await _localPlugin.show(
+          payload?.hashCode ?? 0,
+          title,
+          body,
+          const NotificationDetails(
+              android: AndroidNotificationDetails('shade_messages', 'Messages',
+                  channelDescription: 'Incoming messages',
+                  importance: Importance.high,
+                  priority: Priority.high),
+              iOS: DarwinNotificationDetails()),
+          payload: payload);
+    } catch (_) {
+      debugPrint('[NotificationService] Local notification unavailable');
     }
   }
 
-  /// Dispose the notification service (called during logout).
-  /// 
-  /// This cancels all pending notifications and resets the service state.
+  static Future<void> cancelForConversation(String conversationId) =>
+      _localPlugin.cancel(conversationId.hashCode);
+  static Future<void> cancelAll() => _localPlugin.cancelAll();
+
+  static Future<void> unregisterToken(
+      String serverUrl, String? username) async {
+    final token = _fcmToken, session = _sessionToken;
+    if (token != null && session != null && username != null) {
+      await _tokenRequest(serverUrl, username, session, token, 'unregister');
+    }
+  }
+
   static Future<void> dispose() async {
-    await cancelAll();
+    _epoch++;
+    final subscriptions = List<StreamSubscription<dynamic>>.of(_subscriptions);
+    _subscriptions.clear();
     _fcmToken = null;
+    _serverUrl = null;
+    _username = null;
+    _sessionToken = null;
     _initialized = false;
+    _initializing = null;
     _onTap = null;
-    debugPrint('[NotificationService] Disposed');
+    _pendingTap = null;
+    await Future.wait(
+        subscriptions.map((subscription) => subscription.cancel()));
+    await cancelAll();
   }
 }
 
-/// Background message handler (must be top-level)
+/// Notification payloads are displayed by Android/iOS while backgrounded.
 @pragma('vm:entry-point')
 Future<void> handleBackgroundMessage(RemoteMessage message) async {
   await Firebase.initializeApp();

@@ -1,0 +1,4 @@
+storeFile=/absolute/path/to/shade-release.jks
+storePassword=replace-locally
+keyAlias=shade
+keyPassword=replace-locally
