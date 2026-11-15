@@ -31,7 +31,7 @@ bool get _isMobile => Platform.isAndroid || Platform.isIOS;
 /// Desktop production storage is unsupported; tests inject their own factory.
 class DatabaseService {
   static const String _dbName = 'shade.db';
-  static const int _dbVersion = 6;
+  static const int _dbVersion = 7;
   static const String _dbKeyStorageKey = 'sqlcipher_db_key';
 
   final FlutterSecureStorage _secureStorage;
@@ -62,6 +62,7 @@ class DatabaseService {
               await service._createSchemaV3(db);
               if (version >= 5) await service._createSchemaV5(db);
               if (version >= 6) await service._createSchemaV6(db);
+              if (version >= 7) await service._createSchemaV7(db);
             },
             onUpgrade: service._onUpgrade));
     return service;
@@ -168,6 +169,7 @@ class DatabaseService {
     await _createSchemaV3(db);
     await _createSchemaV5(db);
     await _createSchemaV6(db);
+    await _createSchemaV7(db);
   }
 
   Future<void> _createSchemaV1(Database db) async {
@@ -282,6 +284,36 @@ class DatabaseService {
     }
     if (oldVersion < 5) await _createSchemaV5(db);
     if (oldVersion < 6) await _createSchemaV6(db);
+    if (oldVersion < 7 && newVersion >= 7) await _createSchemaV7(db);
+  }
+
+  Future<void> _createSchemaV7(Database db) => db.execute(
+      'CREATE TABLE verified_keys(owner TEXT NOT NULL, peer TEXT NOT NULL, fingerprint TEXT NOT NULL, PRIMARY KEY(owner,peer))');
+
+  Future<bool> checkFingerprint(
+      String owner, String peer, String fingerprint, String? legacy) async {
+    final db = await database;
+    return db.transaction((txn) async {
+      if (legacy != null) {
+        await txn.insert('verified_keys',
+            {'owner': owner, 'peer': peer, 'fingerprint': legacy},
+            conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      await txn.rawUpdate(
+          "UPDATE verified_keys SET fingerprint='' WHERE owner=? AND peer=? AND fingerprint<>?",
+          [owner, peer, fingerprint]);
+      return (await txn.query('verified_keys',
+              where: 'owner=? AND peer=? AND fingerprint=?',
+              whereArgs: [owner, peer, fingerprint]))
+          .isNotEmpty;
+    });
+  }
+
+  Future<void> confirmFingerprint(
+      String owner, String peer, String fingerprint) async {
+    await (await database).insert('verified_keys',
+        {'owner': owner, 'peer': peer, 'fingerprint': fingerprint},
+        conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<void> _createSchemaV5(Database db) async {

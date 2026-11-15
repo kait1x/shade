@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'package:go_router/go_router.dart';
+import 'package:shade/features/profile/presentation/screens/profile_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 import 'dart:ui' as ui;
@@ -48,6 +50,8 @@ class _UiConnection extends ConnectionService {
             serverUrl: 'https://localhost:3443',
             cryptoService: _crypto,
             databaseService: _db);
+  @override
+  Future<PublicKeyBundle?> getPublicKey(String name) async => null;
   @override
   void watchUser(String username) {}
   @override
@@ -195,6 +199,39 @@ void main() {
     }
   });
 
+  testWidgets('real profile routes preserve back stack and authenticated owner',
+      (t) async {
+    SharedPreferences.setMockInitialValues({});
+    final conn = _UiConnection();
+    hasProfile = true;
+    await t.pumpWidget(ProviderScope(overrides: [
+      authNotifierProvider.overrideWith((ref) => _UiAuth(conn)),
+      connectionServiceProvider.overrideWithValue(conn),
+      chatRepositoryProvider.overrideWithValue(_UiRepository()),
+      conversationsProvider.overrideWith((ref) async => _chats())
+    ], child: const ShadeApp()));
+    await t.pumpAndSettle();
+    await t.tap(find.byTooltip('Мой профиль'));
+    await t.pumpAndSettle();
+    final mine = t.widget<ProfileScreen>(find.byType(ProfileScreen));
+    expect(mine.username, 'kait1x');
+    expect(mine.isSelf, true);
+    final router = GoRouter.of(t.element(find.byType(ProfileScreen)));
+    unawaited(router.push<void>('/peer/alex', extra: 'fixture-key'));
+    await t.pumpAndSettle();
+    final peer = t.widget<ProfileScreen>(find.byType(ProfileScreen));
+    expect(peer.username, 'alex');
+    expect(peer.viewerUsername, 'kait1x');
+    router.pop();
+    await t.pumpAndSettle();
+    expect(t.widget<ProfileScreen>(find.byType(ProfileScreen)).isSelf, true);
+    router.pop();
+    await t.pumpAndSettle();
+    expect(find.byType(HomeScreen), findsOneWidget);
+    await t.pumpWidget(const SizedBox.shrink());
+    conn.dispose();
+    hasProfile = false;
+  });
   testWidgets(
       'real app exposes in-app notifications and server trust confirmation',
       (tester) async {

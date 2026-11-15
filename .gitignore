@@ -87,3 +87,4 @@ client/config/production.json
 
 # Generated Android build artifacts
 artifacts/*.apk
+/artifacts/stickers/frames/

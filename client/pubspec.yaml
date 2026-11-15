@@ -88,6 +88,8 @@ flutter_launcher_icons:
 
 flutter:
   uses-material-design: true
+  shaders:
+    - shaders/holo_sticker.frag
 
   fonts:
     - family: Roboto

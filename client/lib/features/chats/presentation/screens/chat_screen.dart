@@ -15,7 +15,7 @@ import 'package:shade/features/chats/presentation/widgets/message_bubble.dart';
 import 'package:shade/features/chats/presentation/widgets/message_input.dart';
 import 'package:shade/main.dart';
 import 'package:shade/core/widgets/shade_ui.dart';
-import 'package:shade/features/profile/presentation/screens/profile_screen.dart';
+import 'package:go_router/go_router.dart';
 
 /// Arguments passed to [ChatScreen] via GoRouter `extra`.
 class ChatScreenArgs {
@@ -549,11 +549,9 @@ class ChatScreen extends ConsumerWidget {
             borderRadius: BorderRadius.circular(12),
             onTap: args.conversationName == 'Избранное'
                 ? null
-                : () => Navigator.of(context).push(MaterialPageRoute<void>(
-                    builder: (_) => ProfileScreen(
-                        username: args.recipientUsername,
-                        viewerUsername: currentUsername,
-                        publicKey: args.recipientPublicKey))),
+                : () => context.push(
+                    '/peer/${Uri.encodeComponent(args.recipientUsername)}',
+                    extra: args.recipientPublicKey),
             child: Row(children: [
               ShadeAvatar(
                   name: args.conversationName,

@@ -10,7 +10,12 @@ import 'package:shade/features/home/presentation/screens/home_screen.dart';
 import 'package:shade/features/home/presentation/screens/user_search_screen.dart';
 import 'package:shade/features/chats/presentation/screens/chat_screen.dart';
 import 'package:shade/main.dart';
+import 'package:shade/features/profile/presentation/screens/profile_screen.dart';
 import 'package:shade/features/chats/data/repositories/chat_repository.dart';
+
+final _peerKey = FutureProvider.autoDispose.family<String?, String>((ref,
+        name) async =>
+    (await ref.read(connectionServiceProvider).getPublicKey(name))?.publicKey);
 
 /// Top-level router provider that listens to [AuthState].
 ///
@@ -53,6 +58,43 @@ final goRouterProvider = Provider<GoRouter>((ref) {
         path: '/home',
         builder: (context, state) => const HomeScreen(),
       ),
+      GoRoute(
+          path: '/profile',
+          builder: (ctx, state) {
+            final auth = ref.read(authNotifierProvider);
+            return ProfileScreen(
+                username: auth.nickname ?? '',
+                publicKey: auth.publicKey,
+                displayName: auth.displayName,
+                email: auth.email,
+                avatarUrl: auth.avatarUrl,
+                isSelf: true);
+          }),
+      GoRoute(
+          path: '/peer/:username',
+          builder: (ctx, state) {
+            final name = state.pathParameters['username']!,
+                owner = ref.read(authNotifierProvider).nickname;
+            final cached = state.extra as String?;
+            return Consumer(
+                builder: (ctx, ref, _) => ProfileScreen(
+                    key: ValueKey(name),
+                    username: name,
+                    viewerUsername: owner,
+                    publicKey: ref.watch(_peerKey(name)).valueOrNull ?? cached,
+                    onWrite: () async {
+                      if (cached != null && ctx.canPop()) {
+                        ctx.pop();
+                        return;
+                      }
+                      final id = await ref
+                          .read(connectionServiceProvider)
+                          .ensureConversation(name);
+                      if (ctx.mounted && id > 0) {
+                        ctx.pushReplacement('/chat/$id');
+                      }
+                    }));
+          }),
       GoRoute(
         path: '/search',
         builder: (context, state) => const UserSearchScreen(),

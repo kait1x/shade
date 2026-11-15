@@ -12,6 +12,27 @@ import 'package:shade/core/services/crypto_service.dart';
 import 'package:shade/features/profile/presentation/screens/profile_screen.dart';
 import 'package:shade/main.dart';
 
+import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
+
+class _TestTrust extends DatabaseService {
+  final keys = <String, String>{};
+  @override
+  Future<bool> checkFingerprint(
+      String owner, String peer, String fingerprint, String? legacy) async {
+    final k = '$owner:$peer';
+    if (keys[k] != fingerprint) keys.remove(k);
+    return keys[k] == fingerprint;
+  }
+
+  @override
+  Future<void> confirmFingerprint(
+      String owner, String peer, String fingerprint) async {
+    keys['$owner:$peer'] = fingerprint;
+  }
+}
+
+late _TestTrust _trust;
+
 // Real widgets with presentation fixtures; not live profiles or key verification.
 class _PreviewConnection extends ConnectionService {
   _PreviewConnection()
@@ -19,6 +40,8 @@ class _PreviewConnection extends ConnectionService {
             serverUrl: 'https://localhost:3443',
             cryptoService: CryptoService(),
             databaseService: DatabaseService());
+  @override
+  Future<Map<String,dynamic>> profileRequest(String method,String path,[Map<String,dynamic>? data])async=>{'revision':0,'inventory':[],'wall':[]};
   @override
   Future<UserStatus?> getUserStatus(String username) async =>
       const UserStatus(online: true, lastSeen: 0);
@@ -90,6 +113,7 @@ Widget _phone(String label, Widget screen, GlobalKey<NavigatorState> key) =>
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(() => _trust = _TestTrust());
   setUpAll(() async {
     final fonts = FontLoader('Roboto')
       ..addFont(rootBundle.load('fonts/Roboto/Roboto-Regular.ttf'))
@@ -138,6 +162,7 @@ void main() {
             const boundary = Key('profile-showcase');
             await tester.pumpWidget(ProviderScope(
                 overrides: [
+                  databaseServiceProvider.overrideWithValue(_trust),
                   connectionServiceProvider.overrideWithValue(connection)
                 ],
                 child: RepaintBoundary(
@@ -180,6 +205,7 @@ void main() {
             Future<void> show(Widget screen) async {
               await tester.pumpWidget(ProviderScope(
                   overrides: [
+                    databaseServiceProvider.overrideWithValue(_trust),
                     connectionServiceProvider.overrideWithValue(connection)
                   ],
                   child: RepaintBoundary(
@@ -195,21 +221,24 @@ void main() {
             await capture(tester, boundary, 'profile', ratio: 2);
             await show(_peer);
             expect(find.text('Не сверен'), findsOneWidget);
+            await capture(tester,boundary,'sticker-peer');
             await tester.tap(find.text('Ключ'));
             await tester.pumpAndSettle();
+            await capture(tester,boundary,'sticker-verification');
             expect(find.text('Ключ совпадает'), findsOneWidget);
             await tester.tap(find.text('Ключ совпадает'));
             await tester.pumpAndSettle();
             expect(find.text('Сверен'), findsOneWidget);
             final prefs = await SharedPreferences.getInstance();
-            expect(prefs.getString('verified_key:kait1x:alex'), isNotEmpty);
+            expect(prefs.getString('verified_key:kait1x:alex'), isNull);
+            expect(_trust.keys['kait1x:alex'], isNotEmpty);
             await show(const ProfileScreen(
                 username: 'alex',
                 viewerUsername: 'kait1x',
                 publicKey: 'changed-peer-key'));
             expect(find.text('Не сверен'), findsOneWidget);
             await show(_peer);
-            expect(find.text('Сверен'), findsOneWidget);
+            expect(find.text('Не сверен'), findsOneWidget);
             await show(const ProfileScreen(
                 username: 'alex',
                 viewerUsername: 'another_user',
@@ -230,6 +259,7 @@ void main() {
             final connection = _PreviewConnection();
             await tester.pumpWidget(ProviderScope(
                 overrides: [
+                  databaseServiceProvider.overrideWithValue(_trust),
                   connectionServiceProvider.overrideWithValue(connection)
                 ],
                 child: MaterialApp(
@@ -264,6 +294,7 @@ void main() {
             final key = ValueNotifier('original-peer-key');
             await tester.pumpWidget(ProviderScope(
                 overrides: [
+                  databaseServiceProvider.overrideWithValue(_trust),
                   connectionServiceProvider.overrideWithValue(connection)
                 ],
                 child: MaterialApp(

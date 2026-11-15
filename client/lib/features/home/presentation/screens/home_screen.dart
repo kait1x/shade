@@ -10,7 +10,7 @@ import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 import 'package:shade/features/chats/data/repositories/chat_repository.dart';
 import 'package:shade/features/chats/presentation/screens/chat_screen.dart';
 import 'package:shade/features/home/presentation/widgets/chat_list_view.dart';
-import 'package:shade/features/profile/presentation/screens/profile_screen.dart';
+
 import 'package:shade/main.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -65,38 +65,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     super.dispose();
   }
 
-  void _showProfile() {
-    final auth = ref.read(authNotifierProvider);
-    Navigator.of(context).push(MaterialPageRoute<void>(
-        builder: (_) => ProfileScreen(
-            username: auth.nickname ?? '',
-            displayName: auth.displayName,
-            avatarUrl: auth.avatarUrl,
-            email: auth.email,
-            publicKey: auth.publicKey,
-            isSelf: true,
-            onSignOut: _confirmSignOut)));
-  }
-
-  Future<void> _confirmSignOut() async {
-    final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-                title: const Text('Выйти из Shade?'),
-                content: const Text(
-                    'Ключи и история останутся на этом устройстве. Для следующего входа используйте тот же Google-аккаунт и никнейм.'),
-                actions: [
-                  TextButton(
-                      onPressed: () => Navigator.pop(ctx, false),
-                      child: const Text('Отмена')),
-                  FilledButton(
-                      onPressed: () => Navigator.pop(ctx, true),
-                      child: const Text('Выйти'))
-                ]));
-    if (confirmed == true && mounted) {
-      await ref.read(authNotifierProvider.notifier).logout();
-    }
-  }
+  void _showProfile() => context.push('/profile');
 
   @override
   Widget build(BuildContext context) {

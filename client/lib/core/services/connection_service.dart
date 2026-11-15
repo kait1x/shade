@@ -850,6 +850,29 @@ class ConnectionService {
     throw StateError('unreachable');
   }
 
+  Future<Map<String, dynamic>> profileRequest(String method, String path,
+      [Map<String, dynamic>? data]) async {
+    if (_sessionToken == null || _username == null) {
+      throw StateError('Требуется подключение к серверу');
+    }
+    final request = http.Request(method, Uri.parse('$serverUrl$path'));
+    request.headers.addAll({
+      'Content-Type': 'application/json',
+      'x-session-token': _sessionToken!,
+      'x-username': _username!
+    });
+    if (data != null) request.body = jsonEncode(data);
+    final response = await _httpClient
+        .send(request)
+        .then(http.Response.fromStream)
+        .timeout(const Duration(seconds: 15));
+    final result = jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode != 200) {
+      throw StateError(result['error']?.toString() ?? 'Ошибка сервера');
+    }
+    return result;
+  }
+
   Future<http.Response> _retryGet(Uri uri) async {
     for (var i = 0; i < _maxRetries; i++) {
       try {

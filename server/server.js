@@ -459,7 +459,7 @@ function loadMap(filename) {
         data = _decryptData(encryptedData, SESSION_SECRET);
         // HIGH-03: Verify HMAC integrity
         _verifyHmac(filename, data, SESSION_SECRET);
-      } else if ((filename === 'fcm_tokens.json' || filename === 'messaging.json')) {
+      } else if ((['fcm_tokens.json','messaging.json','stickers.json'].includes(filename))) {
         const encryptedData = fs.readFileSync(file, 'utf8');
         data = _decryptData(encryptedData, SESSION_SECRET);
       } else {
@@ -481,7 +481,7 @@ function loadMap(filename) {
     }
   } catch (e) {
     console.error('[db] load error:', filename, e.message);
-    if (filename === 'messaging.json') throw new Error('Cannot load durable messaging state; restore a verified backup');
+    if (['messaging.json','stickers.json'].includes(filename)) throw new Error('Cannot load durable messaging state; restore a verified backup');
   }
   return new Map();
 }
@@ -505,7 +505,7 @@ async function saveMap(filename, map) {
       await fs.promises.rename(tmpFile, file);
       // HIGH-03: Save HMAC for integrity check
       _saveHmac(filename, data, SESSION_SECRET);
-    } else if ((filename === 'fcm_tokens.json' || filename === 'messaging.json')) {
+    } else if ((['fcm_tokens.json','messaging.json','stickers.json'].includes(filename))) {
       const encrypted = _encryptData(data, SESSION_SECRET);
       const tmpFile = file + '.tmp';
       await fs.promises.writeFile(tmpFile, encrypted, { mode: 0o600, flush: true });
@@ -1438,6 +1438,8 @@ app.post('/fcm/unregister', requireUserAuth, async (req, res) => {
   const saved = await saveMap('fcm_tokens.json', fcmTokens);
   res.status(saved === false ? 503 : 200).json({ ok: saved !== false });
 });
+
+require('./stickers').installStickers(app, requireUserAuth, users, loadMap('stickers.json'), map => saveMap('stickers.json', map));
 
 app.get('/user/:username', requireUserAuth, (req, res) => {
   // HIGH-06: Constant-time user lookup for all requests
