@@ -102,7 +102,7 @@ test('real TLS relay: three clients, receipt isolation, retry, offline restart a
   const alice = identity('alice'), bob = identity('bob'), carol = identity('carol');
   for (const user of [alice, bob, carol]) await register(user);
   const headers = u => ({'x-username':u.username,'x-session-token':u.token});
-  const gift={toUsername:'bob',stickerId:'orbit',requestId:crypto.randomUUID(),note:'private-test-note'};
+  const gift={toUsername:'bob',stickerId:'flowers',requestId:crypto.randomUUID(),note:'private-test-note'};
   assert.equal((await request('/profile/name',{displayName:'Луна'},headers(alice),'PUT')).status,200);
   assert.equal((await request('/user/alice/stickers',null,headers(bob))).data.displayName,'Луна');
   const sendGift=(body,h=headers(alice))=>request('/stickers/gift',body,h);

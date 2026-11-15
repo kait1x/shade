@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'repository.dart';
 import 'vinyl.dart';
+import 'aluminium.dart';
 
 class StickerCollection extends ConsumerStatefulWidget {
   final String username;
@@ -143,7 +144,7 @@ class _CollectionState extends ConsumerState<StickerCollection> {
                   label: const Text('Подарить'))
           ]),
           if (!editing)
-            Wrap(spacing: 8, children: [
+            Wrap(spacing: 6, children: [
               ChoiceChip(
                   label: const Text('Стена'),
                   selected: !book,
@@ -166,17 +167,20 @@ class _CollectionState extends ConsumerState<StickerCollection> {
               _book(gifts)
             else
               LayoutBuilder(builder: (ctx, b) {
-                final w = b.maxWidth, h = w * .72, side = w * .18;
+                final w = b.maxWidth, h = w * .69, side = w * .23;
                 return Container(
                     height: h,
                     decoration: BoxDecoration(
-                        color: const Color(0xff0e0e10),
-                        border: Border.all(color: Colors.white12),
-                        borderRadius: BorderRadius.circular(18)),
+                        borderRadius: BorderRadius.circular(18),
+                        boxShadow: const [
+                          BoxShadow(
+                              color: Colors.black38,
+                              blurRadius: 16,
+                              offset: Offset(0, 6))
+                        ]),
                     clipBehavior: Clip.antiAlias,
                     child: Stack(children: [
-                      if (wall.isEmpty)
-                        const Center(child: Text('На стене пока пусто')),
+                      const Positioned.fill(child: ReferenceLid()),
                       for (final p in wall)
                         Positioned(
                             key: ValueKey(p.id),
@@ -244,13 +248,14 @@ class _CollectionState extends ConsumerState<StickerCollection> {
               }),
             if (widget.owner && !book)
               Wrap(spacing: 8, children: [
-                TextButton(
+                TextButton.icon(
+                    icon: Icon(editing ? Icons.check : Icons.tune, size: 16),
                     onPressed: busy
                         ? null
                         : editing
                             ? save
                             : startEdit,
-                    child: Text(editing ? 'Готово' : 'Оформить')),
+                    label: Text(editing ? 'Готово' : 'Оформить')),
                 if (editing) ...[
                   TextButton(
                       onPressed: busy
@@ -374,7 +379,7 @@ class GiftDialog extends ConsumerStatefulWidget {
 }
 
 class _GiftDialogState extends ConsumerState<GiftDialog> {
-  String art = 'orbit', note = '', request = '', error = '';
+  String art = 'flowers', note = '', request = '', error = '';
   bool busy = false;
   Future<void> send() async {
     if (busy) return;

@@ -41,10 +41,37 @@ class _PreviewConnection extends ConnectionService {
             cryptoService: CryptoService(),
             databaseService: DatabaseService());
   @override
-  Future<Map<String,dynamic>> profileRequest(String method,String path,[Map<String,dynamic>? data])async=>{'revision':0,'inventory':[],'wall':[]};
+  Future<Map<String, dynamic>> profileRequest(String method, String path,
+          [Map<String, dynamic>? data]) async =>
+      {'revision': 0, 'inventory': [], 'wall': []};
   @override
   Future<UserStatus?> getUserStatus(String username) async =>
       const UserStatus(online: true, lastSeen: 0);
+}
+
+class _CollectionPreview extends _PreviewConnection {
+  @override
+  Future<Map<String, dynamic>> profileRequest(String method, String path,
+          [Map<String, dynamic>? data]) async =>
+      {
+        'revision': 1,
+        'inventory': [
+          for (final (i, id)
+              in ['flowers', 'moth', 'flowers', 'comet', 'ghost'].indexed)
+            {'giftId': 'g$i', 'stickerId': id}
+        ],
+        'wall': [
+          for (var i = 0; i < 5; i++)
+            {
+              'giftId': 'g$i',
+              'xNorm': [.13, .5, .84, .3, .72][i],
+              'yNorm': [.16, .12, .32, .76, .78][i],
+              'rotation': [-.15, .09, .2, -.12, .13][i],
+              'scale': 1.2,
+              'zIndex': i
+            }
+        ]
+      };
 }
 
 const _peer = ProfileScreen(
@@ -150,6 +177,43 @@ void main() {
     });
   }
 
+  testWidgets('full profiles with populated sticker walls', (tester) async {
+    tester.view.physicalSize = const Size(390, 1320);
+    tester.view.devicePixelRatio = 1;
+    final conn = _CollectionPreview();
+    final mono = File('C:/Windows/Fonts/consola.ttf');
+    if (mono.existsSync()) {
+      await (FontLoader('monospace')
+            ..addFont(
+                Future.value(ByteData.sublistView(mono.readAsBytesSync()))))
+          .load();
+    }
+    for (final self in [true, false]) {
+      final key = ValueKey(self);
+      await tester.pumpWidget(ProviderScope(
+          overrides: [
+            databaseServiceProvider.overrideWithValue(_trust),
+            connectionServiceProvider.overrideWithValue(conn)
+          ],
+          child: RepaintBoundary(
+              key: key,
+              child: MaterialApp(
+                  debugShowCheckedModeBanner: false,
+                  theme: buildShadeTheme(),
+                  home: self ? _self() : _peer))));
+      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pumpAndSettle();
+      await capture(
+          tester, key, self ? 'full-self-stickers' : 'full-peer-stickers',
+          ratio: 2);
+      await tester.pumpWidget(const SizedBox.shrink());
+    }
+    conn.dispose();
+    tester.view.resetPhysicalSize();
+    tester.view.resetDevicePixelRatio();
+  });
+
   testWidgets(
       'profile showcase renders actual self, contact and key sheet',
       (tester) => withShadows(tester, (tester) async {
@@ -221,10 +285,10 @@ void main() {
             await capture(tester, boundary, 'profile', ratio: 2);
             await show(_peer);
             expect(find.text('Не сверен'), findsOneWidget);
-            await capture(tester,boundary,'sticker-peer');
+            await capture(tester, boundary, 'sticker-peer');
             await tester.tap(find.text('Ключ'));
             await tester.pumpAndSettle();
-            await capture(tester,boundary,'sticker-verification');
+            await capture(tester, boundary, 'sticker-verification');
             expect(find.text('Ключ совпадает'), findsOneWidget);
             await tester.tap(find.text('Ключ совпадает'));
             await tester.pumpAndSettle();

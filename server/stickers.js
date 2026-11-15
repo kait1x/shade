@@ -1,6 +1,6 @@
 'use strict';
 const { randomUUID } = require('node:crypto');
-const catalog = ['orbit', 'moth', 'comet', 'ghost'];
+const catalog = ['orbit', 'moth', 'comet', 'ghost', 'flowers'];
 const empty = () => ({ inventory: [], wall: [], revision: 0 });
 function reject(status, message) { throw Object.assign(new Error(message), { status }); }
 function installStickers(app, auth, users, initial, persist) {

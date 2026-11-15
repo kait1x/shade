@@ -88,6 +88,9 @@ flutter_launcher_icons:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/stickers/flowers.png
+    - assets/stickers/lid-reference.png
   shaders:
     - shaders/holo_sticker.frag
 

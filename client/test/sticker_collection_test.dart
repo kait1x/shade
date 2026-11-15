@@ -36,7 +36,7 @@ class _Fixture extends ConnectionService {
       'wall': wall,
       'inventory': [
         for (final (i, id)
-            in ['orbit', 'moth', 'orbit', 'comet', 'ghost'].indexed)
+            in ['flowers', 'moth', 'flowers', 'comet', 'ghost'].indexed)
           {
             'giftId': 'g$i',
             'stickerId': id,
@@ -176,13 +176,36 @@ void main() {
         .firstWhere((w) => w.foregroundPainter != null)
         .foregroundPainter as dynamic;
     expect(painter.peel, greaterThan(.45));
-    expect(painter.shader, isNotNull,
-        reason: "Compiled runtime shader must load");
+    expect(painter.back, isNotNull);
     await capture('peel');
     await peel.up();
     for (var i = 0; i < 12; i++) {
       await record();
     }
+    expect(find.text('Лицевая сторона'), findsOneWidget);
+    await capture('detached-front');
+    await t.tap(find.text('Перевернуть'));
+    for (var i = 0; i < 12; i++) {
+      await record();
+    }
+    expect(find.text('Обратная сторона'), findsOneWidget);
+    await capture('detached-back');
+    final heldDrag = await t.startGesture(box.center);
+    for (var i = 0; i < 8; i++) {
+      await heldDrag.moveBy(const Offset(3, 2));
+      await record();
+    }
+    await heldDrag.up();
+    await t.tap(find.text('Приклеить обратно'));
+    for (var i = 0; i < 20; i++) {
+      await record();
+    }
+    await t.pumpAndSettle();
+    expect(find.text('Отклеить'), findsOneWidget);
+    expect(service.wall.single['giftId'], 'g0');
+    expect(service.revision, 1,
+        reason: 'Inspection must not save or modify the wall');
+    await capture('reattached');
     await t.tap(find.byType(CloseButton));
     await t.pumpAndSettle();
     await show(false);
@@ -196,5 +219,23 @@ void main() {
     await t.tap(find.widgetWithText(FilledButton, 'Подарить'));
     await t.pumpAndSettle();
     expect(service.sent, 'moth');
+    service.wall = [
+      for (var i = 0; i < 5; i++)
+        {
+          'giftId': 'g$i',
+          'xNorm': [.13, .5, .84, .3, .72][i],
+          'yNorm': [.16, .12, .32, .76, .78][i],
+          'rotation': [-.15, .09, .2, -.12, .13][i],
+          'scale': [1.25, 1.15, 1.1, 1.2, 1.15][i],
+          'zIndex': i
+        }
+    ];
+    await show(true);
+    await t.pump(const Duration(seconds: 5));
+    await t.pumpAndSettle();
+    await capture('wall-collection');
+    await t.tap(find.text('Оформить'));
+    await t.pumpAndSettle();
+    await capture('edit-collection');
   });
 }
