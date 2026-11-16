@@ -11,7 +11,16 @@ import { readState, writeState } from '../../client/web/alpha-storage.mjs';
 
 const phrase = 'synthetic storage reliability passphrase';
 // Fresh IndexedDB factory per test: databases never leak between scenarios.
-beforeEach(() => { globalThis.indexedDB = new IDBFactory(); });
+beforeEach(() => {
+  globalThis.indexedDB = new IDBFactory();
+  // Minimal synchronous localStorage shim (WebKit-durable journal path).
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: k => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => { store.set(k, String(v)); },
+    removeItem: k => { store.delete(k); }
+  };
+});
 
 test('vault save flushes durably, keeps meta out of listings, rejects duplicates', async () => {
   const vault = await createVault('storage_test', phrase);
@@ -81,6 +90,37 @@ test('deletion journal survives a rolled-back state commit (WebKit loss model)',
   db.close();
   const recovered = await readState(session);
   assert.deepEqual(recovered.value.messages, [m1], 'journal must prevent resurrection');
+});
+
+test('synchronous localStorage journal survives total IDB batch loss (WebKit kill model)', async () => {
+  const vault = await createVault('sync_journal', phrase);
+  const session = await unlockVault(vault, phrase);
+  const m1 = { ref: 'a:primary:11', text: 'keep' };
+  const m2 = { ref: 'a:primary:22', text: 'delete me' };
+  await writeState(session, { messages: [m1, m2], outbox: [] }, 0);
+  await writeState(session, { messages: [m1], outbox: [] }, 1);
+  // The durable journal must already contain the removal BEFORE any flush.
+  const journal = JSON.parse(localStorage.getItem(`shade-alpha-deletions:${session.id}`));
+  assert.ok(journal.some(e => e.ref === 'a:primary:22'));
+  // Worst case: the entire last IDB batch (state + IDB journal) is lost and an
+  // older snapshot resurfaces. The localStorage journal still hides the ref.
+  const db = await new Promise((resolve, reject) => {
+    const req = indexedDB.open('shade-alpha-state');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(Error('open failed'));
+  });
+  const { encryptRecord } = await import('../../client/web/device_crypto.mjs');
+  const forged = await encryptRecord(session, 'state', { messages: [m1, m2], outbox: [] });
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(['states', 'deletions'], 'readwrite');
+    tx.objectStore('states').put({ id: session.id, revision: 2, encrypted: forged });
+    tx.objectStore('deletions').clear();
+    tx.oncomplete = resolve;
+    tx.onabort = () => reject(Error('forge failed'));
+  });
+  db.close();
+  const recovered = await readState(session);
+  assert.deepEqual(recovered.value.messages, [m1], 'sync journal must survive IDB loss');
 });
 
 test('v1 databases upgrade additively to v2 without losing vaults', async () => {

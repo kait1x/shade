@@ -320,9 +320,36 @@ export async function saveVault(vault) {
     await putVault();
     await flushVaultCommit(db, vault.id);
     // Re-commit the identical vault: losing the LAST transaction must not
-    // lose the identity; the earlier identical commit survives.
+    // lose the identity; the earlier identical commit survives. WebKit flushes
+    // asynchronously, so converge in the background while the page lives.
     await putVault();
     await flushVaultCommit(db, vault.id);
+    setTimeout(async () => {
+      try {
+        const fresh = await database();
+        let stored;
+        try {
+          stored = await new Promise((resolve, reject) => {
+            const tx = fresh.transaction('vaults', 'readonly');
+            const req = tx.objectStore('vaults').get(vault.id);
+            tx.oncomplete = () => resolve(req.result);
+            tx.onabort = () => reject(new Error('Vault read-back failed'));
+          });
+        } finally { fresh.close(); }
+        if (stored && stored.id === vault.id) return;
+        const db2 = await database();
+        try {
+          const tx = db2.transaction('vaults', 'readwrite');
+          tx.objectStore('vaults').put(vault);
+          if (typeof tx.commit === 'function') tx.commit();
+          await new Promise((resolve, reject) => {
+            tx.oncomplete = resolve;
+            tx.onabort = () => reject(new Error('Vault re-commit failed'));
+            tx.onerror = () => {};
+          });
+        } finally { db2.close(); }
+      } catch { /* best-effort; the double commit above is the primary guard */ }
+    }, 1200);
   } finally { db.close(); }
 }
 export async function loadVault(id) {

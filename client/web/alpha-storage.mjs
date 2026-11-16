@@ -9,6 +9,35 @@ import { encryptRecord, decryptRecord } from './device_crypto.mjs';
 //    leaves the identical earlier commit durable. No timing assumptions.
 const DELETION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
+// WebKit flushes IndexedDB asynchronously (timer-based); an abrupt reload/kill
+// inside the flush window loses the last IDB batch, and fresh connections read
+// the in-memory server state, NOT disk. localStorage.setItem IS synchronous and
+// durable in WebKit, so the deletion journal is written there FIRST (refs only,
+// no message content; same-origin trust model already applies to the vault).
+// The IDB journal remains as a second copy. readState merges both.
+const journalKey = id => `shade-alpha-deletions:${id}`;
+function readLocalJournal(id) {
+  try {
+    if (typeof localStorage === 'undefined') return [];
+    const parsed = JSON.parse(localStorage.getItem(journalKey(id)) || '[]');
+    return Array.isArray(parsed) ? parsed.filter(e => e && typeof e.ref === 'string') : [];
+  } catch { return []; }
+}
+function writeLocalJournal(id, entries) {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(journalKey(id), JSON.stringify(entries));
+  } catch { /* private mode/quota: IDB journal still applies */ }
+}
+function mergeJournalEntries(existing, removed) {
+  const cutoff = Date.now() - DELETION_TTL_MS;
+  const byRef = new Map();
+  for (const entry of [...existing, ...removed]) {
+    if (entry.at >= cutoff) byRef.set(entry.ref, entry);
+  }
+  return [...byRef.values()];
+}
+
 async function database() {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open('shade-alpha-state', 3);
@@ -79,7 +108,8 @@ export async function readState(session) {
   } finally { db.close(); }
   if (!stored) return { revision: 0, value: null };
   const value = await decryptRecord(session, 'state', stored.encrypted);
-  return { revision: stored.revision, value: applyDeletions(value, deletions) };
+  const merged = mergeJournalEntries(deletions, readLocalJournal(session.id));
+  return { revision: stored.revision, value: applyDeletions(value, merged) };
 }
 export async function writeState(session, value, revision) {
   const encrypted = await encryptRecord(session, 'state', value);
@@ -96,6 +126,11 @@ export async function writeState(session, value, revision) {
       removed = (oldValue.messages || [])
         .filter(m => !nextRefs.has(m.ref))
         .map(m => ({ ref: m.ref, at: Date.now() }));
+    }
+    // Synchronous durable journal BEFORE the async IDB commit: even if the
+    // whole IDB batch is lost to a WebKit kill/reload, removals survive.
+    if (removed.length) {
+      writeLocalJournal(session.id, mergeJournalEntries(readLocalJournal(session.id), removed));
     }
     const record = { id: session.id, revision: revision + 1, encrypted };
     const commit = async expectedRevision => {
@@ -135,6 +170,33 @@ export async function writeState(session, value, revision) {
     if ((check?.revision || 0) !== revision + 1) {
       throw Error('Хранилище не подтвердило запись. Повторите действие.');
     }
+    // WebKit flushes commits to disk asynchronously (no JS sync primitive).
+    // Background convergence: once a fresh connection still sees stale data
+    // after the flush window, rewrite the identical record so durability is
+    // achieved while the page lives. The deletion journal protects removals
+    // even if the final commit is lost to an abrupt kill.
+    ensureDurable(session.id, record, revision + 1);
   } finally { db.close(); }
   return revision + 1;
+}
+function ensureDurable(id, record, expectedRevision) {
+  setTimeout(async () => {
+    try {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const fresh = await database();
+        let rec;
+        try { rec = await readRaw(fresh, id); } finally { fresh.close(); }
+        if ((rec?.revision || 0) >= expectedRevision) return;
+        const db = await database();
+        try {
+          const tx = db.transaction('states', 'readwrite');
+          tx.objectStore('states').put(record);
+          if (typeof tx.commit === 'function') tx.commit();
+          await txDone(tx);
+          await durabilityFlush(db);
+        } finally { db.close(); }
+        await new Promise(r => setTimeout(r, 1200));
+      }
+    } catch { /* best-effort convergence; journal still protects deletions */ }
+  }, 1200);
 }
