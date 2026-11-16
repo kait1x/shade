@@ -293,6 +293,13 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
       for (const [key, queue] of Object.entries(next.queues)) {
         next.queues[key] = queue.filter(m => active(next, key.split(':')[0], key.split(':')[1]) && active(next, m.from, m.deviceId));
       }
+      // Revoked devices lose their push subscriptions too.
+      for (const key of Object.keys(next.pushSubscriptions)) {
+        const [account, id] = key.split(':');
+        if (account === manifest.account && !manifest.devices.some(d => d.id === id)) {
+          delete next.pushSubscriptions[key];
+        }
+      }
       return { revision: manifest.revision, digest };
   }
 }
