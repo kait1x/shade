@@ -128,9 +128,47 @@ class V2Store {
         'message_id': messageId,
         'created_at': createdAt,
         'payload': jsonEncode(payload),
-        'status': 'received'
+        'status': 'received',
+        'acked': 0
       });
       return true;
+    });
+  }
+
+  Future<void> markAcked(List<String> refs) async {
+    if (refs.isEmpty) return;
+    final db = await _db;
+    await db.transaction((txn) async {
+      for (final ref in refs) {
+        await txn.update('v2_messages', {'acked': 1},
+            where: 'ref=?', whereArgs: [ref]);
+      }
+    });
+  }
+
+  Future<Map<String, dynamic>?> messageByRef(String ref) async {
+    final rows = await (await _db)
+        .query('v2_messages', where: 'ref=?', whereArgs: [ref], limit: 1);
+    if (rows.isEmpty) return null;
+    final row = rows.first;
+    return {
+      'ref': row['ref'],
+      'peer': row['peer'],
+      'direction': row['direction'],
+      'messageId': row['message_id'],
+      'createdAt': row['created_at'],
+      'payload': row['payload'],
+      'status': row['status'],
+      'acked': row['acked'] == 1
+    };
+  }
+
+  /// Локальное удаление («Удалить у себя»): другие устройства сохраняют копию.
+  Future<void> deleteMessage(String ref) async {
+    final db = await _db;
+    await db.transaction((txn) async {
+      await txn.delete('v2_messages', where: 'ref=?', whereArgs: [ref]);
+      await txn.delete('v2_delivery', where: 'ref=?', whereArgs: [ref]);
     });
   }
 
@@ -150,7 +188,8 @@ class V2Store {
           'message_id': messageId,
           'created_at': createdAt,
           'payload': jsonEncode(payload),
-          'status': 'server'
+          'status': 'server',
+          'acked': 1
         },
         conflictAlgorithm: ConflictAlgorithm.replace);
   }
@@ -171,7 +210,8 @@ class V2Store {
           'messageId': row['message_id'],
           'createdAt': row['created_at'],
           'payload': row['payload'],
-          'status': row['status']
+          'status': row['status'],
+          'acked': row['acked'] == 1
         }
     ];
   }

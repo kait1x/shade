@@ -8,6 +8,7 @@ library;
 
 import '../crypto_service.dart';
 import 'crypto.dart';
+import 'payload.dart';
 import 'protocol.dart';
 import 'store.dart';
 import 'transport.dart';
@@ -52,6 +53,9 @@ class V2ChatRepository {
   }
 
   bool get enrolled => _accountCache != null;
+
+  /// Снимок локального аккаунта (genesis/history/checkpoint) для UI.
+  Map<String, dynamic>? get accountSnapshot => _accountCache;
 
   /// Явная миграция legacy-аккаунта: исходный RSA подписывает genesis и
   /// остаётся primary-якорем; recovery-ключ независим и шифруется фразой.
@@ -184,12 +188,20 @@ class V2ChatRepository {
 
   /// Отправка: seal → долговечный outbox → подписанный send. Retry повторяет
   /// тот же ciphertext/ID; очередь не перешифровывается молча.
-  Future<String> sendMessage(String peer, String text) async {
+  /// [reply] — {ref, from, text}: Alpha payload-схема {"shade":1,"t","r"},
+  /// совместимая с PWA (zcode/pwa-parity). Без reply — plain text.
+  Future<String> sendMessage(String peer, String text,
+      {Map<String, dynamic>? reply}) async {
+    check(text.trim().isNotEmpty, 'Введите сообщение');
+    if (reply != null) {
+      check((reply['text'] as String?)?.trim().isNotEmpty ?? false,
+          'Некорректное сообщение для ответа');
+    }
     await renewLease();
     final acc = _requireAccount();
     final peerData = await _peerDirectory(peer);
     final message = await v2.sealMessage(
-        text,
+        encodePayload(text, reply),
         acc['history'] as List,
         peerData['history'] as List,
         _session,
@@ -247,7 +259,8 @@ class V2ChatRepository {
         final m = bundle['message'] as Map<String, dynamic>;
         final ref = messageRef(m);
         if (await store.hasRef(ref)) {
-          refs.add(ref);
+          final existing = await store.messageByRef(ref);
+          if (existing != null && existing['acked'] != true) refs.add(ref);
           continue;
         }
         final peer = (m['from'] == account ? m['to'] : m['from']) as String;
@@ -282,6 +295,7 @@ class V2ChatRepository {
       if (refs.isNotEmpty) {
         await transport.ack(refs,
             account: account, id: 'primary', privateKey: privateKey);
+        await store.markAcked(refs);
       }
       return count;
     } finally {
@@ -307,15 +321,31 @@ class V2ChatRepository {
   }
 
   /// История чата: ciphertext хранится в SQLCipher, расшифровка при чтении.
+  /// Payload-декодирование совместимо с PWA: plain text и {"shade":1,"t","r"}.
   Future<List<Map<String, dynamic>>> getMessages(String peer) async {
     final rows = await store.messagesByPeer(peer);
     return [
       for (final row in rows)
         {
           ...row,
-          'text': await crypto.decryptData(row['payload'] as String, privateKey)
+          ...decodePayload(
+              await crypto.decryptData(row['payload'] as String, privateKey))
         }
     ];
+  }
+
+  /// «Удалить у себя» (контракт ZCODE): queued-отправка отменяется; входящее
+  /// без ACK сначала ACK-ается, чтобы relay не доставил его повторно.
+  /// Другие устройства собеседника сохраняют свою копию.
+  Future<void> deleteLocal(String ref) async {
+    final message = await store.messageByRef(ref);
+    check(message != null, 'Сообщение не найдено');
+    if (message!['direction'] == 'in' && message['acked'] != true) {
+      await transport.ack([ref],
+          account: account, id: 'primary', privateKey: privateKey);
+    }
+    await store.removeOutbox(message['messageId'] as String);
+    await store.deleteMessage(ref);
   }
 
   /// Wake-up hints + периодический опрос чинят потерянные socket-события.

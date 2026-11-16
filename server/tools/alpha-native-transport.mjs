@@ -10,6 +10,27 @@ import { fixture, identity, register, operation } from '../test/helpers/alpha-fi
 import { legacyRoot, messageRef } from '../multidevice/registry.mjs';
 import { sealMessage, openMessage } from '../../client/web/device_crypto.mjs';
 
+// Alpha wire payload agreement (mirror of alpha-client.mjs, zcode/pwa-parity).
+const REPLY_PREVIEW_LIMIT = 2000;
+function encodePayload(text, reply) {
+  return JSON.stringify({ shade: 1, t: text, r: { ref: reply.ref, from: reply.from,
+    text: reply.text.slice(0, REPLY_PREVIEW_LIMIT) } });
+}
+function decodePayload(payload) {
+  try {
+    const parsed = JSON.parse(payload);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) &&
+      parsed.shade === 1 && typeof parsed.t === 'string' &&
+      (parsed.r === null || parsed.r === undefined || (typeof parsed.r === 'object' &&
+        typeof parsed.r.ref === 'string' && typeof parsed.r.from === 'string' &&
+        typeof parsed.r.text === 'string'))) {
+      return { text: parsed.t, reply: parsed.r ? { ref: parsed.r.ref, from: parsed.r.from,
+        text: parsed.r.text } : null };
+    }
+  } catch { /* JSON-like plain text renders unchanged. */ }
+  return { text: payload, reply: null };
+}
+
 let f, web, wc, nc, nativeGenesis, nativeManifest, nativeRoot;
 const nativeAccount = 'native_android';
 console.log(JSON.stringify({ ready: true }));
@@ -39,7 +60,8 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     } else if (request.action === 'web-send') {
       const trust = { senderRoot: web.vault.signingKey, recipientRoot: nativeRoot,
         senderGenesis: web.genesis, recipientGenesis: nativeGenesis };
-      const m = await sealMessage(request.text, [web.manifest], [nativeManifest], web.session, trust);
+      const m = await sealMessage(request.reply ? encodePayload(request.text, request.reply) : request.text,
+        [web.manifest], [nativeManifest], web.session, trust);
       const sent = await operation(f, web, wc, 'send', m);
       if (!sent.result.accepted) throw Error('send rejected');
       result = { ref: messageRef(m) };
@@ -52,7 +74,8 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       const plaintext = await openMessage(bundle, web.session, trust);
       const ref = messageRef(bundle.message);
       await operation(f, web, wc, 'ack', [ref]);
-      result = { plaintext, ref };
+      const decoded = decodePayload(plaintext);
+      result = { plaintext: decoded.text, reply: decoded.reply, ref };
     } else if (request.action === 'web-status') {
       result = (await operation(f, web, wc, 'status', [request.ref])).result;
     } else throw Error('Unknown test action');

@@ -129,6 +129,38 @@ void main() {
     expect(await repo.syncInbox(), 0);
     expect((await repo.getMessages('native_web')).length, 2);
 
+    // Reply-совместимость с PWA (контракт zcode/pwa-parity).
+    final replyRef = opened['ref'] as String;
+    await repo.sendMessage('native_web', 'ответ с Android',
+        reply: {'ref': replyRef, 'from': 'native_web', 'text': toWeb});
+    final openedReply = await request({'action': 'web-fetch-open'});
+    expect(openedReply['plaintext'], 'ответ с Android');
+    expect((openedReply['reply'] as Map)['ref'], replyRef);
+    expect((openedReply['reply'] as Map)['text'], toWeb);
+    await request({
+      'action': 'web-send',
+      'text': 'ответ с Web',
+      'reply': {'ref': replyRef, 'from': 'native_android', 'text': toWeb}
+    });
+    expect(await repo.syncInbox(), 1);
+    final withReply = await repo.getMessages('native_web');
+    final lastMsg = withReply.last;
+    expect(lastMsg['text'], 'ответ с Web');
+    expect((lastMsg['reply'] as Map)['from'], 'native_android');
+    expect((lastMsg['reply'] as Map)['text'], toWeb);
+
+    // «Удалить у себя»: входящее и исходящее исчезают локально.
+    final incomingRef = lastMsg['ref'] as String;
+    await repo.deleteLocal(incomingRef);
+    expect(
+        (await repo.getMessages('native_web'))
+            .any((m) => m['ref'] == incomingRef),
+        false);
+    await repo.deleteLocal(replyRef);
+    expect(
+        (await repo.getMessages('native_web')).any((m) => m['ref'] == replyRef),
+        false);
+
     // Продление lease и отправка после него.
     await repo.renewLease(force: true);
     final renewed = await store.loadAccount('native_android');

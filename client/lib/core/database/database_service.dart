@@ -339,7 +339,8 @@ class DatabaseService {
         message_id  TEXT NOT NULL,
         created_at  INTEGER NOT NULL,
         payload     TEXT NOT NULL,
-        status      TEXT NOT NULL DEFAULT 'received'
+        status      TEXT NOT NULL DEFAULT 'received',
+        acked       INTEGER NOT NULL DEFAULT 0
       )
     ''');
     await db.execute('''
