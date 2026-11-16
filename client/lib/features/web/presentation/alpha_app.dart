@@ -636,7 +636,8 @@ class _ConversationState extends State<_Conversation>
         restored = true;
         _trackBottom();
       } else if (added.isNotEmpty && atBottom) {
-        scroll.animateTo(scroll.position.maxScrollExtent,
+        // Reversed list: the latest message lives at offset 0.
+        scroll.animateTo(0,
             duration: ShadeMotion.duration(context, 180),
             curve: Curves.easeOut);
       }

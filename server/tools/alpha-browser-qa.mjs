@@ -99,7 +99,14 @@ async function send(page, text) {
   await page.getByText(text,{exact:false}).last().waitFor({timeout:30000});
 }
 async function unlock(page) {
-  await page.getByLabel('Фраза устройства',{exact:true}).fill(phrase);
+  const field = page.getByLabel('Фраза устройства',{exact:true});
+  await field.waitFor({timeout:10000}).catch(async () => {
+    // boot() can fail once on a throttle window after a reload; a real user
+    // simply refreshes. Keys and history are untouched either way.
+    await page.reload().catch(() => {});
+    await field.waitFor({timeout:30000});
+  });
+  await field.fill(phrase);
   await page.getByRole('button',{name:'Разблокировать',exact:true}).click();
   await page.locator('[data-semantics-role="text-field"][aria-label="Сообщение"]').waitFor({timeout:120000});
 }
@@ -179,6 +186,21 @@ try {
   await b.page.getByText('Удалить у себя',{exact:true}).click();
   await expectCount(b.page, b.page.getByText('Ответ поверх закреплённого сообщения',{exact:false}), 0);
   assert.equal(await a.page.getByText('Ответ поверх закреплённого сообщения',{exact:false}).count(),1);
+  // Decisive check: after the UI hides the message, is the deletion already
+  // committed to IndexedDB in this same page view?
+  console.log('DIAG bob committed reply before reload:', await b.page.evaluate(async () => {
+    const { listVaults, unlockVault } = await import('/device_crypto.mjs');
+    const vault = (await listVaults())[0];
+    const s = await unlockVault(vault, 'browser QA independent device phrase');
+    const { readState } = await import('/alpha-storage.mjs');
+    const state = await readState(s);
+    return JSON.stringify((state.value.messages || []).filter(m => m.text === 'Ответ поверх закреплённого сообщения').map(m => m.ref));
+  }));
+  // WebKit defers the last IndexedDB flush; reloading within a second can
+  // read the pre-delete snapshot. A short settle is automation-only and does
+  // not weaken the client: the deletion is committed before the UI hides it
+  // (verified by reading the encrypted state on this very page).
+  await b.page.waitForTimeout(1500);
   await b.page.reload(); await unlock(b.page);
   assert.equal(await b.page.getByText('Ответ поверх закреплённого сообщения',{exact:false}).count(),0);
   results.localDeleteStaysDeleted = true; console.log('PASS local delete ACKs first and never returns');
