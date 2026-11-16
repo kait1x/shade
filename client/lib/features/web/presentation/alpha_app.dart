@@ -382,6 +382,7 @@ class _ConversationState extends State<_Conversation>
   Set<String>? known;
   Timer? positionTimer;
   bool restored = false, atBottom = true;
+  int unseen = 0;
   Map<String, dynamic>? replyTo;
   late final String? activeAccount;
   @override
@@ -403,6 +404,7 @@ class _ConversationState extends State<_Conversation>
   void _scroll() {
     if (!scroll.hasClients || !restored) return;
     atBottom = scroll.position.extentAfter < 80;
+    if (atBottom && unseen != 0) setState(() => unseen = 0);
     positionTimer?.cancel();
     positionTimer = Timer(const Duration(milliseconds: 180), () {
       _savePosition();
@@ -484,16 +486,59 @@ class _ConversationState extends State<_Conversation>
   void _jumpToBottom([int attempts = 6]) {
     if (!mounted || !scroll.hasClients) return;
     scroll.jumpTo(scroll.position.maxScrollExtent);
+    _trackBottom();
     if (attempts > 0) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        // Retry on the raw extent: the atBottom flag may transiently lag while
+        // lazily built items keep growing maxScrollExtent.
         if (mounted &&
-            atBottom &&
             scroll.hasClients &&
             scroll.position.extentAfter > 1) {
           _jumpToBottom(attempts - 1);
         }
       });
     }
+  }
+
+  // Lazy list extents keep growing for a few frames after a jump, without new
+  // scroll notifications; re-derive atBottom until they settle.
+  void _trackBottom([int attempts = 5]) {
+    if (!mounted || !scroll.hasClients) return;
+    final bottomNow = scroll.position.extentAfter < 80;
+    if (bottomNow != atBottom) {
+      setState(() => atBottom = bottomNow);
+    }
+    if (attempts > 0) {
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _trackBottom(attempts - 1));
+    }
+  }
+
+  void _toLatest() {
+    if (!scroll.hasClients) return;
+    if (unseen != 0) setState(() => unseen = 0);
+    scroll.animateTo(scroll.position.maxScrollExtent,
+        duration: ShadeMotion.duration(context, 180), curve: Curves.easeOut);
+    _followBottom();
+  }
+
+  // Lazy items keep growing maxScrollExtent while the animation runs, and a
+  // TickerFuture does not complete on natural end, so follow by frames: keep
+  // the bottom in sight until the position actually stops moving.
+  void _followBottom([int frames = 40]) {
+    if (!mounted || !scroll.hasClients || frames <= 0) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !scroll.hasClients) return;
+      final position = scroll.position;
+      if (position.extentAfter > 1) {
+        if (!position.isScrollingNotifier.value) {
+          position.animateTo(position.maxScrollExtent,
+              duration: ShadeMotion.duration(context, 180),
+              curve: Curves.easeOut);
+        }
+        _followBottom(frames - 1);
+      }
+    });
   }
 
   @override
@@ -530,13 +575,20 @@ class _ConversationState extends State<_Conversation>
         ids = items.map((m) => m['ref'] as String).toSet();
     final added = known == null ? <String>{} : ids.difference(known!);
     known = ids;
+    // Count only the peer's messages that arrived while scrolled away; own
+    // messages force the usual follow-to-bottom behaviour instead.
+    if (restored && !atBottom && added.isNotEmpty) {
+      unseen += items
+          .where((m) => added.contains(m['ref']) && m['from'] != c.account)
+          .length;
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !scroll.hasClients) return;
       if (!restored) {
         final saved = c.positions[peer] as Map?;
         if (saved == null || saved['bottom'] == true) _jumpToBottom();
         restored = true;
-        atBottom = scroll.position.extentAfter < 80;
+        _trackBottom();
       } else if (added.isNotEmpty && atBottom) {
         scroll.animateTo(scroll.position.maxScrollExtent,
             duration: ShadeMotion.duration(context, 180),
@@ -622,7 +674,8 @@ class _ConversationState extends State<_Conversation>
                           description: c.pinned(peer)
                               ? 'Сообщения шифруются на устройстве.\nНачните с простого «Привет».'
                               : 'Сравните отпечатки через доверенный канал,\nчтобы начать безопасную переписку.')
-                      : ListView.builder(
+                      : Stack(children: [
+                          ListView.builder(
                           controller: scroll,
                           padding: const EdgeInsets.only(top: 8, bottom: 16),
                           itemCount: items.length,
@@ -674,7 +727,42 @@ class _ConversationState extends State<_Conversation>
                                               ? 'Вы'
                                               : peer)),
                             ]);
-                          })))),
+                          }),
+                          // Live scroll truth for the jump button: lazy list
+                          // extents grow without new notifications, so the
+                          // flag fields alone cannot be trusted here.
+                          ListenableBuilder(
+                              listenable: scroll,
+                              builder: (context, _) => Align(
+                                  alignment: Alignment.bottomRight,
+                                  child: restored &&
+                                          scroll.hasClients &&
+                                          scroll.position.extentAfter > 180
+                                      ? Padding(
+                                          padding: const EdgeInsets.only(
+                                              right: 16, bottom: 12),
+                                          child: FloatingActionButton.small(
+                                              key: const Key(
+                                                  'jump-to-latest'),
+                                              heroTag: 'alpha-latest',
+                                              tooltip: unseen > 0
+                                                  ? 'Новых сообщений: $unseen. К последним'
+                                                  : 'К последним сообщениям',
+                                              backgroundColor: const Color(
+                                                  0xFF29292D),
+                                              onPressed: _toLatest,
+                                              child: unseen > 0
+                                                  ? Text('$unseen',
+                                                      style:
+                                                          const TextStyle(
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .w700))
+                                                  : const Icon(Icons
+                                                      .arrow_downward_rounded,
+                                                      size: 21)))
+                                      : null)),
+                        ])))),
       if (!c.pinned(peer))
         SafeArea(
             top: false,

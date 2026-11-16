@@ -261,6 +261,77 @@ void main() {
     c.dispose();
   });
 
+  testWidgets(
+      'Alpha jump-to-latest counts unseen peer messages while scrolled away',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final c = AlphaController((_, __) async {});
+    final data = <String, dynamic>{
+      'account': 'alice',
+      'selected': 'bob',
+      'connected': true,
+      'peers': [
+        {'account': 'bob', 'pinned': true}
+      ],
+      'messages': [
+        for (var i = 0; i < 8; i++)
+          {
+            'ref': '$i',
+            'from': i.isEven ? 'alice' : 'bob',
+            'to': i.isEven ? 'bob' : 'alice',
+            'text': i == 4 ? 'Высокое сообщение\n' * 100 : 'Сообщение $i',
+            'createdAt': 1700000000000 + i,
+            'status': 'received',
+            'devices': [],
+          }
+      ],
+    };
+    // Restore chains and lazy list extents converge over scheduled frames;
+    // post-frame callbacks alone do not schedule work for pumpAndSettle.
+    Future<void> settle() async {
+      for (var i = 0; i < 40; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+    }
+
+    c.apply(data);
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await settle();
+    // At the latest message there is no jump button.
+    expect(find.byKey(const Key('jump-to-latest')), findsNothing);
+    await tester.drag(find.byType(ListView), const Offset(0, 500));
+    await settle();
+    expect(find.byKey(const Key('jump-to-latest')), findsOneWidget);
+    // A peer message arrives while away: count it, no forced scroll.
+    final incoming = {
+      'ref': '8',
+      'from': 'bob',
+      'to': 'alice',
+      'text': 'Ответ пока вы читали историю',
+      'createdAt': 1700000000008,
+      'status': 'received',
+      'devices': [],
+    };
+    c.apply({
+      ...data,
+      'messages': [...(data['messages'] as List), incoming],
+    });
+    await settle();
+    expect(
+        find.byTooltip('Новых сообщений: 1. К последним'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('jump-to-latest')));
+    await settle();
+    expect(find.byKey(const Key('jump-to-latest')), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
   for (final width in [320.0, 390.0, 430.0, 768.0, 1440.0]) {
     testWidgets('Alpha chat, list and profile fit $width with large text',
         (tester) async {

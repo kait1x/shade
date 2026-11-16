@@ -64,6 +64,10 @@ async function pin(page, account, code) {
   await page.locator('dialog').waitFor({state:'hidden'});
 }
 async function send(page, text) {
+  // A scrolled-away user taps «К последним» first; the jump button otherwise
+  // overlaps the composer send button in the 390px viewport.
+  const jump = page.getByRole('button', { name: /К последним/ });
+  if (await jump.count()) await jump.first().click().catch(() => {});
   const editor = page.locator('input[placeholder="Сообщение"]:visible, textarea[placeholder="Сообщение"]:visible');
   try {
     await page.locator('[data-semantics-role="text-field"][aria-label="Сообщение"]').click({timeout: 4000});
