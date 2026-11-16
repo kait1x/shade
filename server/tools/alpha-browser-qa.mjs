@@ -9,6 +9,11 @@ import { randomBytes, createHash, X509Certificate } from 'node:crypto';
 import { fixture } from '../test/helpers/alpha-fixture.mjs';
 
 const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// Fail fast with a clear message when the Flutter UI bundle is not built yet.
+const flutterBootstrap = path.join(serverRoot, '..', 'client', 'build', 'web-alpha', 'flutter_bootstrap.js');
+try { await fs.access(flutterBootstrap); } catch {
+  throw Error('Flutter web-alpha build missing: run "python client/tools/build_web_alpha.py" from the repo root first');
+}
 const output = path.join(serverRoot, 'build', 'alpha-browser'); await fs.mkdir(output, { recursive: true });
 const run = await fs.mkdtemp(path.join(output, 'run-'));
 execFileSync('python', [path.join(serverRoot, 'test/make-test-cert.py'), path.join(run,'certs')]);
