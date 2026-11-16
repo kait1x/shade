@@ -11,7 +11,7 @@ import { Server } from 'socket.io';
 import { createAuthProof } from './auth-proof.js';
 import { createDeviceRegistry, operationDigest } from './multidevice/registry.mjs';
 import { createV2Stickers } from './multidevice/v2-stickers.mjs';
-import { check } from '../client/web/protocol/device-v2.mjs';
+import { check, ACCOUNT } from '../client/web/protocol/device-v2.mjs';
 import { alphaStore } from './multidevice/alpha-store.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -162,6 +162,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     let result;
     if (op === 'send') {
       result = await registry.send(body, auth);
+      relations.add(pairKey(body.from, body.to));
       for (const e of body.envelopes) io.to(room(e.account, e.deviceId)).emit('inbox');
     } else if (op === 'fetch') result = await registry.fetch(auth);
     else if (op === 'ack') {
@@ -198,9 +199,64 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       next();
     } catch { next(Error('device_auth_required')); }
   });
-  io.on('connection', socket => { socket.join(room(socket.data.account, socket.data.id)); socket.emit('inbox'); });
+  // Typing/presence (contract C2): in-memory only, no message content, and
+  // delivered only between accounts with an existing message relationship —
+  // an authenticated stranger cannot watch or ping arbitrary accounts.
+  const pairKey = (a, b) => [a, b].sort().join('|');
+  const relations = new Set();
+  for (const [ref, delivery] of Object.entries(registry.exportSnapshot().delivery || {})) {
+    const from = ref.split(':')[0];
+    for (const d of delivery.devices || []) relations.add(pairKey(from, d.account));
+  }
+  const watchers = new Map(); // account -> Set<socket>
+  const onlineCount = new Map(); // account -> connected device sockets
+  const lastTyping = new Map(); // account -> timestamp (2s throttle)
+  const broadcastPresence = (account, online) => {
+    for (const socket of watchers.get(account) || []) {
+      if (socket.connected) socket.emit('presence', { account, online });
+    }
+  };
+  io.on('connection', socket => {
+    const account = socket.data.account;
+    socket.join(room(account, socket.data.id));
+    socket.emit('inbox');
+    onlineCount.set(account, (onlineCount.get(account) || 0) + 1);
+    broadcastPresence(account, true);
+    socket.on('watch', data => {
+      const peer = data?.peer;
+      if (typeof peer !== 'string' || !ACCOUNT.test(peer) || peer === account ||
+        !relations.has(pairKey(account, peer))) return;
+      const set = watchers.get(peer) || new Set();
+      if (set.size >= 100) return;
+      set.add(socket); watchers.set(peer, set);
+      socket.emit('presence', { account: peer, online: (onlineCount.get(peer) || 0) > 0 });
+    });
+    socket.on('unwatch', data => {
+      const peer = data?.peer;
+      if (typeof peer === 'string') watchers.get(peer)?.delete(socket);
+    });
+    socket.on('typing', data => {
+      const peer = data?.peer;
+      if (typeof peer !== 'string' || !ACCOUNT.test(peer) ||
+        !relations.has(pairKey(account, peer))) return;
+      const now = Date.now();
+      if ((lastTyping.get(account) || 0) > now - 2000) return;
+      lastTyping.set(account, now);
+      for (const target of io.sockets.sockets.values()) {
+        if (target.data.account === peer) target.emit('typing', { account, until: now + 3000 });
+      }
+    });
+    socket.on('disconnect', () => {
+      for (const set of watchers.values()) set.delete(socket);
+      const left = (onlineCount.get(account) || 1) - 1;
+      if (left <= 0) { onlineCount.delete(account); broadcastPresence(account, false); }
+      else onlineCount.set(account, left);
+    });
+  });
   const cleanup = setInterval(() => {
     for (const [sid, s] of sessions) if (s.expiresAt <= Date.now()) sessions.delete(sid);
+    const typingCutoff = Date.now() - 60000;
+    for (const [account, at] of lastTyping) if (at <= typingCutoff) lastTyping.delete(account);
     for (const socket of io.sockets.sockets.values()) {
       const dir = registry.directory(socket.data.account).history.at(-1);
       if (!sessions.has(socket.data.sid) || !dir.devices.some(d => d.id === socket.data.id)) socket.disconnect(true);
