@@ -19,7 +19,7 @@ export function legacyRoot(pem) {
 export async function createDeviceRegistry({ users, persist, snapshot, clock = Date.now, verifyGoogle }) {
   check(users instanceof Map && typeof persist === 'function');
   // Additive snapshot: never rewrite users, legacy messages, tokens or keys.
-  let state = { format: 2, accounts: {}, queues: {}, receipts: {}, delivery: {} };
+  let state = { format: 2, accounts: {}, queues: {}, receipts: {}, delivery: {}, stickers: {} };
   const initialAccounts = [];
   for (const [account, user] of users) {
     check(/^[a-z0-9_]{3,32}$/.test(account), 'Invalid legacy account');
@@ -29,6 +29,7 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
   state.accounts = Object.fromEntries(initialAccounts);
   if (snapshot) {
     check(snapshot.format === 2 && snapshot.accounts && snapshot.queues && snapshot.receipts, 'Invalid snapshot');
+    check(snapshot.stickers === undefined || (snapshot.stickers && typeof snapshot.stickers === 'object' && !Array.isArray(snapshot.stickers)), 'Invalid stickers snapshot');
     for (const [account, record] of Object.entries(snapshot.accounts)) {
       if (Object.hasOwn(state.accounts, account)) {
         check(state.accounts[account].root === record.root && record.legacy === true, 'Snapshot root substitution');
@@ -55,6 +56,7 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     check([...users.keys()].every(account => Object.hasOwn(snapshot.accounts, account)), 'Incomplete migration snapshot');
     state = structuredClone(snapshot);
     state.delivery ||= {};
+    state.stickers ||= {};
   }
   const challenges = new Map();
   let tail = Promise.resolve();
@@ -83,6 +85,9 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
   }
   return {
     exportSnapshot: () => structuredClone(state),
+    // Generic serialized transaction for adapter-owned sections (stickers/
+    // profiles). Single writer: persist happens before state is visible.
+    updateState: work => serial(() => transaction(async next => { await work(next); })),
     accountForGoogle: sub => Object.entries(state.accounts).find(([, r]) => r.googleSub === sub)?.[0] || null,
     list: () => Object.entries(state.accounts).filter(([, r]) => r.history.length)
       .map(([account]) => ({ account })),

@@ -4,6 +4,7 @@ import https from 'node:https';
 import { createAlphaServer } from '../../alpha.mjs';
 import { hash, sign, requestText, messageText } from '../../../client/web/protocol/device-v2.mjs';
 import * as c from '../../../client/web/device_crypto.mjs';
+import { stickersOperation } from '../../multidevice/v2-stickers.mjs';
 
 export async function freePort() {
   const socket = net.createServer(); await new Promise(r => socket.listen(0, '127.0.0.1', r));
@@ -17,10 +18,11 @@ export async function fixture(options) {
       start: ({ state }) => `${origin}/auth/google/callback?state=${state}&code=${encodeURIComponent(loginSub)}`,
       finish: async code => { if (!code.startsWith('synthetic-')) throw Error('Invalid test code'); return { googleSub: code }; } } });
   await new Promise(r => instance.server.listen(port, '127.0.0.1', r));
-  async function request(route, body, cookie = '') {
+  async function request(route, body, cookie = '', headers = {}, method) {
+    const httpMethod = method || (body === undefined ? 'GET' : 'POST');
     if (options.tls) return new Promise((resolve, reject) => {
-      const req = https.request(origin + route, { ca: options.tls.cert, method: body === undefined ? 'GET' : 'POST',
-        headers: { Cookie: cookie, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) } }, res => {
+      const req = https.request(origin + route, { ca: options.tls.cert, method: httpMethod,
+        headers: { Cookie: cookie, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers } }, res => {
         let content = ''; res.on('data', bytes => { content += bytes; });
         res.on('end', () => resolve({ response: { status: res.statusCode, headers: {
           get: key => res.headers[key.toLowerCase()], getSetCookie: () => res.headers['set-cookie'] || [] } },
@@ -29,8 +31,8 @@ export async function fixture(options) {
       req.on('error', reject); if (body !== undefined) req.write(JSON.stringify(body)); req.end();
     });
     const response = await fetch(origin + route, { redirect: 'manual', headers: { Cookie: cookie,
-      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-      ...(body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) }) });
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers },
+      ...(body === undefined ? {} : { method: httpMethod, body: JSON.stringify(body) }) });
     return { response, result: (response.headers.get('content-type') || '').includes('application/json') ? await response.json() : null };
   }
   async function login(sub) {
@@ -74,3 +76,15 @@ export async function operation(f, who, cookie, op, body = null) {
 }
 export const trust = (a,b) => ({ senderRoot: a.vault.signingKey, recipientRoot: b.vault.signingKey,
   senderGenesis: a.genesis, recipientGenesis: b.genesis });
+// Device-proof authorized call into the adapted v1 stickers/profiles routes.
+// route is router-relative ('/stickers/gift'); digest binds method+path+body.
+export async function stickers(f, who, cookie, method, route, body = null) {
+  const operation = await stickersOperation(method, route, body);
+  const { account, id } = who.session;
+  const challenge = await f.request('/api/v2/challenge', { account, id, operation }, cookie);
+  if (challenge.response.status !== 200) throw Error(JSON.stringify(challenge.result));
+  const auth = { account, id, nonce: challenge.result.nonce,
+    proof: await sign(requestText(account, id, challenge.result.nonce, operation), who.session.signing) };
+  return f.request('/api/v2' + route, method === 'GET' ? undefined : body, cookie,
+    { 'x-device-auth': JSON.stringify(auth) }, method);
+}

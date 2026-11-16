@@ -10,6 +10,7 @@ import { OAuth2Client } from 'google-auth-library';
 import { Server } from 'socket.io';
 import { createAuthProof } from './auth-proof.js';
 import { createDeviceRegistry, operationDigest } from './multidevice/registry.mjs';
+import { createV2Stickers } from './multidevice/v2-stickers.mjs';
 import { check } from '../client/web/protocol/device-v2.mjs';
 import { alphaStore } from './multidevice/alpha-store.mjs';
 
@@ -180,6 +181,9 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     }
     res.json(result);
   }));
+  // Verified v1 stickers/profiles business logic behind device-v2 auth only
+  // (Google session + one-time device proof). Storage: encrypted alpha snapshot.
+  app.use('/api/v2', requireGoogle, createV2Stickers({ registry, io }));
   // Socket events are wake-up hints only. Lost hints are repaired by signed
   // fetch on reconnect/foreground and periodic polling; receipt != socket emit.
   io.use(async (socket, next) => {
