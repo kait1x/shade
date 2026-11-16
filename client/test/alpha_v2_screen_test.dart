@@ -250,4 +250,25 @@ void main() {
     // Остаётся только цитата в reply отправленного сообщения.
     expect(find.text('привет с Web'), findsOneWidget);
   });
+
+  testWidgets('favorites self-chat opens without contact confirmation',
+      (tester) async {
+    final backend = FakeBackend()
+      ..session = true
+      ..isEnrolled = true;
+    await tester.pumpWidget(_wrap(backend));
+    await tester.pumpAndSettle();
+    expect(find.text('Избранное'), findsOneWidget);
+    await tester.tap(find.text('Избранное'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+        find.descendant(
+            of: find.byType(MessageInput), matching: find.byType(TextField)),
+        'заметка');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('send-message')));
+    await tester.pumpAndSettle();
+    expect(backend.sent, ['заметка']);
+    expect(backend.contactList, isEmpty);
+  });
 }

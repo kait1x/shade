@@ -52,6 +52,18 @@ async function main() {
     vectors.manifest.push({ input: m, text: manifestText(m), hash: await hash(manifestText(m)) });
   }
   vectors.message.push({ input: message, text: messageText(message), hash: await hash(messageText(message)) });
+  // Self-chat vectors: one roster (1 device) and two devices, identical tips.
+  const selfDigest = await hash(manifestText(manifest2));
+  const self1 = { version: 2, id: idHex, from: 'alice_android', deviceId: 'primary',
+    to: 'alice_android', fromRevision: 2, toRevision: 2, fromDigest: selfDigest, toDigest: selfDigest,
+    createdAt: now + 2000, envelopes: [
+      { account: 'alice_android', deviceId: 'primary', payload: { k, d } }], signature: '' };
+  const self2 = { ...self1, envelopes: [
+    { account: 'alice_android', deviceId: devB.id, payload: { k, d } },
+    { account: 'alice_android', deviceId: 'primary', payload: { k, d } }] };
+  for (const sm of [self1, self2]) {
+    vectors.message.push({ input: sm, text: messageText(sm), hash: await hash(messageText(sm)) });
+  }
   for (const id of ['primary', devB.id]) {
     const text = requestText('alice_android', id, nonce, op);
     vectors.request.push({ account: 'alice_android', id, nonce, operation: op, text, hash: await hash(text) });

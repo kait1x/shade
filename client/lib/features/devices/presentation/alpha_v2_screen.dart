@@ -338,7 +338,10 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
         backgroundColor: ShadeColors.black,
         appBar: AppBar(
             backgroundColor: ShadeColors.black,
-            title: Text(_stage == _Stage.chat ? _peer ?? '' : 'Shade Alpha',
+            title: Text(
+                _stage == _Stage.chat
+                    ? (_peer == _backend.account ? 'Избранное' : _peer ?? '')
+                    : 'Shade Alpha',
                 style: const TextStyle(
                     color: ShadeColors.textPrimary, fontSize: 17)),
             leading: _stage == _Stage.chat
@@ -555,6 +558,18 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
             ]),
           ])),
       const SizedBox(height: 20),
+      ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.bookmark_rounded,
+              color: ShadeColors.textMuted, size: 22),
+          title: const Text('Избранное',
+              style: TextStyle(color: ShadeColors.textPrimary, fontSize: 14)),
+          subtitle: const Text('Заметки себе — E2EE на все ваши устройства',
+              style: TextStyle(color: ShadeColors.textSecondary, fontSize: 12)),
+          trailing: const Icon(Icons.chevron_right_rounded,
+              color: ShadeColors.textMuted),
+          onTap: () => _openChat(_backend.account!)),
+      const SizedBox(height: 8),
       Row(children: [
         const Expanded(
             child: Text('Контакты',
@@ -611,7 +626,8 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
                     itemCount: _messages.length,
                     itemBuilder: (context, index) {
                       final m = _messages[index];
-                      final isMine = m['direction'] == 'out';
+                      final isMine = m['direction'] == 'out' ||
+                          m['peer'] == _backend.account;
                       final devices = _delivery[m['ref']] ?? [];
                       final ack = devices
                           .where((d) => d['acknowledgedAt'] != null)

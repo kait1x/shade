@@ -218,6 +218,31 @@ void main() {
           throwsA(isA<ProtocolException>()));
     });
 
+    test('self-chat verifies with one roster; mismatched tips are rejected', () async {
+      final selfMessage = <String, dynamic>{
+        'version': 2, 'id': 'aa' * 32, 'from': 'alice_android', 'deviceId': 'primary',
+        'to': 'alice_android', 'fromRevision': 1, 'toRevision': 1,
+        'fromDigest': sha256Hex(manifestText(manifest)),
+        'toDigest': sha256Hex(manifestText(manifest)),
+        'createdAt': now + 2000,
+        'envelopes': [
+          {'account': 'alice_android', 'deviceId': 'primary',
+            'payload': jsonDecode(await crypto.encryptData('заметка', nativePublic))}
+        ],
+        'signature': ''
+      };
+      selfMessage['signature'] =
+          await crypto.signData(messageText(selfMessage), nativePrivate);
+      expect(
+          await verifier.verifyMessage(selfMessage, manifest, manifest, now: now + 3000),
+          sha256Hex(messageText(selfMessage)));
+      final stale = Map<String, dynamic>.from(selfMessage)..['toRevision'] = 2;
+      expect(() => verifier.verifyMessage(stale, manifest, manifest, now: now + 3000),
+          throwsA(predicate((e) => e.toString().contains('Stale device directory'))));
+      final empty = Map<String, dynamic>.from(selfMessage)..['envelopes'] = [];
+      expect(() => messageText(empty), throwsA(isA<ProtocolException>()));
+    });
+
     test('RSA-2048 SPKI is rejected by the v2 key validator', () async {
       final small = await RSA.generate(2048);
       final smallSpki = await spkiOf(small.publicKey);

@@ -177,10 +177,14 @@ export function messageText(m) {
     'fromDigest', 'toDigest', 'createdAt', 'envelopes', 'signature']);
   check(m.version === 2 && typeof m.id === 'string' && /^[a-f0-9]{64}$/.test(m.id) &&
     typeof m.from === 'string' && typeof m.to === 'string' && ACCOUNT.test(m.from) &&
-    ACCOUNT.test(m.to) && m.from !== m.to && typeof m.deviceId === 'string' && DEVICE.test(m.deviceId));
+    ACCOUNT.test(m.to) && typeof m.deviceId === 'string' && DEVICE.test(m.deviceId));
   check([m.fromRevision, m.toRevision].every(n => Number.isSafeInteger(n) && n >= 1) && Number.isSafeInteger(m.createdAt));
   check(/^[a-f0-9]{64}$/.test(m.fromDigest) && /^[a-f0-9]{64}$/.test(m.toDigest));
-  check(Array.isArray(m.envelopes) && m.envelopes.length >= 2 && m.envelopes.length <= MAX_DEVICES * 2);
+  // Self-chat («Избранное»): one roster, 1..MAX_DEVICES envelopes. Ordinary
+  // messages keep the exact previous canonical text (byte-compatible).
+  const self = m.from === m.to;
+  check(Array.isArray(m.envelopes) && m.envelopes.length >= (self ? 1 : 2) &&
+    m.envelopes.length <= (self ? MAX_DEVICES : MAX_DEVICES * 2));
   let previous = '';
   for (const e of m.envelopes) {
     fields(e, ['account', 'deviceId', 'payload']); fields(e.payload, ['k', 'd']);
@@ -197,13 +201,16 @@ export function messageText(m) {
 }
 export async function verifyMessage(m, sender, recipient, now = Date.now()) {
   const text = messageText(m);
+  const self = m.from === m.to;
   check(m.from === sender.account && m.to === recipient.account, 'Wrong accounts');
   check(m.fromRevision === sender.revision && m.toRevision === recipient.revision &&
     m.fromDigest === await hash(manifestText(sender)) && m.toDigest === await hash(manifestText(recipient)), 'Stale device directory');
+  // Self-chat must reference one identical directory tip on both sides.
+  if (self) check(m.fromRevision === m.toRevision && m.fromDigest === m.toDigest, 'Stale device directory');
   check(m.createdAt <= now + 30000 && m.createdAt >= now - 7 * 24 * 60 * 60 * 1000, 'Expired message');
   const device = sender.devices.find(d => d.id === m.deviceId);
   check(device, 'Revoked or unknown sender device');
-  const expected = [sender, recipient].flatMap(roster => roster.devices.map(d => `${roster.account}:${d.id}`)).sort();
+  const expected = (self ? [sender] : [sender, recipient]).flatMap(roster => roster.devices.map(d => `${roster.account}:${d.id}`)).sort();
   check(JSON.stringify(m.envelopes.map(e => `${e.account}:${e.deviceId}`)) === JSON.stringify(expected), 'Incomplete recipient fanout');
   check(await verify(text, m.signature, device.signingKey), 'Invalid device message signature');
   return hash(text);

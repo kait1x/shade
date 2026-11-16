@@ -161,6 +161,15 @@ void main() {
         (await repo.getMessages('native_web')).any((m) => m['ref'] == replyRef),
         false);
 
+    // Self-chat («Избранное») против реального сервера: fanout на свои
+    // устройства, копия уже сохранена outbox-ом, очередь ACK-ается.
+    await repo.sendMessage('native_android', 'заметка себе');
+    expect(await repo.syncInbox(), 0);
+    final selfMsgs = await repo.getMessages('native_android');
+    expect(selfMsgs.single['text'], 'заметка себе');
+    expect(selfMsgs.single['direction'], 'out');
+    expect(await repo.syncInbox(), 0);
+
     // Продление lease и отправка после него.
     await repo.renewLease(force: true);
     final renewed = await store.loadAccount('native_android');

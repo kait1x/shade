@@ -128,8 +128,15 @@ class DeviceV2Crypto {
     final recipientLatest = recipientHistory.last as Map<String, dynamic>;
     check(senderLatest['account'] == session.account &&
         (senderLatest['devices'] as List).any((d) => d['id'] == session.id));
+    // Self-chat: один ростер/тип; конверты не дедуплицируются постфактум.
+    final self = senderLatest['account'] == recipientLatest['account'];
+    if (self) {
+      check(senderLatest['revision'] == recipientLatest['revision'] &&
+          sha256Hex(manifestText(senderLatest)) == sha256Hex(manifestText(recipientLatest)),
+          'Self directory mismatch');
+    }
     final envelopes = <Map<String, dynamic>>[];
-    for (final roster in [senderLatest, recipientLatest]) {
+    for (final roster in (self ? [senderLatest] : [senderLatest, recipientLatest])) {
       for (final d in (roster['devices'] as List).cast<Map<String, dynamic>>()) {
         envelopes.add({
           'account': roster['account'],

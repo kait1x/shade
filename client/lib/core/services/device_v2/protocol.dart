@@ -189,17 +189,19 @@ String messageText(Map<String, dynamic> m) {
       m['from'] is String && m['to'] is String &&
       accountPattern.hasMatch(m['from'] as String) &&
       accountPattern.hasMatch(m['to'] as String) &&
-      m['from'] != m['to'] &&
       m['deviceId'] is String && devicePattern.hasMatch(m['deviceId'] as String));
   check([m['fromRevision'], m['toRevision']]
           .every((n) => _isSafeInteger(n) && (n as int) >= 1) &&
       _isSafeInteger(m['createdAt']));
   check(hex64Pattern.hasMatch(m['fromDigest'] as String) &&
       hex64Pattern.hasMatch(m['toDigest'] as String));
+  // Self-chat («Избранное»): один ростер, 1..maxDevices конвертов.
+  final self = m['from'] == m['to'];
   final envelopesValue = m['envelopes'];
   check(envelopesValue is List, 'Invalid protocol data');
   final envelopes = envelopesValue as List;
-  check(envelopes.length >= 2 && envelopes.length <= maxDevices * 2,
+  check(envelopes.length >= (self ? 1 : 2) &&
+      envelopes.length <= (self ? maxDevices : maxDevices * 2),
       'Invalid protocol data');
   var previous = '';
   for (final e in envelopes) {
@@ -446,19 +448,24 @@ class DeviceV2Verifier {
       {int? now}) async {
     now ??= DateTime.now().millisecondsSinceEpoch;
     final text = messageText(m);
+    final self = m['from'] == m['to'];
     check(m['from'] == sender['account'] && m['to'] == recipient['account'],
         'Wrong accounts');
     check(m['fromRevision'] == sender['revision'] &&
         m['toRevision'] == recipient['revision'] &&
         m['fromDigest'] == sha256Hex(manifestText(sender)) &&
         m['toDigest'] == sha256Hex(manifestText(recipient)), 'Stale device directory');
+    if (self) {
+      check(m['fromRevision'] == m['toRevision'] && m['fromDigest'] == m['toDigest'],
+          'Stale device directory');
+    }
     final createdAt = m['createdAt'] as int;
     check(createdAt <= now + clockSkewMs && createdAt >= now - maxMessageAgeMs,
         'Expired message');
     final senderDevices = (sender['devices'] as List).cast<Map<String, dynamic>>();
     final device = senderDevices.where((d) => d['id'] == m['deviceId']).firstOrNull;
     check(device != null, 'Revoked or unknown sender device');
-    final expected = [sender, recipient]
+    final expected = (self ? [sender] : [sender, recipient])
         .expand((roster) => (roster['devices'] as List)
             .cast<Map<String, dynamic>>()
             .map((d) => '${roster['account']}:${d['id']}'))

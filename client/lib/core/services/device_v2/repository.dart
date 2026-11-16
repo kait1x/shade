@@ -199,7 +199,15 @@ class V2ChatRepository {
     }
     await renewLease();
     final acc = _requireAccount();
-    final peerData = await _peerDirectory(peer);
+    // Self-chat («Избранное»): свой же каталог, без подтверждения контакта.
+    final peerData = peer == account
+        ? {
+            'root': root,
+            'genesis': acc['genesis'],
+            'history': acc['history'],
+            'checkpoint': acc['checkpoint']
+          }
+        : await _peerDirectory(peer);
     final message = await v2.sealMessage(
         encodePayload(text, reply),
         acc['history'] as List,
@@ -259,20 +267,30 @@ class V2ChatRepository {
         final m = bundle['message'] as Map<String, dynamic>;
         final ref = messageRef(m);
         if (await store.hasRef(ref)) {
-          final existing = await store.messageByRef(ref);
-          if (existing != null && existing['acked'] != true) refs.add(ref);
+          // Already stored (e.g. self-chat sent copy): still ACK the queue
+          // copy so the relay does not redeliver it forever.
+          refs.add(ref);
           continue;
         }
         final peer = (m['from'] == account ? m['to'] : m['from']) as String;
-        final contact = await store.loadContact(peer);
-        if (contact == null || contact['confirmed'] != true) continue;
+        final AccountTrust senderTrust;
+        if (peer == account) {
+          senderTrust = AccountTrust(
+              root: root,
+              genesis: acc['genesis'] as Map<String, dynamic>,
+              checkpoint: acc['checkpoint'] as Map<String, dynamic>);
+        } else {
+          final contact = await store.loadContact(peer);
+          if (contact == null || contact['confirmed'] != true) continue;
+          senderTrust = AccountTrust(
+              root: contact['root'] as String,
+              genesis: contact['genesis'] as Map<String, dynamic>,
+              checkpoint: contact['checkpoint'] as Map<String, dynamic>);
+        }
         await v2.openMessage(
             bundle,
             _session,
-            AccountTrust(
-                root: contact['root'] as String,
-                genesis: contact['genesis'] as Map<String, dynamic>,
-                checkpoint: contact['checkpoint'] as Map<String, dynamic>),
+            senderTrust,
             AccountTrust(
                 root: root,
                 genesis: acc['genesis'] as Map<String, dynamic>,
