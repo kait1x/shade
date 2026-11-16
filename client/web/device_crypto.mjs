@@ -262,7 +262,11 @@ async function database() {
       // Meta store for durability flushes; never mixed with identity records.
       if (event.oldVersion < 2) db.createObjectStore('meta', { keyPath: 'id' });
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
     request.onerror = () => reject(new Error('Encrypted browser storage unavailable'));
     request.onblocked = () => reject(new Error('Close other Shade tabs to open storage'));
   });

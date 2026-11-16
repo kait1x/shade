@@ -10,9 +10,12 @@ async function database() {
       if (event.oldVersion < 2) db.createObjectStore('meta', { keyPath: 'id' });
     };
     request.onsuccess = () => {
+      const db = request.result;
+      // Another tab upgrading the database must not be blocked by this connection.
+      db.onversionchange = () => db.close();
       // Ask for persistent storage (eviction protection); best-effort.
       try { navigator.storage?.persist?.(); } catch { /* unsupported */ }
-      resolve(request.result);
+      resolve(db);
     };
     request.onerror = () => reject(Error('Хранилище недоступно. Ключи не заменены.'));
     request.onblocked = () => reject(Error('Закройте другие вкладки Shade.'));

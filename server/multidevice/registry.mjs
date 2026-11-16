@@ -127,6 +127,10 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
       for (const [key, value] of challenges) if (value.expiresAt <= clock()) challenges.delete(key);
       check(active(state, account, id), 'Revoked or unknown device');
       check(/^[a-f0-9]{64}$/.test(operation) && challenges.size < 1000, 'Invalid operation or challenge limit');
+      // Per-account quota: one account cannot exhaust the global capacity.
+      let perAccount = 0;
+      for (const value of challenges.values()) if (value.account === account) perAccount++;
+      check(perAccount < 100, 'Challenge quota reached');
       const nonce = randomBytes(32).toString('hex');
       challenges.set(nonce, { account, id, operation, expiresAt: clock() + 60000 });
       return nonce;
@@ -217,10 +221,17 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
           if (t.deletedAt <= now - 7 * 24 * 60 * 60 * 1000) delete next.retractions[ref];
         }
         let retracted = 0;
+        let ownTombstones = 0;
+        for (const t of Object.values(next.retractions)) if (t.from === auth.account) ownTombstones++;
         for (const ref of refs) {
           if (next.retractions[ref]) continue;
+          // Only actually-sent messages get tombstones: unknown refs are a
+          // no-op, so a valid device cannot exhaust the cap with fabricated refs.
+          if (!next.receipts[ref]) continue;
+          check(ownTombstones < 2000, 'Retraction quota reached');
           check(Object.keys(next.retractions).length < 10000, 'Retraction capacity reached');
           next.retractions[ref] = { from: auth.account, deletedAt: now };
+          ownTombstones++;
           retracted++;
         }
         const refSet = new Set(refs);

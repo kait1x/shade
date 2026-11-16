@@ -59,19 +59,20 @@ test('retract purges offline queues, is sender-only and idempotent, tombstones a
     assert.equal((await operation(f, alice, ac, 'retract', ['bad-ref'])).response.status, 400);
     assert.equal((await operation(f, alice, ac, 'retract',
       Array.from({ length: 201 }, () => ref1))).response.status, 400);
-    // Unknown ref is a no-op (idempotent), not an error.
+    // Unknown ref is a no-op: no tombstone can be fabricated for never-sent IDs.
     const unknown = `alice_retract:primary:${'ab'.repeat(32)}`;
-    assert.equal((await operation(f, alice, ac, 'retract', [unknown])).result.retracted, 1);
+    assert.equal((await operation(f, alice, ac, 'retract', [unknown])).result.retracted, 0);
+    assert.ok(!(await operation(f, alice, ac, 'retractions', { since: 0 })).result.retractions.some(t => t.ref === unknown));
   } finally { await f.close(); }
 
   // Tombstones survive restart via the encrypted snapshot. Bob sees the three
-  // messages he participated in; the never-sent ref is visible to alice only.
+  // messages he participated in; the never-sent ref produced no tombstone.
   const f2 = await fixture({ dataDir, storageSecret });
   try {
     const bc2 = await f2.login('synthetic-bob');
     const tomb = (await operation(f2, bob, bc2, 'retractions', { since: 0 })).result.retractions;
     assert.equal(tomb.length, 3);
     const ac2 = await f2.login('synthetic-alice');
-    assert.equal((await operation(f2, alice, ac2, 'retractions', { since: 0 })).result.retractions.length, 4);
+    assert.equal((await operation(f2, alice, ac2, 'retractions', { since: 0 })).result.retractions.length, 3);
   } finally { await f2.close(); }
 });

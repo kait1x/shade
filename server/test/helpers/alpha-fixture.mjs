@@ -20,9 +20,11 @@ export async function fixture(options) {
   await new Promise(r => instance.server.listen(port, '127.0.0.1', r));
   async function request(route, body, cookie = '', headers = {}, method) {
     const httpMethod = method || (body === undefined ? 'GET' : 'POST');
+    // Same-origin semantics: real browsers and the native transport send Origin.
+    const baseHeaders = { Origin: origin, ...headers };
     if (options.tls) return new Promise((resolve, reject) => {
       const req = https.request(origin + route, { ca: options.tls.cert, method: httpMethod,
-        headers: { Cookie: cookie, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers } }, res => {
+        headers: { Cookie: cookie, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...baseHeaders } }, res => {
         let content = ''; res.on('data', bytes => { content += bytes; });
         res.on('end', () => resolve({ response: { status: res.statusCode, headers: {
           get: key => res.headers[key.toLowerCase()], getSetCookie: () => res.headers['set-cookie'] || [] } },
@@ -31,7 +33,7 @@ export async function fixture(options) {
       req.on('error', reject); if (body !== undefined) req.write(JSON.stringify(body)); req.end();
     });
     const response = await fetch(origin + route, { redirect: 'manual', headers: { Cookie: cookie,
-      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers },
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...baseHeaders },
       ...(body === undefined ? {} : { method: httpMethod, body: JSON.stringify(body) }) });
     return { response, result: (response.headers.get('content-type') || '').includes('application/json') ? await response.json() : null };
   }

@@ -25,7 +25,7 @@ const SESSION_MS = 8 * 60 * 60 * 1000;
 // route, environment bypass or fake identity provider is shipped to users.
 export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   clientId = '', clientSecret = '', oauthProvider, verifyGoogle, legacyUsers = new Map(), tls,
-  vapidKeys = null, pushSender = null } = {}) {
+  vapidKeys = null, pushSender = null, pushAllowedHosts = null } = {}) {
   check(dataDir && publicOrigin, 'Explicit alpha dataDir and publicOrigin required');
   const origin = new URL(publicOrigin);
   check(origin.origin === publicOrigin && (origin.protocol === 'https:' ||
@@ -54,6 +54,11 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       !/^\d+\.\d+\.\d+\.\d+$/.test(host) &&
       !/^(localhost|.*\.local|.*\.internal)$/i.test(host) &&
       !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|0\.)/.test(host), 'Push endpoint rejected');
+    // Optional operator allowlist of push providers (defense against
+    // DNS-rebinding to arbitrary public hosts).
+    if (pushAllowedHosts && pushAllowedHosts.length) {
+      check(pushAllowedHosts.includes(host), 'Push endpoint host not allowed');
+    }
     check(typeof sub.keys.p256dh === 'string' && typeof sub.keys.auth === 'string' &&
       sub.keys.p256dh.length <= 256 && sub.keys.auth.length <= 256 &&
       /^[A-Za-z0-9_-]+$/.test(sub.keys.p256dh) && /^[A-Za-z0-9_-]+$/.test(sub.keys.auth), 'Invalid push keys');
@@ -145,6 +150,9 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   // code flow (audience, signature, verified email). Device proofs are still
   // required for every operation; the cookie alone never authorizes reads.
   app.post('/api/v2/session/google', rateLimit({ windowMs: 60000, limit: 15 }), wrap(async (req, res) => {
+    // Fail-closed origin: both the PWA (same-origin POST) and the native
+    // transport send Origin; a missing/mismatched Origin is rejected.
+    check(req.headers.origin === publicOrigin, 'Origin required');
     // Audience (the OAuth client ID) is mandatory for ID-token verification.
     check(Boolean(clientId), 'Google OAuth is not configured');
     const { idToken } = req.body || {};
@@ -307,8 +315,10 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       if (typeof peer !== 'string' || !ACCOUNT.test(peer) ||
         !relations.has(pairKey(account, peer))) return;
       const now = Date.now();
-      if ((lastTyping.get(account) || 0) > now - 2000) return;
-      lastTyping.set(account, now);
+      // Per-pair throttle: typing to one peer must not mute another conversation.
+      const throttleKey = `${account}|${peer}`;
+      if ((lastTyping.get(throttleKey) || 0) > now - 2000) return;
+      lastTyping.set(throttleKey, now);
       for (const target of io.sockets.sockets.values()) {
         if (target.data.account === peer) target.emit('typing', { account, until: now + 3000 });
       }
@@ -354,7 +364,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     clientId: process.env.ALPHA_GOOGLE_CLIENT_ID, clientSecret: process.env.ALPHA_GOOGLE_CLIENT_SECRET,
     vapidKeys: process.env.ALPHA_VAPID_PUBLIC_KEY && process.env.ALPHA_VAPID_PRIVATE_KEY ? {
       publicKey: process.env.ALPHA_VAPID_PUBLIC_KEY, privateKey: process.env.ALPHA_VAPID_PRIVATE_KEY,
-      subject: process.env.ALPHA_VAPID_SUBJECT } : null });
+      subject: process.env.ALPHA_VAPID_SUBJECT } : null,
+    pushAllowedHosts: process.env.ALPHA_PUSH_ALLOWED_HOSTS
+      ? process.env.ALPHA_PUSH_ALLOWED_HOSTS.split(',').map(h => h.trim()).filter(Boolean) : null });
   const port = Number(process.env.ALPHA_PORT || 3101);
   instance.server.once('error', error => {
     console.error(`Alpha listener failed: ${error.code || 'unknown'}`);
