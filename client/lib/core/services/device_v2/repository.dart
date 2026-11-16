@@ -6,6 +6,8 @@
 /// inbox с replay-дедупликацией и ACK только после атомарного сохранения.
 library;
 
+import 'dart:typed_data';
+
 import '../crypto_service.dart';
 import 'crypto.dart';
 import 'payload.dart';
@@ -197,6 +199,22 @@ class V2ChatRepository {
       check((reply['text'] as String?)?.trim().isNotEmpty ?? false,
           'Некорректное сообщение для ответа');
     }
+    return _sealAndQueue(peer, encodePayload(text, reply));
+  }
+
+  /// Медиа (контракт C4): чанки ≤32 КиБ как отдельные подписанные сообщения;
+  /// получатель собирает по id/index. EXIF срезается на клиенте до шифрования.
+  Future<String> sendMedia(String peer, Uint8List bytes,
+      {String mime = 'image/jpeg'}) async {
+    final mediaId = randomHex(16);
+    final payloads = splitMediaPayloads(bytes, id: mediaId, mime: mime);
+    for (final payload in payloads) {
+      await _sealAndQueue(peer, payload);
+    }
+    return mediaId;
+  }
+
+  Future<String> _sealAndQueue(String peer, String payload) async {
     await renewLease();
     final acc = _requireAccount();
     // Self-chat («Избранное»): свой же каталог, без подтверждения контакта.
@@ -209,7 +227,7 @@ class V2ChatRepository {
           }
         : await _peerDirectory(peer);
     final message = await v2.sealMessage(
-        encodePayload(text, reply),
+        payload,
         acc['history'] as List,
         peerData['history'] as List,
         _session,
@@ -224,6 +242,38 @@ class V2ChatRepository {
     await store.putOutbox(message['id'] as String, peer, message);
     await flushOutbox();
     return message['id'] as String;
+  }
+
+  /// Read-ACK (C5): только свои входящие; идемпотентно на сервере.
+  Future<void> markRead(List<String> refs) async {
+    if (refs.isEmpty) return;
+    await transport.read(refs,
+        account: account, id: 'primary', privateKey: privateKey);
+  }
+
+  /// Delete-for-all (C3): только исходящие; локально помечается «отозвано».
+  Future<void> retractMessage(String ref) async {
+    final message = await store.messageByRef(ref);
+    check(message != null, 'Сообщение не найдено');
+    check(message!['direction'] == 'out', 'Отозвать можно только своё сообщение');
+    await transport.retract([ref],
+        account: account, id: 'primary', privateKey: privateKey);
+    await store.markRetracted(ref);
+  }
+
+  /// Tombstones с сервера: локальные копии помечаются «отозвано отправителем».
+  /// Возвращает курсор (max deletedAt) для следующего инкрементального запроса.
+  Future<int> syncRetractions({int since = 0}) async {
+    final tombstones = await transport.retractions(since: since,
+        account: account, id: 'primary', privateKey: privateKey);
+    var cursor = since;
+    for (final t in tombstones.cast<Map<String, dynamic>>()) {
+      final ref = t['ref'] as String;
+      final deletedAt = t['deletedAt'] as int;
+      if (deletedAt > cursor) cursor = deletedAt;
+      if (await store.hasRef(ref)) await store.markRetracted(ref);
+    }
+    return cursor;
   }
 
   Future<void> flushOutbox() async {
@@ -329,7 +379,8 @@ class V2ChatRepository {
       final devices = status[ref] as List? ?? [];
       for (final d in devices.cast<Map<String, dynamic>>()) {
         await store.upsertDelivery(
-            ref, d['id'] as String, d['acknowledgedAt'] as int?);
+            ref, d['id'] as String, d['acknowledgedAt'] as int?,
+            readAt: d['readAt'] as int?);
       }
     }
     return [
@@ -339,17 +390,47 @@ class V2ChatRepository {
   }
 
   /// История чата: ciphertext хранится в SQLCipher, расшифровка при чтении.
-  /// Payload-декодирование совместимо с PWA: plain text и {"shade":1,"t","r"}.
+  /// Payload-декодирование совместимо с PWA: plain text, {"shade":1,"t","r"}
+  /// и медиа-чанки {"shade":1,"m":...}, собираемые в одно изображение.
   Future<List<Map<String, dynamic>>> getMessages(String peer) async {
     final rows = await store.messagesByPeer(peer);
-    return [
-      for (final row in rows)
-        {
-          ...row,
-          ...decodePayload(
-              await crypto.decryptData(row['payload'] as String, privateKey))
-        }
-    ];
+    final decoded = <Map<String, dynamic>>[];
+    for (final row in rows) {
+      decoded.add({
+        ...row,
+        ...decodePayload(
+            await crypto.decryptData(row['payload'] as String, privateKey))
+      });
+    }
+    final mediaParts = <String, List<Map<String, dynamic>>>{};
+    final result = <Map<String, dynamic>>[];
+    for (final row in decoded) {
+      final media = row['media'];
+      if (media is Map<String, dynamic>) {
+        (mediaParts[media['id'] as String] ??= []).add(row);
+      } else {
+        result.add(row);
+      }
+    }
+    for (final entry in mediaParts.entries) {
+      final parts = entry.value;
+      final assembled = assembleMedia(
+          parts.map((r) => r['media'] as Map<String, dynamic>).toList());
+      final first = parts.first;
+      if (assembled != null) {
+        result.add({
+          ...first,
+          'text': '',
+          'isImage': true,
+          'imageData': assembled,
+          'mediaId': entry.key
+        });
+      } else {
+        result.add({...first, 'text': '📷 Фото загружается…', 'mediaPending': true});
+      }
+    }
+    result.sort((a, b) => (a['createdAt'] as int).compareTo(b['createdAt'] as int));
+    return result;
   }
 
   /// «Удалить у себя» (контракт ZCODE): queued-отправка отменяется; входящее
@@ -367,9 +448,14 @@ class V2ChatRepository {
   }
 
   /// Wake-up hints + периодический опрос чинят потерянные socket-события.
+  int _retractionCursor = 0;
   void attachWake() {
     transport.onWake = () {
-      syncInbox().then((_) => flushOutbox()).catchError((Object _) {});
+      syncInbox()
+          .then((_) => flushOutbox())
+          .then((_) => syncRetractions(since: _retractionCursor))
+          .then((cursor) { _retractionCursor = cursor; })
+          .catchError((Object _) {});
     };
   }
 }

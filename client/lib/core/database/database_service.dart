@@ -358,6 +358,7 @@ class DatabaseService {
         ref             TEXT NOT NULL,
         device_id       TEXT NOT NULL,
         acknowledged_at INTEGER,
+        read_at         INTEGER,
         PRIMARY KEY (ref, device_id)
       )
     ''');

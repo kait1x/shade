@@ -37,9 +37,13 @@ class AlphaTransport {
   bool _disposed = false;
   bool _connecting = false;
 
-  /// Вызывается при hint inbox/receipts, reconnect и каждом периоде опроса.
-  /// Владелец (репозиторий) выполняет подписанный fetch/receipts сам.
+  /// Вызывается при hint inbox/receipts/retracted, reconnect и каждом периоде
+  /// опроса. Владелец (репозиторий) выполняет подписанный fetch/receipts сам.
   void Function()? onWake;
+
+  /// Typing/presence hints (контракт C2): только между аккаунтами с перепиской.
+  void Function(String account, int until)? onTyping;
+  void Function(String account, bool online)? onPresence;
 
   AlphaTransport(this.origin, this.crypto) {
     final uri = Uri.parse(origin);
@@ -141,6 +145,24 @@ class AlphaTransport {
       await operation('status', refs, account: account, id: id, privateKey: privateKey)
           as Map<String, dynamic>;
 
+  Future<Map<String, dynamic>> read(List<String> refs,
+          {required String account, required String id, required String privateKey}) async =>
+      await operation('read', refs, account: account, id: id, privateKey: privateKey)
+          as Map<String, dynamic>;
+
+  Future<Map<String, dynamic>> retract(List<String> refs,
+          {required String account, required String id, required String privateKey}) async =>
+      await operation('retract', refs, account: account, id: id, privateKey: privateKey)
+          as Map<String, dynamic>;
+
+  Future<List<dynamic>> retractions(
+          {int since = 0,
+          required String account,
+          required String id,
+          required String privateKey}) async =>
+      (await operation('retractions', {'since': since},
+          account: account, id: id, privateKey: privateKey))['retractions'] as List<dynamic>;
+
   Future<Map<String, dynamic>> directory(String targetAccount,
           {required String account, required String id, required String privateKey}) async =>
       await operation('directory', targetAccount,
@@ -196,6 +218,17 @@ class AlphaTransport {
       _socket = socket;
       socket.on('inbox', (_) => onWake?.call());
       socket.on('receipts', (_) => onWake?.call());
+      socket.on('retracted', (_) => onWake?.call());
+      socket.on('typing', (data) {
+        if (data is Map && data['account'] is String && data['until'] is int) {
+          onTyping?.call(data['account'] as String, data['until'] as int);
+        }
+      });
+      socket.on('presence', (data) {
+        if (data is Map && data['account'] is String && data['online'] is bool) {
+          onPresence?.call(data['account'] as String, data['online'] as bool);
+        }
+      });
       socket.onConnect((_) => onWake?.call());
       socket.onDisconnect((_) {
         if (!_disposed) _scheduleReconnect(account, id, privateKey);
@@ -208,6 +241,11 @@ class AlphaTransport {
       _connecting = false;
     }
   }
+
+  /// Presence/typing подписки и сигналы (socket уже авторизован proof-ом).
+  void watch(String peer) => _socket?.emit('watch', {'peer': peer});
+  void unwatch(String peer) => _socket?.emit('unwatch', {'peer': peer});
+  void sendTyping(String peer) => _socket?.emit('typing', {'peer': peer});
 
   void _scheduleReconnect(String account, String id, String privateKey) {
     _reconnectTimer?.cancel();

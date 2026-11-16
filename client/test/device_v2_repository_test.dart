@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:fast_rsa/fast_rsa.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -169,6 +170,46 @@ void main() {
     expect(selfMsgs.single['text'], 'заметка себе');
     expect(selfMsgs.single['direction'], 'out');
     expect(await repo.syncInbox(), 0);
+
+    // Read-ACK (C5): Android отмечает входящее прочитанным — Web-отправитель
+    // видит readAt через подписанный status.
+    final readTarget = (await repo.getMessages('native_web'))
+        .firstWhere((m) => m['direction'] == 'in')['ref'] as String;
+    await repo.markRead([readTarget]);
+    final webStatus = await request({'action': 'web-status', 'ref': readTarget});
+    final readDevices = (webStatus[readTarget] as List).cast<Map<String, dynamic>>();
+    expect(readDevices.single['readAt'], isA<int>());
+
+    // Delete-for-all (C3): Android отзывает своё исходящее — Web видит tombstone.
+    final retractTarget = (await repo.getMessages('native_web'))
+        .firstWhere((m) => m['direction'] == 'out')['ref'] as String;
+    await repo.retractMessage(retractTarget);
+    final tombs = await request({'action': 'web-retractions', 'since': 0});
+    expect(
+        (tombs['retractions'] as List)
+            .any((t) => (t as Map)['ref'] == retractTarget),
+        true);
+    expect(
+        (await repo.getMessages('native_web'))
+            .firstWhere((m) => m['ref'] == retractTarget)['status'],
+        'retracted');
+
+    // Медиа (C4): Android → Web чанками; Web собирает байт-в-байт.
+    final photo = Uint8List.fromList(List.generate(70000, (i) => i % 251));
+    await repo.sendMedia('native_web', photo);
+    final assembled = await request({'action': 'web-fetch-media'});
+    expect(assembled['count'], 3);
+    expect(base64.decode(assembled['b64'] as String), photo);
+
+    // Web → Android медиа: Dart собирает чанки в изображение.
+    final photo2 = Uint8List.fromList(List.generate(50000, (i) => (i * 7) % 256));
+    await request({'action': 'web-send', 'media': base64.encode(photo2)});
+    await repo.syncInbox();
+    final images = (await repo.getMessages('native_web'))
+        .where((m) => m['isImage'] == true)
+        .toList();
+    expect(images.length, 2);
+    expect(images.firstWhere((m) => m['direction'] == 'in')['imageData'], photo2);
 
     // Продление lease и отправка после него.
     await repo.renewLease(force: true);

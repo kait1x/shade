@@ -5,7 +5,7 @@
 import readline from 'node:readline';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { fixture, identity, register, operation } from '../test/helpers/alpha-fixture.mjs';
 import { legacyRoot, messageRef } from '../multidevice/registry.mjs';
 import { sealMessage, openMessage } from '../../client/web/device_crypto.mjs';
@@ -60,11 +60,43 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     } else if (request.action === 'web-send') {
       const trust = { senderRoot: web.vault.signingKey, recipientRoot: nativeRoot,
         senderGenesis: web.genesis, recipientGenesis: nativeGenesis };
-      const m = await sealMessage(request.reply ? encodePayload(request.text, request.reply) : request.text,
-        [web.manifest], [nativeManifest], web.session, trust);
-      const sent = await operation(f, web, wc, 'send', m);
-      if (!sent.result.accepted) throw Error('send rejected');
-      result = { ref: messageRef(m) };
+      if (request.media) {
+        // Media chunk contract (DEVICE_V2_API §5): RAW_CHUNK = 32768.
+        const bytes = Buffer.from(request.media, 'base64');
+        const total = Math.ceil(bytes.length / 32768);
+        const mediaId = randomBytes(16).toString('hex');
+        for (let index = 0; index < total; index++) {
+          const chunk = bytes.subarray(index * 32768, (index + 1) * 32768).toString('base64');
+          const payload = JSON.stringify({ shade: 1, m: { id: mediaId, mime: 'image/jpeg', index, total, chunk } });
+          const m = await sealMessage(payload, [web.manifest], [nativeManifest], web.session, trust);
+          if (!(await operation(f, web, wc, 'send', m)).result.accepted) throw Error('media send rejected');
+        }
+        result = { mediaId, total };
+      } else {
+        const m = await sealMessage(request.reply ? encodePayload(request.text, request.reply) : request.text,
+          [web.manifest], [nativeManifest], web.session, trust);
+        const sent = await operation(f, web, wc, 'send', m);
+        if (!sent.result.accepted) throw Error('send rejected');
+        result = { ref: messageRef(m) };
+      }
+    } else if (request.action === 'web-fetch-media') {
+      const inbox = (await operation(f, web, wc, 'fetch')).result;
+      const trust = { senderRoot: nativeRoot, recipientRoot: web.vault.signingKey,
+        senderGenesis: nativeGenesis, recipientGenesis: web.genesis };
+      const parts = [];
+      const refs = [];
+      for (const bundle of inbox.filter(b => b.message.from === nativeAccount)) {
+        const plaintext = await openMessage(bundle, web.session, trust);
+        refs.push(messageRef(bundle.message));
+        const parsed = JSON.parse(plaintext);
+        if (parsed.shade === 1 && parsed.m) parts[parsed.m.index] = Buffer.from(parsed.m.chunk, 'base64');
+      }
+      if (refs.length) await operation(f, web, wc, 'ack', refs);
+      const assembled = Buffer.concat(parts.filter(Boolean));
+      result = { hex: createHash('sha256').update(assembled).digest('hex'),
+        count: parts.filter(Boolean).length, b64: assembled.toString('base64') };
+    } else if (request.action === 'web-retractions') {
+      result = (await operation(f, web, wc, 'retractions', { since: request.since || 0 })).result;
     } else if (request.action === 'web-fetch-open') {
       const inbox = (await operation(f, web, wc, 'fetch')).result;
       const bundle = inbox.find(b => b.message.from === nativeAccount);

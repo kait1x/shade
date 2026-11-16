@@ -251,11 +251,20 @@ class V2Store {
           'UPDATE v2_outbox SET attempts=attempts+1, last_error=? WHERE id=?',
           [error, id]);
 
+  Future<void> markRetracted(String ref) async => (await _db).rawUpdate(
+      "UPDATE v2_messages SET status='retracted' WHERE ref=?", [ref]);
+
   Future<void> upsertDelivery(
-      String ref, String deviceId, int? acknowledgedAt) async {
+      String ref, String deviceId, int? acknowledgedAt,
+      {int? readAt}) async {
     await (await _db).insert(
         'v2_delivery',
-        {'ref': ref, 'device_id': deviceId, 'acknowledged_at': acknowledgedAt},
+        {
+          'ref': ref,
+          'device_id': deviceId,
+          'acknowledged_at': acknowledgedAt,
+          'read_at': readAt
+        },
         conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
@@ -266,7 +275,8 @@ class V2Store {
       for (final row in rows)
         {
           'deviceId': row['device_id'],
-          'acknowledgedAt': row['acknowledged_at']
+          'acknowledgedAt': row['acknowledged_at'],
+          'readAt': row['read_at']
         }
     ];
   }
