@@ -188,7 +188,7 @@ class DeviceV2Crypto {
         (senderAt['expiresAt'] as int) > createdAt &&
         (recipientAt!['issuedAt'] as int) <= createdAt &&
         (recipientAt['expiresAt'] as int) > createdAt, 'Message outside directory lease');
-    await verifier.verifyMessage(m, senderAt!, recipientAt!, now: now);
+    await verifier.verifyMessage(m, senderAt, recipientAt, now: now);
     final own = (m['envelopes'] as List).cast<Map<String, dynamic>>().where(
         (e) => e['account'] == session.account && e['deviceId'] == session.id).firstOrNull;
     check(own != null, 'Device is not a recipient');
