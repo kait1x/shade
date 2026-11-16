@@ -13,6 +13,7 @@ import 'package:shade/core/services/connection_service.dart';
 import 'package:shade/core/widgets/shade_ui.dart';
 import 'package:shade/features/profile/data/avatar_repository.dart';
 import 'package:shade/features/profile/presentation/screens/avatar_editor.dart';
+import 'package:shade/features/devices/presentation/alpha_v2_screen.dart';
 import 'package:shade/main.dart';
 
 // Brighter secondary tones for better contrast on the dark background.
@@ -518,6 +519,20 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                   username: widget.username,
                                   owner: widget.isSelf),
                               if (widget.isSelf) ...[
+                                const SizedBox(height: 16),
+                                _Section(children: [
+                                  _Tile(
+                                      icon: Icons.devices_rounded,
+                                      title: 'Shade Alpha — Web ↔ Android',
+                                      subtitle:
+                                          'device-v2 E2EE с веб-устройствами',
+                                      onTap: () {
+                                        Navigator.of(context).push(
+                                            MaterialPageRoute(
+                                                builder: (_) =>
+                                                    const AlphaV2Screen()));
+                                      }),
+                                ]),
                                 const SizedBox(height: 16),
                                 _Section(children: [
                                   _Tile(
