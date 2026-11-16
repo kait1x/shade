@@ -255,12 +255,38 @@ export async function decryptRecord(session, recordId, record) {
 async function database() {
   check(typeof indexedDB !== 'undefined', 'IndexedDB unavailable; do not generate a replacement identity');
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('shade-device-v2', 1);
-    request.onupgradeneeded = () => request.result.createObjectStore('vaults', { keyPath: 'id' });
+    const request = indexedDB.open('shade-device-v2', 2);
+    request.onupgradeneeded = event => {
+      const db = request.result;
+      if (event.oldVersion < 1) db.createObjectStore('vaults', { keyPath: 'id' });
+      // Meta store for durability flushes; never mixed with identity records.
+      if (event.oldVersion < 2) db.createObjectStore('meta', { keyPath: 'id' });
+    };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(new Error('Encrypted browser storage unavailable'));
     request.onblocked = () => reject(new Error('Close other Shade tabs to open storage'));
   });
+}
+// WebKit may lose the last committed transaction on a process kill right
+// after oncomplete. A follow-up meta transaction forces the vault commit to
+// durable storage; losing a vault would lose the identity, so this is flush
+// plus read-back verification, not a timing assumption.
+async function flushVaultCommit(db, id) {
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction('meta', 'readwrite');
+    tx.objectStore('meta').put({ id: 'flush', at: Date.now() });
+    if (typeof tx.commit === 'function') tx.commit();
+    tx.oncomplete = resolve;
+    tx.onabort = () => reject(new Error('Vault durability flush failed'));
+    tx.onerror = () => {};
+  });
+  const stored = await new Promise((resolve, reject) => {
+    const tx = db.transaction('vaults', 'readonly');
+    const req = tx.objectStore('vaults').get(id);
+    tx.oncomplete = () => resolve(req.result);
+    tx.onabort = () => reject(new Error('Vault read-back failed'));
+  });
+  check(stored && stored.id === id, 'Vault was not durably stored; retry before use');
 }
 export async function saveVault(vault) {
   check(vault && Object.keys(vault).sort().join(',') === 'account,ciphertext,encryptionKey,id,iv,salt,signingKey,version', 'Unexpected vault fields');
@@ -273,10 +299,12 @@ export async function saveVault(vault) {
     await new Promise((resolve, reject) => {
       const tx = db.transaction('vaults', 'readwrite');
       tx.objectStore('vaults').add(vault); // Never overwrite or regenerate an existing identity.
+      if (typeof tx.commit === 'function') tx.commit();
       tx.oncomplete = resolve;
       tx.onabort = () => reject(new Error('Vault already exists or storage is unavailable'));
       tx.onerror = () => {}; // The transaction's abort is the authoritative result.
     });
+    await flushVaultCommit(db, vault.id);
   } finally { db.close(); }
 }
 export async function loadVault(id) {
