@@ -447,7 +447,8 @@ class _ConversationState extends State<_Conversation>
 
   void _scroll() {
     if (!scroll.hasClients || !restored) return;
-    atBottom = scroll.position.extentAfter < 80;
+    // The list is reversed like Android's: offset 0 is the latest message.
+    atBottom = scroll.position.pixels < 80;
     if (atBottom && unseen != 0) setState(() => unseen = 0);
     positionTimer?.cancel();
     positionTimer = Timer(const Duration(milliseconds: 180), () {
@@ -529,7 +530,8 @@ class _ConversationState extends State<_Conversation>
 
   void _jumpToBottom([int attempts = 6]) {
     if (!mounted || !scroll.hasClients) return;
-    scroll.jumpTo(scroll.position.maxScrollExtent);
+    // Reverse list: the latest message sits at offset 0.
+    scroll.jumpTo(0);
     _trackBottom();
     if (attempts > 0) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -537,7 +539,7 @@ class _ConversationState extends State<_Conversation>
         // lazily built items keep growing maxScrollExtent.
         if (mounted &&
             scroll.hasClients &&
-            scroll.position.extentAfter > 1) {
+            scroll.position.pixels > 1) {
           _jumpToBottom(attempts - 1);
         }
       });
@@ -548,7 +550,7 @@ class _ConversationState extends State<_Conversation>
   // scroll notifications; re-derive atBottom until they settle.
   void _trackBottom([int attempts = 5]) {
     if (!mounted || !scroll.hasClients) return;
-    final bottomNow = scroll.position.extentAfter < 80;
+    final bottomNow = scroll.position.pixels < 80;
     if (bottomNow != atBottom) {
       setState(() => atBottom = bottomNow);
     }
@@ -561,7 +563,7 @@ class _ConversationState extends State<_Conversation>
   void _toLatest() {
     if (!scroll.hasClients) return;
     if (unseen != 0) setState(() => unseen = 0);
-    scroll.animateTo(scroll.position.maxScrollExtent,
+    scroll.animateTo(0,
         duration: ShadeMotion.duration(context, 180), curve: Curves.easeOut);
     _followBottom();
   }
@@ -574,9 +576,9 @@ class _ConversationState extends State<_Conversation>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || !scroll.hasClients) return;
       final position = scroll.position;
-      if (position.extentAfter > 1) {
+      if (position.pixels > 1) {
         if (!position.isScrollingNotifier.value) {
-          position.animateTo(position.maxScrollExtent,
+          position.animateTo(0,
               duration: ShadeMotion.duration(context, 180),
               curve: Curves.easeOut);
         }
@@ -721,33 +723,36 @@ class _ConversationState extends State<_Conversation>
                       : Stack(children: [
                           ListView.builder(
                           controller: scroll,
+                          reverse: true,
                           padding: const EdgeInsets.only(top: 8, bottom: 16),
                           itemCount: items.length,
                           keyboardDismissBehavior:
                               ScrollViewKeyboardDismissBehavior.onDrag,
                           itemBuilder: (context, i) {
-                            final m = items[i],
+                            // Reversed index: 0 is the newest message; the
+                            // original (chronological) index is the mirror.
+                            final m = items[items.length - 1 - i],
                                 date = DateTime.fromMillisecondsSinceEpoch(
                                     (m['createdAt'] as num).toInt());
                             final reply = m['reply'] as Map?;
-                            bool grouped(int j) =>
-                                j >= 0 &&
-                                j < items.length &&
-                                items[j]['from'] == m['from'] &&
-                                ((items[j]['createdAt'] as num) -
+                            bool grouped(int originalIndex) =>
+                                originalIndex >= 0 &&
+                                originalIndex < items.length &&
+                                items[originalIndex]['from'] == m['from'] &&
+                                ((items[originalIndex]['createdAt'] as num) -
                                             (m['createdAt'] as num))
                                         .abs() <
                                     180000 &&
                                 DateUtils.isSameDay(
                                     date,
                                     DateTime.fromMillisecondsSinceEpoch(
-                                        (items[j]['createdAt'] as num)
+                                        (items[originalIndex]['createdAt'] as num)
                                             .toInt()));
-                            final showDate = i == 0 ||
+                            final showDate = i == items.length - 1 ||
                                 !DateUtils.isSameDay(
                                     date,
                                     DateTime.fromMillisecondsSinceEpoch(
-                                        (items[i - 1]['createdAt'] as num)
+                                        (items[items.length - 2 - i]['createdAt'] as num)
                                             .toInt()));
                             return Column(key: ValueKey(m['ref']), children: [
                               if (showDate) ShadeDateSeparator(date: date),
@@ -761,8 +766,10 @@ class _ConversationState extends State<_Conversation>
                                       status: AlphaController.status(m),
                                       deliveryLabel:
                                           AlphaController.delivery(m),
-                                      groupedWithPrevious: grouped(i - 1),
-                                      groupedWithNext: grouped(i + 1),
+                                      groupedWithPrevious:
+                                          grouped(items.length - 2 - i),
+                                      groupedWithNext:
+                                          grouped(items.length - i),
                                       onLongPress: () => _showMessageMenu(m),
                                       replyText: reply?['text'] as String?,
                                       replySender: reply == null
@@ -774,14 +781,15 @@ class _ConversationState extends State<_Conversation>
                           }),
                           // Live scroll truth for the jump button: lazy list
                           // extents grow without new notifications, so the
-                          // flag fields alone cannot be trusted here.
+                          // flag fields alone cannot be trusted here. In a
+                          // reversed list «away» means offset > 180.
                           ListenableBuilder(
                               listenable: scroll,
                               builder: (context, _) => Align(
                                   alignment: Alignment.bottomRight,
                                   child: restored &&
                                           scroll.hasClients &&
-                                          scroll.position.extentAfter > 180
+                                          scroll.position.pixels > 180
                                       ? Padding(
                                           padding: const EdgeInsets.only(
                                               right: 16, bottom: 12),
