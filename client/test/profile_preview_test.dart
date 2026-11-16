@@ -171,7 +171,9 @@ void main() {
     await tester.runAsync(() async {
       final image = await render.toImage(pixelRatio: ratio);
       final data = await image.toByteData(format: ui.ImageByteFormat.png);
-      await File('../artifacts/ui/$name.png')
+      final folder = Directory('../artifacts/ui-ux-2/profile-captures');
+      await folder.create(recursive: true);
+      await File('${folder.path}/$name.png')
           .writeAsBytes(data!.buffer.asUint8List());
       image.dispose();
     });

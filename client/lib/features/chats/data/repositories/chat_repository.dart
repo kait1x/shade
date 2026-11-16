@@ -14,6 +14,7 @@ class Conversation {
   final String? publicKey;
   final DateTime createdAt;
   final Message? lastMessage;
+  final int unreadCount;
 
   const Conversation({
     required this.id,
@@ -21,11 +22,13 @@ class Conversation {
     this.publicKey,
     required this.createdAt,
     this.lastMessage,
+    this.unreadCount = 0,
   });
 
   factory Conversation.fromRow(
     Map<String, dynamic> row, {
     Message? lastMessage,
+    int unreadCount = 0,
   }) {
     return Conversation(
       id: row['id'] as int,
@@ -33,6 +36,7 @@ class Conversation {
       publicKey: row['public_key'] as String?,
       createdAt: DateTime.fromMillisecondsSinceEpoch(row['created_at'] as int),
       lastMessage: lastMessage,
+      unreadCount: unreadCount,
     );
   }
 }
@@ -232,6 +236,14 @@ class ChatRepository {
   /// Returns conversations with last message preview decrypted.
   Future<List<Conversation>> getDecryptedConversations() async {
     final rows = await _db.getConversations();
+    final database = await _db.database;
+    final unreadRows = await database
+        .rawQuery('SELECT conversation_id, COUNT(*) AS count FROM messages '
+            'WHERE is_read = 0 AND is_outgoing = 0 GROUP BY conversation_id');
+    final unread = {
+      for (final row in unreadRows)
+        row['conversation_id'] as int: row['count'] as int
+    };
     final result = <Conversation>[];
 
     for (final row in rows) {
@@ -253,14 +265,29 @@ class ChatRepository {
             senderId: last.senderId,
             encryptedContent: plain,
             timestamp: last.timestamp,
+            networkId: last.networkId,
+            status: last.status,
+            isRead: last.isRead,
+            isOutgoing: last.isOutgoing,
           );
         } catch (e) {
           debugPrint('[ChatRepository] decrypt preview error');
-          preview = last;
+          preview = Message(
+              id: last.id,
+              conversationId: last.conversationId,
+              senderId: last.senderId,
+              encryptedContent: 'Не удалось расшифровать',
+              timestamp: last.timestamp,
+              status: last.status,
+              isRead: last.isRead,
+              isOutgoing: last.isOutgoing);
         }
       }
-      result.add(Conversation.fromRow(row, lastMessage: preview));
+      result.add(Conversation.fromRow(row,
+          lastMessage: preview, unreadCount: unread[row['id']] ?? 0));
     }
+    result.sort((a, b) => (b.lastMessage?.timestamp ?? b.createdAt)
+        .compareTo(a.lastMessage?.timestamp ?? a.createdAt));
     return result;
   }
 

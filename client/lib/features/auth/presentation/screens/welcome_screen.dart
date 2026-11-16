@@ -4,6 +4,67 @@ import 'package:shade/core/widgets/shade_logo.dart';
 import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 import 'package:shade/main.dart';
 
+/// Google's four-colour G, drawn in the original 24-unit coordinate system.
+class _GoogleMark extends CustomPainter {
+  const _GoogleMark();
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.save();
+    canvas.scale(size.width / 24, size.height / 24);
+    final blue = Path()
+      ..moveTo(21.6, 12.23)
+      ..cubicTo(21.6, 11.52, 21.54, 10.84, 21.42, 10.18)
+      ..lineTo(12, 10.18)
+      ..lineTo(12, 14.05)
+      ..lineTo(17.38, 14.05)
+      ..cubicTo(17.15, 15.3, 16.44, 16.36, 15.38, 17.07)
+      ..lineTo(15.38, 19.58)
+      ..lineTo(18.61, 19.58)
+      ..cubicTo(20.5, 17.84, 21.6, 15.28, 21.6, 12.23)
+      ..close();
+    final green = Path()
+      ..moveTo(12, 22)
+      ..cubicTo(14.7, 22, 16.96, 21.1, 18.61, 19.58)
+      ..lineTo(15.38, 17.07)
+      ..cubicTo(14.48, 17.67, 13.33, 18.04, 12, 18.04)
+      ..cubicTo(9.39, 18.04, 7.18, 16.28, 6.39, 13.91)
+      ..lineTo(3.05, 13.91)
+      ..lineTo(3.05, 16.5)
+      ..cubicTo(4.7, 19.76, 8.09, 22, 12, 22)
+      ..close();
+    final yellow = Path()
+      ..moveTo(6.39, 13.91)
+      ..cubicTo(6.19, 13.31, 6.07, 12.67, 6.07, 12)
+      ..cubicTo(6.07, 11.33, 6.19, 10.69, 6.39, 10.09)
+      ..lineTo(6.39, 7.5)
+      ..lineTo(3.05, 7.5)
+      ..cubicTo(2.38, 8.85, 2, 10.38, 2, 12)
+      ..cubicTo(2, 13.62, 2.38, 15.15, 3.05, 16.5)
+      ..close();
+    final red = Path()
+      ..moveTo(12, 5.96)
+      ..cubicTo(13.47, 5.96, 14.78, 6.47, 15.82, 7.47)
+      ..lineTo(18.68, 4.61)
+      ..cubicTo(16.95, 3, 14.7, 2, 12, 2)
+      ..cubicTo(8.09, 2, 4.7, 4.24, 3.05, 7.5)
+      ..lineTo(6.39, 10.09)
+      ..cubicTo(7.18, 7.72, 9.39, 5.96, 12, 5.96)
+      ..close();
+    for (final (path, color) in [
+      (blue, 0xff4285f4),
+      (green, 0xff34a853),
+      (yellow, 0xfffbbc05),
+      (red, 0xffea4335)
+    ]) {
+      canvas.drawPath(path, Paint()..color = Color(color));
+    }
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_GoogleMark oldDelegate) => false;
+}
+
 class WelcomeScreen extends ConsumerStatefulWidget {
   const WelcomeScreen({super.key});
   @override
@@ -36,19 +97,16 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
   @override
   Widget build(BuildContext context) {
     final auth = ref.watch(authNotifierProvider);
+    final compact = MediaQuery.sizeOf(context).height < 740;
     final busy = auth.status == AuthStatus.generatingKeys;
     return Scaffold(
         body: DecoratedBox(
-      decoration: const BoxDecoration(
-          gradient: RadialGradient(
-              center: Alignment(-.7, -.8),
-              radius: 1.3,
-              colors: [Color(0xFF242424), ShadeColors.black],
-              stops: [0, .8])),
+      decoration: const BoxDecoration(color: ShadeColors.black),
       child: SafeArea(
           child: Center(
               child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
+        padding:
+            EdgeInsets.fromLTRB(24, compact ? 8 : 20, 24, compact ? 8 : 28),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
           child: Form(
@@ -64,26 +122,20 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
                               fontSize: 24,
                               fontWeight: FontWeight.w700,
                               letterSpacing: -1)),
-                      Spacer(),
-                      Icon(Icons.lock_outline_rounded,
-                          color: ShadeColors.textMuted, size: 18)
                     ]),
-                    const SizedBox(height: 28),
+                    SizedBox(height: compact ? 4 : 16),
                     Center(
                         child: Container(
-                            width: 134,
-                            height: 134,
+                            width: 100,
+                            height: 100,
                             decoration: BoxDecoration(
                                 shape: BoxShape.circle,
                                 border: Border.all(
                                     color: ShadeColors.violet
                                         .withValues(alpha: .15)),
-                                gradient: RadialGradient(colors: [
-                                  ShadeColors.violet.withValues(alpha: .16),
-                                  ShadeColors.violet.withValues(alpha: .015)
-                                ])),
-                            child: const Center(child: ShadeLogo(size: 138)))),
-                    const SizedBox(height: 20),
+                                color: ShadeColors.surfaceCard),
+                            child: const Center(child: ShadeLogo(size: 100)))),
+                    SizedBox(height: compact ? 6 : 14),
                     Text('Свои люди.\nЛичные разговоры.',
                         style: TextStyle(
                             fontSize: MediaQuery.sizeOf(context).width < 360
@@ -92,16 +144,16 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
                             fontWeight: FontWeight.w700,
                             letterSpacing: -1.3,
                             height: 1.12)),
-                    const SizedBox(height: 12),
+                    SizedBox(height: compact ? 4 : 12),
                     const Text(
                         'Место для ваших разговоров,\nфотографий и маленьких планов.',
                         style: TextStyle(
                             color: ShadeColors.textSecondary,
                             fontSize: 15,
                             height: 1.6)),
-                    const SizedBox(height: 26),
+                    SizedBox(height: compact ? 8 : 20),
                     Container(
-                        padding: const EdgeInsets.all(20),
+                        padding: EdgeInsets.all(compact ? 16 : 20),
                         decoration: BoxDecoration(
                             color:
                                 ShadeColors.surfaceCard.withValues(alpha: .9),
@@ -120,7 +172,7 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
                                       color: ShadeColors.textSecondary,
                                       fontSize: 12,
                                       height: 1.5)),
-                              const SizedBox(height: 20),
+                              SizedBox(height: compact ? 6 : 14),
                               TextFormField(
                                   key: const Key('nickname'),
                                   controller: _nickname,
@@ -145,7 +197,7 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
                                   onFieldSubmitted: (_) {
                                     if (!busy) _signIn();
                                   }),
-                              const SizedBox(height: 16),
+                              SizedBox(height: compact ? 10 : 16),
                               FilledButton.icon(
                                   key: const Key('google-sign-in'),
                                   onPressed: busy ? null : _signIn,
@@ -155,10 +207,12 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
                                           height: 18,
                                           child: CircularProgressIndicator(
                                               strokeWidth: 2))
-                                      : const Icon(Icons.login_rounded,
-                                          size: 19),
+                                      : const SizedBox.square(
+                                          dimension: 20,
+                                          child: CustomPaint(
+                                              painter: _GoogleMark())),
                                   label: Text(busy
-                                      ? 'Подключаем…'
+                                      ? (auth.progress ?? 'Подключаем…')
                                       : 'Продолжить с Google'),
                                   style: FilledButton.styleFrom(
                                       backgroundColor: const Color(0xFFF1F1F1),
@@ -180,7 +234,7 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
                                                 .colorScheme
                                                 .error))),
                             ])),
-                    const SizedBox(height: 20),
+                    SizedBox(height: compact ? 6 : 14),
                     const Text(
                         'История и ключи остаются на этом устройстве.\nВосстановление на новом телефоне пока недоступно.',
                         textAlign: TextAlign.center,
@@ -191,7 +245,7 @@ class _WelcomeScreenState extends ConsumerState<WelcomeScreen> {
                     const SizedBox(height: 4),
                     const ExpansionTile(
                         title: Text('Как используется Google-аккаунт',
-                            textAlign: TextAlign.center,
+                            textAlign: TextAlign.left,
                             style: TextStyle(
                                 fontSize: 11, color: ShadeColors.textMuted)),
                         tilePadding: EdgeInsets.zero,

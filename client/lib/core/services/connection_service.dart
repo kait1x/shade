@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:crypto/crypto.dart' show sha256;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shade/core/services/tls_policy.dart';
+import 'package:shade/core/services/profile_upload.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart' as http_io;
 import 'package:socket_io_client/socket_io_client.dart' as io;
@@ -153,6 +155,8 @@ class ConnectionService {
   final CryptoService _crypto;
   final DatabaseService _db;
   final http.Client _httpClient;
+  late final _profileUploads =
+      ProfileUploadTransport(Uri.parse(serverUrl), _certificateDigest);
 
   io.Socket? _socket;
   String? _username;
@@ -167,6 +171,35 @@ class ConnectionService {
 
   final _connectionCtrl = StreamController<bool>.broadcast();
   final Set<String> _watchedUsers = {};
+  final Map<String, int> _profileWatches = {};
+  final _avatarCtrl = StreamController<String>.broadcast();
+  Timer? _profileWatchTimer;
+  Stream<String> get avatarUpdates => _avatarCtrl.stream;
+  String? get profileOwner => _username;
+  void retainProfile(String name) {
+    _profileWatches.update(name, (n) => n + 1, ifAbsent: () => 1);
+    _scheduleProfileWatches();
+  }
+
+  void releaseProfile(String name) {
+    final count = _profileWatches[name] ?? 0;
+    if (count <= 1) {
+      _profileWatches.remove(name);
+    } else {
+      _profileWatches[name] = count - 1;
+    }
+    _scheduleProfileWatches();
+  }
+
+  void _scheduleProfileWatches() {
+    _profileWatchTimer?.cancel();
+    _profileWatchTimer = Timer(const Duration(milliseconds: 80), () {
+      if (_isConnected) {
+        _socket?.emit('watchProfiles', _profileWatches.keys.take(256).toList());
+      }
+    });
+  }
+
   Timer? _outboxTimer;
   bool _flushing = false;
 
@@ -542,6 +575,7 @@ class ConnectionService {
 
       _socket!.on('registered', (_) {
         _setConnected(true);
+        _scheduleProfileWatches();
         for (final username in _watchedUsers) {
           _socket!.emit('watch', username);
         }
@@ -558,6 +592,13 @@ class ConnectionService {
         }
       });
       _socket!.on('message', _handleIncomingMessage);
+      _socket!.on('avatarUpdated', (data) {
+        if (data is Map &&
+            data['username'] is String &&
+            !_avatarCtrl.isClosed) {
+          _avatarCtrl.add(data['username'] as String);
+        }
+      });
 
       // Typing indicator events
       _socket!.on('typing', (data) {
@@ -689,6 +730,7 @@ class ConnectionService {
 
   Future<void> signOut() async {
     _signedOut = true;
+    _profileUploads.cancelAll();
     _sessionGeneration++;
     final token = _sessionToken, username = _username;
     disconnect();
@@ -719,6 +761,9 @@ class ConnectionService {
     _isDisposed = true;
     disconnect();
     _httpClient.close();
+    _profileUploads.cancelAll();
+    _profileWatchTimer?.cancel();
+    _avatarCtrl.close();
     _connectionCtrl.close();
     _messageCtrl.close();
     _notificationCtrl.close();
@@ -850,23 +895,106 @@ class ConnectionService {
     throw StateError('unreachable');
   }
 
+  Future<Map<String, dynamic>> saveAvatarProfile(Map<String, dynamic> data,
+      {void Function(double)? onProgress}) async {
+    final owner = _username, generation = _sessionGeneration;
+    final random = math.Random.secure();
+    final uploadId =
+        base64UrlEncode(List<int>.generate(18, (_) => random.nextInt(256)));
+    final payload = {...data, 'uploadId': uploadId};
+    try {
+      return await profileRequest('PUT', '/profile/avatar', payload);
+    } catch (e) {
+      if (data['image'] is! String ||
+          !(e is TimeoutException ||
+              e is SocketException ||
+              e is HttpException ||
+              e is http.ClientException)) {
+        rethrow;
+      }
+    }
+    final image = data['image'] as String;
+    final elapsed = Stopwatch()..start();
+    var offset = 0;
+    while (offset < image.length) {
+      if (_signedOut ||
+          _isDisposed ||
+          owner != _username ||
+          generation != _sessionGeneration) {
+        throw StateError('Сеанс завершён');
+      }
+      if (elapsed.elapsed > const Duration(minutes: 2)) {
+        throw TimeoutException('Загрузка фото заняла слишком много времени');
+      }
+      final end = math.min(offset + 32768, image.length);
+      final part = {
+        'uploadId': uploadId,
+        'offset': offset,
+        'total': image.length,
+        'chunk': image.substring(offset, end),
+        'frame': data['frame'],
+        'revision': data['revision']
+      };
+      Map<String, dynamic> result;
+      try {
+        result = await profileRequest('POST', '/profile/avatar/chunk', part);
+      } catch (e) {
+        if (!(e is TimeoutException ||
+            e is SocketException ||
+            e is HttpException ||
+            e is http.ClientException)) {
+          rethrow;
+        }
+        // Parts are idempotent, including a retried final commit.
+        result = await profileRequest('POST', '/profile/avatar/chunk', part);
+      }
+      if (result['complete'] == true) {
+        onProgress?.call(1);
+        return {
+          ...Map<String, dynamic>.from(result['profile'] as Map),
+          'image': image
+        };
+      }
+      final next = result['offset'];
+      if (next is! int || next != end) {
+        throw StateError('Сервер не подтвердил загрузку фото');
+      }
+      offset = next;
+      onProgress?.call(offset / image.length);
+    }
+    throw StateError('Сервер не подтвердил сохранение фото');
+  }
+
   Future<Map<String, dynamic>> profileRequest(String method, String path,
       [Map<String, dynamic>? data]) async {
     if (_sessionToken == null || _username == null) {
       throw StateError('Требуется подключение к серверу');
     }
-    final request = http.Request(method, Uri.parse('$serverUrl$path'));
+    final generation = _sessionGeneration;
+    final request = http.Request(method, Uri.parse('$serverUrl$path'))
+      ..followRedirects = false;
     request.headers.addAll({
       'Content-Type': 'application/json',
       'x-session-token': _sessionToken!,
       'x-username': _username!
     });
     if (data != null) request.body = jsonEncode(data);
-    final response = await _httpClient
-        .send(request)
-        .then(http.Response.fromStream)
-        .timeout(const Duration(seconds: 15));
-    final result = jsonDecode(response.body) as Map<String, dynamic>;
+    final response =
+        path.startsWith('/profile/avatar')
+            ? await _profileUploads.send(request)
+            : await _httpClient
+                .send(request)
+                .then(http.Response.fromStream)
+                .timeout(const Duration(seconds: 15));
+    if (generation != _sessionGeneration || _signedOut || _isDisposed) {
+      throw StateError('Сеанс завершён');
+    }
+    Map<String, dynamic> result;
+    try {
+      result = jsonDecode(response.body) as Map<String, dynamic>;
+    } catch (_) {
+      throw StateError('Сервер временно недоступен');
+    }
     if (response.statusCode != 200) {
       throw StateError(result['error']?.toString() ?? 'Ошибка сервера');
     }

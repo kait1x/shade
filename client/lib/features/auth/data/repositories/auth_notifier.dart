@@ -16,6 +16,12 @@ enum AuthStatus {
   error,
 }
 
+/// Diagnostic logging for the sign-in flow. Never logs tokens or keys,
+/// only step names, exception codes and non-secret descriptions.
+void _logAuth(String message) {
+  debugPrint('[ShadeAuth] $message');
+}
+
 /// Auth state holder
 class AuthState {
   final AuthStatus status;
@@ -23,6 +29,7 @@ class AuthState {
   final String? publicKey;
   final int? userId;
   final String? error;
+  final String? progress;
   final String? email;
   final String? displayName;
   final String? avatarUrl;
@@ -33,6 +40,7 @@ class AuthState {
     this.publicKey,
     this.userId,
     this.error,
+    this.progress,
     this.email,
     this.displayName,
     this.avatarUrl,
@@ -44,6 +52,7 @@ class AuthState {
     String? publicKey,
     int? userId,
     String? error,
+    String? progress,
     String? email,
     String? displayName,
     String? avatarUrl,
@@ -54,6 +63,7 @@ class AuthState {
       publicKey: publicKey ?? this.publicKey,
       userId: userId ?? this.userId,
       error: error,
+      progress: progress,
       email: email ?? this.email,
       displayName: displayName ?? this.displayName,
       avatarUrl: avatarUrl ?? this.avatarUrl,
@@ -107,7 +117,9 @@ class AuthNotifier extends StateNotifier<AuthState> {
   Future<bool> createSecureProfile(String nickname) async {
     final epoch = ++_authEpoch;
     try {
-      state = state.copyWith(status: AuthStatus.generatingKeys);
+      state = state.copyWith(
+          status: AuthStatus.generatingKeys,
+          progress: 'Подготавливаем хранилище…');
       const clientId = String.fromEnvironment('GOOGLE_WEB_CLIENT_ID');
       if (clientId.isEmpty) {
         throw StateError(
@@ -118,25 +130,39 @@ class AuthNotifier extends StateNotifier<AuthState> {
         throw StateError(
             'На устройстве уже есть профиль @${previous['nickname']}. Используйте этот никнейм, чтобы сохранить историю.');
       }
+      state = state.copyWith(progress: 'Открываем Google…');
+      _logAuth('step: google initialize');
       _googleInit ??=
           GoogleSignIn.instance.initialize(serverClientId: clientId);
       await _googleInit;
+      _logAuth('step: opening Google account chooser');
       final account = await GoogleSignIn.instance.authenticate();
+      _logAuth('step: Google account selected');
       final idToken = account.authentication.idToken;
       if (idToken == null) {
+        _logAuth('step: idToken missing after selection');
         throw StateError(
             'Google не вернул ID token. Проверьте OAuth-настройки APK.');
       }
+      _logAuth('step: idToken received (value not logged)');
+      state = state.copyWith(progress: 'Подготавливаем ключи…');
       var publicKey = await _cryptoService.getPublicKey();
       publicKey ??= (await _cryptoService.generateIdentityKeys())['publicKey']!;
+      _logAuth('step: identity keys ready');
       // Save an authenticated profile only AFTER server validation succeeds.
+      state = state.copyWith(progress: 'Подключаемся к серверу…');
+      _logAuth('step: register on relay');
       final profile =
           await _connectionService.register(nickname, googleIdToken: idToken);
+      _logAuth('step: register completed');
       if (!mounted || epoch != _authEpoch) return false;
       final userId = await _databaseService.saveUserProfile(nickname, publicKey,
           profile: profile);
+      _logAuth('step: profile saved to local database');
       if (!mounted || epoch != _authEpoch) return false;
       _connectionService.connect(nickname);
+      _logAuth('step: socket connect requested');
+      _logAuth('result: sign-in completed, opening main screen');
       state = AuthState(
           status: AuthStatus.authenticated,
           nickname: nickname,
@@ -157,13 +183,30 @@ class AuthNotifier extends StateNotifier<AuthState> {
       }
       return true;
     } on GoogleSignInException catch (e) {
-      state = state.copyWith(
-          status: AuthStatus.error,
-          error: e.code == GoogleSignInExceptionCode.canceled
-              ? 'Вход отменён. Можно попробовать снова.'
-              : 'Google-вход недоступен. Проверьте сеть и настройки OAuth.');
+      _logAuth('GoogleSignInException: code=${e.code.name}, '
+          'description=${e.description}, details=${e.details}');
+      final String message;
+      switch (e.code) {
+        case GoogleSignInExceptionCode.canceled:
+          message = 'Вход отменён. Можно попробовать снова.';
+          break;
+        case GoogleSignInExceptionCode.clientConfigurationError:
+        case GoogleSignInExceptionCode.providerConfigurationError:
+          message =
+              'Google-вход не настроен для этого приложения. '
+              'Проверьте Android OAuth-клиент (package и SHA-1) в Google Cloud Console.';
+          break;
+        case GoogleSignInExceptionCode.uiUnavailable:
+          message =
+              'Google не смог открыть окно входа. Попробуйте снова или обновите Сервисы Google Play.';
+          break;
+        default:
+          message = 'Google-вход недоступен. Проверьте сеть и настройки OAuth.';
+      }
+      state = state.copyWith(status: AuthStatus.error, error: message);
       return false;
     } catch (e) {
+      _logAuth('sign-in failed: $e');
       state = state.copyWith(status: AuthStatus.error, error: e.toString());
       return false;
     }

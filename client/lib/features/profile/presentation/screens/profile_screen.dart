@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:shade/core/widgets/shade_motion.dart';
 import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 import 'package:shade/features/stickers/collection.dart';
 
@@ -10,6 +11,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shade/core/services/connection_service.dart';
 import 'package:shade/core/widgets/shade_ui.dart';
+import 'package:shade/features/profile/data/avatar_repository.dart';
+import 'package:shade/features/profile/presentation/screens/avatar_editor.dart';
 import 'package:shade/main.dart';
 
 // Brighter secondary tones for better contrast on the dark background.
@@ -56,7 +59,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   static const _amber = Color(0xFFF59E0B);
 
   double get _headerHeight =>
-      250 + (MediaQuery.textScalerOf(context).scale(27) - 27) * 2;
+      280 + (MediaQuery.textScalerOf(context).scale(27) - 27) * 2;
 
   String? _serverName;
   String get _title =>
@@ -171,6 +174,31 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     } catch (_) {/* Cached profile stays readable offline. */}
   }
 
+  Future<void> _editAvatar() async {
+    final provider = avatarProfileProvider(widget.username);
+    var current = ref.read(provider).valueOrNull;
+    if (current == null) {
+      await ref.read(provider.notifier).load();
+      if (!mounted) return;
+      current = ref.read(provider).valueOrNull;
+    }
+    if (current == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'Не удалось загрузить аватар. Проверьте подключение и повторите попытку.')));
+      return;
+    }
+    ShadeMotion.selection(context);
+    await Navigator.of(context).push<bool>(PageRouteBuilder<bool>(
+        transitionDuration: ShadeMotion.duration(context, 260),
+        reverseTransitionDuration: ShadeMotion.duration(context, 220),
+        pageBuilder: (_, __, ___) =>
+            AvatarEditor(username: widget.username, initial: current!),
+        transitionsBuilder: (_, animation, __, child) => FadeTransition(
+            opacity: animation.drive(CurveTween(curve: Curves.easeOutCubic)),
+            child: child)));
+  }
+
   Future<void> _editName() async {
     String draft = _title;
     final name = await showDialog<String>(
@@ -194,7 +222,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
       final result = await ref
           .read(connectionServiceProvider)
           .profileRequest('PUT', '/profile/name', {'displayName': name});
-      if (mounted) setState(() => _serverName = result['displayName']);
+      if (mounted) {
+        setState(() => _serverName = result['displayName']);
+        await ref.read(avatarProfileProvider(widget.username).notifier).load();
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -300,6 +331,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     var confirming = false;
     showModalBottomSheet<void>(
         context: context,
+        sheetAnimationStyle: ShadeMotion.sheet(context),
         showDragHandle: true,
         shape: const RoundedRectangleBorder(
             borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
@@ -391,12 +423,16 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final avatar =
+        ref.watch(avatarProfileProvider(widget.username)).valueOrNull;
+    final title =
+        avatar?.displayName.isNotEmpty == true ? avatar!.displayName : _title;
     final subtitle = widget.isSelf
-        ? 'это вы'
+        ? '@${widget.username}'
         : (_status?.displayText ?? 'загрузка статуса…');
     final online = _status?.online == true;
     return Scaffold(
-      backgroundColor: const Color(0xff080808),
+      backgroundColor: ShadeColors.black,
       body: CustomScrollView(controller: _scroll, slivers: [
         SliverAppBar(
           pinned: true,
@@ -405,12 +441,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
               icon: const Icon(Icons.arrow_back_rounded, size: 22),
               onPressed: () => Navigator.maybePop(context)),
           actions: [
-            if (widget.isSelf)
-              IconButton.filledTonal(
-                  tooltip: 'Изменить имя',
-                  onPressed: _editName,
-                  icon: const Icon(Icons.edit_outlined))
-            else
+            if (!widget.isSelf)
               PopupMenuButton<String>(
                   onSelected: (v) => v == 'note'
                       ? _editNote()
@@ -424,14 +455,16 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
           ],
           stretch: true,
           expandedHeight: _headerHeight,
-          backgroundColor: ShadeColors.surfaceDark,
+          backgroundColor: ShadeColors.black,
           surfaceTintColor: Colors.transparent,
           title: AnimatedOpacity(
               opacity: _collapsed ? 1 : 0,
-              duration: const Duration(milliseconds: 180),
+              duration: ShadeMotion.duration(context, 180),
               child: Row(children: [
                 ShadeAvatar(
-                    name: widget.username,
+                    name: title,
+                    username: widget.username,
+                    online: online,
                     imageUrl: widget.avatarUrl,
                     size: 34),
                 const SizedBox(width: 10),
@@ -439,7 +472,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                     child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                      Text(_title,
+                      Text(title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -456,7 +489,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             ],
             background: _ProfileHeader(
                 name: widget.username,
-                title: _title,
+                title: title,
+                onEdit: widget.isSelf ? _editAvatar : null,
                 subtitle: subtitle,
                 online: online,
                 avatarUrl: widget.avatarUrl),
@@ -467,7 +501,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                 child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 640),
                     child: Padding(
-                        padding: EdgeInsets.fromLTRB(16, 16, 16,
+                        padding: EdgeInsets.fromLTRB(20, 20, 20,
                             40 + MediaQuery.viewPaddingOf(context).bottom),
                         child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -514,10 +548,17 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   Widget _buildActions() {
     final actions = <Widget>[
+      if (widget.isSelf)
+        _ActionButton(
+            icon: Icons.edit_outlined,
+            label: 'Имя',
+            primary: true,
+            onTap: _editName),
       if (!widget.isSelf)
         _ActionButton(
             icon: Icons.chat_bubble_outline_rounded,
             label: 'Написать',
+            primary: true,
             onTap: widget.onWrite ?? () => Navigator.pop(context)),
       _ActionButton(
           icon: Icons.copy_outlined,
@@ -528,7 +569,6 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             icon: widget.isSelf
                 ? Icons.qr_code_2_rounded
                 : Icons.verified_user_outlined,
-            accent: true,
             label: widget.isSelf ? 'Мой ключ' : 'Ключ',
             onTap: _showKey),
       if (!widget.isSelf)
@@ -543,7 +583,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     ]);
   }
 
-  Widget _buildInfo() => _Section(title: 'Информация', children: [
+  Widget _buildInfo() => _Section(title: 'Информация', plain: true, children: [
         _Tile(
             icon: Icons.alternate_email_rounded,
             title: '@${widget.username}',
@@ -571,11 +611,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   Widget _buildKeySection() {
     final bytes = _fingerprint!;
-    return _Section(title: 'Шифрование', children: [
+    return _Section(title: 'Безопасность', children: [
       InkWell(
           onTap: _showKey,
           child: Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(16),
               child: Row(children: [
                 _KeyIdenticon(bytes: bytes, size: 52),
                 const SizedBox(width: 12),
@@ -594,7 +634,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                 horizontal: 8, vertical: 4),
                             decoration: BoxDecoration(
                                 color: widget.isSelf
-                                    ? _amber.withValues(alpha: .2)
+                                    ? ShadeColors.surfaceElevated
                                     : Colors.white.withValues(alpha: .12),
                                 borderRadius: BorderRadius.circular(20)),
                             child: Text(
@@ -605,8 +645,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
                                     color: widget.isSelf
-                                        ? _kAmberText
-                                        : ShadeColors.textPrimary))),
+                                        ? ShadeColors.textPrimary
+                                        : (_verified
+                                            ? ShadeColors.textPrimary
+                                            : _kAmberText)))),
                       ]),
                       const SizedBox(height: 6),
                       _FingerprintText(bytes: bytes, fontSize: 12, groups: 4),
@@ -630,47 +672,62 @@ class _ProfileHeader extends StatelessWidget {
   final String subtitle;
   final bool online;
   final String? avatarUrl;
+  final VoidCallback? onEdit;
   const _ProfileHeader(
       {required this.name,
       required this.title,
       required this.subtitle,
       required this.online,
+      this.onEdit,
       this.avatarUrl});
 
   @override
   Widget build(BuildContext context) => DecoratedBox(
-      decoration: const BoxDecoration(
-          gradient: RadialGradient(
-              center: Alignment(0, -.1),
-              radius: .85,
-              colors: [
-            Color(0xFF1C1C1E),
-            Color(0xFF101010),
-            ShadeColors.black
-          ])),
+      decoration: const BoxDecoration(color: Color(0xFF000000)),
       child: SafeArea(
           bottom: false,
           child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 32, 24, 16),
+              padding: const EdgeInsets.fromLTRB(24, 36, 24, 22),
               child:
                   Column(mainAxisAlignment: MainAxisAlignment.end, children: [
-                Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                            color: online
-                                ? ShadeColors.violetLight
-                                : Colors.white.withValues(alpha: .12),
-                            width: 2),
-                        boxShadow: [
-                          BoxShadow(
-                              color: Colors.black.withValues(alpha: .5),
-                              blurRadius: 30,
-                              offset: const Offset(0, 12))
-                        ]),
-                    child:
-                        ShadeAvatar(name: name, imageUrl: avatarUrl, size: 88)),
+                Semantics(
+                    button: onEdit != null,
+                    label: onEdit == null ? null : 'Изменить аватар',
+                    child: Tooltip(
+                        message: onEdit == null ? title : 'Изменить аватар',
+                        child: InkWell(
+                            customBorder: const CircleBorder(),
+                            onTap: onEdit,
+                            child: Stack(clipBehavior: Clip.none, children: [
+                              HeroMode(
+                                  enabled:
+                                      !MediaQuery.disableAnimationsOf(context),
+                                  child: Hero(
+                                      tag: onEdit == null
+                                          ? 'chat-avatar-$name'
+                                          : 'profile-avatar-$name',
+                                      child: ShadeAvatar(
+                                          name: title,
+                                          username: name,
+                                          imageUrl: avatarUrl,
+                                          size: 108,
+                                          online: online))),
+                              if (onEdit != null)
+                                Positioned(
+                                    right: -3,
+                                    bottom: -3,
+                                    child: Container(
+                                        padding: const EdgeInsets.all(6),
+                                        decoration: BoxDecoration(
+                                            color: const Color(0xFF111113),
+                                            shape: BoxShape.circle,
+                                            border: Border.all(
+                                                color: const Color(0xFF29292D),
+                                                width: 2)),
+                                        child: const Icon(Icons.edit_outlined,
+                                            size: 15,
+                                            color: Color(0xFFF5F5F7))))
+                            ])))),
                 const SizedBox(height: 12),
                 Text(title,
                     maxLines: 1,
@@ -702,44 +759,55 @@ class _ProfileHeader extends StatelessWidget {
 class _ActionButton extends StatelessWidget {
   final IconData icon;
   final String label;
-  final bool accent;
+  final bool primary;
   final VoidCallback onTap;
   const _ActionButton(
       {required this.icon,
       required this.label,
       required this.onTap,
-      this.accent = false});
+      this.primary = false});
 
   @override
-  Widget build(BuildContext context) => Material(
-      color: const Color(0xFF121212),
-      shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: BorderSide(color: Colors.white.withValues(alpha: .08))),
-      child: InkWell(
-          borderRadius: BorderRadius.circular(16),
-          onTap: onTap,
-          child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                Icon(icon,
-                    size: 20,
-                    color: accent
-                        ? const Color(0xFFF59E0B)
-                        : ShadeColors.violetLight),
-                const SizedBox(height: 6),
-                Text(label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 12, fontWeight: FontWeight.w600)),
-              ]))));
+  Widget build(BuildContext context) => ShadeTapScale(
+      child: Material(
+          color: primary ? ShadeColors.textPrimary : ShadeColors.surfaceCard,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: BorderSide(
+                  color:
+                      primary ? Colors.transparent : ShadeColors.greyBorder)),
+          child: InkWell(
+              borderRadius: BorderRadius.circular(18),
+              onTap: () {
+                ShadeMotion.selection(context);
+                onTap();
+              },
+              child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(icon,
+                        size: 21,
+                        color:
+                            primary ? Colors.black : ShadeColors.textPrimary),
+                    const SizedBox(height: 9),
+                    Text(label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            color: primary
+                                ? Colors.black
+                                : ShadeColors.textPrimary,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600)),
+                  ])))));
 }
 
 class _Section extends StatelessWidget {
   final String? title;
   final List<Widget> children;
-  const _Section({this.title, required this.children});
+  final bool plain;
+  const _Section({this.title, required this.children, this.plain = false});
 
   @override
   Widget build(BuildContext context) =>
@@ -755,11 +823,12 @@ class _Section extends StatelessWidget {
         ClipRRect(
             borderRadius: BorderRadius.circular(16),
             child: Material(
-                color: const Color(0xFF121212),
+                color: plain ? Colors.transparent : ShadeColors.surfaceCard,
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(16),
-                    side:
-                        BorderSide(color: Colors.white.withValues(alpha: .08))),
+                    side: plain
+                        ? BorderSide.none
+                        : const BorderSide(color: ShadeColors.greyBorder)),
                 child: Column(children: [
                   for (var i = 0; i < children.length; i++) ...[
                     if (i > 0)

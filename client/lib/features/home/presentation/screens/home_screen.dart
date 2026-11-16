@@ -12,6 +12,8 @@ import 'package:shade/features/chats/presentation/screens/chat_screen.dart';
 import 'package:shade/features/home/presentation/widgets/chat_list_view.dart';
 
 import 'package:shade/main.dart';
+import '../widgets/home_style.dart';
+import '../widgets/home_connection_status.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -24,6 +26,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   bool _isOpeningSelfChat = false;
   StreamSubscription? _messageSub;
   StreamSubscription? _deletionSub;
+  StreamSubscription? _statusSub;
   final _search = TextEditingController();
   bool _savedOnly = false;
   @override
@@ -37,6 +40,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         if (mounted) ref.invalidate(conversationsProvider);
       });
       _deletionSub = conn.messageDeleted.listen((_) {
+        if (mounted) ref.invalidate(conversationsProvider);
+      });
+      _statusSub = conn.messageStatusUpdates.listen((_) {
         if (mounted) ref.invalidate(conversationsProvider);
       });
       NotificationService.cancelAll();
@@ -61,6 +67,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     WidgetsBinding.instance.removeObserver(this);
     _messageSub?.cancel();
     _deletionSub?.cancel();
+    _statusSub?.cancel();
     _search.dispose();
     super.dispose();
   }
@@ -70,132 +77,155 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   @override
   Widget build(BuildContext context) {
     final auth = ref.watch(authNotifierProvider);
-    final connection = ref.watch(connectionServiceProvider);
     return Scaffold(
+      backgroundColor: HomeStyle.background,
       body: SafeArea(
           child: Center(
               child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 760),
-                  child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Padding(
-                            padding: const EdgeInsets.fromLTRB(24, 14, 20, 0),
-                            child: Row(children: [
-                              const ShadeLogo(size: 34),
-                              const SizedBox(width: 8),
-                              const Text('shade',
+                  child: NestedScrollView(
+                    headerSliverBuilder: (context, scrolled) => [
+                      SliverAppBar(
+                        pinned: true,
+                        backgroundColor: HomeStyle.background,
+                        toolbarHeight: 64,
+                        titleSpacing: 24,
+                        title: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              ShadeLogo(size: 28),
+                              SizedBox(width: 10),
+                              Text('SHADE',
                                   style: TextStyle(
-                                      fontSize: 25,
+                                      fontSize: 17,
                                       fontWeight: FontWeight.w700,
-                                      letterSpacing: -.9)),
-                              const Spacer(),
-                              IconButton(
-                                  tooltip: 'Открыть Избранное',
-                                  onPressed:
-                                      _isOpeningSelfChat ? null : _openSelfChat,
-                                  icon: _isOpeningSelfChat
-                                      ? const SizedBox(
-                                          width: 20,
-                                          height: 20,
-                                          child: CircularProgressIndicator(
-                                              strokeWidth: 2))
-                                      : const Icon(
-                                          Icons.bookmark_border_rounded,
-                                          color: ShadeColors.textSecondary)),
-                              const SizedBox(width: 6),
-                              IconButton(
-                                  tooltip: 'Мой профиль',
-                                  onPressed: _showProfile,
-                                  icon: ShadeAvatar(
-                                      name: auth.nickname ?? '',
-                                      imageUrl: auth.avatarUrl,
-                                      size: 38)),
-                            ])),
-                        Padding(
-                            padding: const EdgeInsets.fromLTRB(24, 26, 24, 0),
-                            child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  const Text('Сообщения',
-                                      style: TextStyle(
-                                          fontSize: 32,
-                                          height: 1.15,
-                                          fontWeight: FontWeight.w700,
-                                          letterSpacing: -1)),
-                                  const SizedBox(height: 10),
-                                  StreamBuilder<bool>(
-                                      stream: connection.connectionChanges,
-                                      initialData: connection.isConnected,
-                                      builder: (context, snapshot) =>
-                                          Row(children: [
-                                            Icon(
-                                                snapshot.data == true
-                                                    ? Icons.cloud_done_outlined
-                                                    : Icons.cloud_off_rounded,
-                                                size: 15,
-                                                color: snapshot.data == true
-                                                    ? ShadeColors.greenAccent
-                                                    : ShadeColors.textMuted),
-                                            const SizedBox(width: 7),
-                                            Expanded(
-                                                child: Text(
-                                                    snapshot.data == true
-                                                        ? 'Вы на связи'
-                                                        : 'Офлайн · история доступна',
-                                                    style: const TextStyle(
-                                                        fontSize: 13,
-                                                        color: ShadeColors
-                                                            .textSecondary))),
-                                          ])),
-                                  const SizedBox(height: 24),
-                                  TextField(
-                                      key: const Key('conversation-search'),
-                                      controller: _search,
-                                      onChanged: (_) => setState(() {}),
-                                      decoration: InputDecoration(
-                                          hintText: 'Поиск в переписках',
-                                          prefixIcon: const Icon(
-                                              Icons.search_rounded,
-                                              size: 22),
-                                          suffixIcon: _search.text.isEmpty
-                                              ? null
-                                              : IconButton(
-                                                  tooltip: 'Очистить поиск',
-                                                  icon: const Icon(
-                                                      Icons.close_rounded,
-                                                      size: 19),
-                                                  onPressed: () {
-                                                    _search.clear();
-                                                    setState(() {});
-                                                  }))),
-                                  const SizedBox(height: 18),
-                                  Wrap(spacing: 8, children: [
-                                    ChoiceChip(
-                                        label: const Text('Все чаты'),
-                                        selected: !_savedOnly,
-                                        showCheckmark: false,
-                                        onSelected: (_) =>
-                                            setState(() => _savedOnly = false)),
-                                    ChoiceChip(
-                                        label: const Text('Избранное'),
-                                        selected: _savedOnly,
-                                        showCheckmark: false,
-                                        onSelected: (_) =>
-                                            setState(() => _savedOnly = true)),
-                                  ]),
-                                ])),
-                        const SizedBox(height: 12),
-                        Expanded(
-                            child: ChatListView(
-                                query: _search.text, savedOnly: _savedOnly)),
-                      ])))),
+                                      letterSpacing: 3.2)),
+                            ]),
+                        actions: [
+                          IconButton(
+                              tooltip: 'Открыть Избранное',
+                              onPressed:
+                                  _isOpeningSelfChat ? null : _openSelfChat,
+                              icon: _isOpeningSelfChat
+                                  ? const SizedBox.square(
+                                      dimension: 18,
+                                      child: CircularProgressIndicator(
+                                          strokeWidth: 2))
+                                  : const Icon(Icons.bookmark_border_rounded,
+                                      size: 23)),
+                          IconButton(
+                              tooltip: 'Мой профиль',
+                              onPressed: _showProfile,
+                              icon: ShadeAvatar(
+                                  name: auth.displayName ?? auth.nickname ?? '',
+                                  username: auth.nickname,
+                                  imageUrl: auth.avatarUrl,
+                                  size: 34)),
+                          const SizedBox(width: 12),
+                        ],
+                        bottom: PreferredSize(
+                            preferredSize: const Size.fromHeight(1),
+                            child: AnimatedContainer(
+                                duration: HomeStyle.duration(context),
+                                height: 1,
+                                color: scrolled
+                                    ? HomeStyle.border
+                                    : Colors.transparent)),
+                      ),
+                      SliverToBoxAdapter(
+                          child: Padding(
+                              padding: const EdgeInsets.fromLTRB(24, 22, 24, 0),
+                              child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text('Сообщения',
+                                        style: TextStyle(
+                                            fontSize: 34,
+                                            height: 1.15,
+                                            fontWeight: FontWeight.w700,
+                                            letterSpacing: -1.3)),
+                                    const SizedBox(height: 10),
+                                    const HomeConnectionStatus(),
+                                    const SizedBox(height: 24),
+                                    TextField(
+                                        key: const Key('conversation-search'),
+                                        controller: _search,
+                                        onChanged: (_) => setState(() {}),
+                                        style: const TextStyle(fontSize: 15),
+                                        textInputAction: TextInputAction.search,
+                                        decoration: InputDecoration(
+                                            hintText: 'Поиск в переписках',
+                                            filled: true,
+                                            fillColor: HomeStyle.surface,
+                                            contentPadding:
+                                                const EdgeInsets.symmetric(
+                                                    vertical: 14),
+                                            border: HomeStyle.searchBorder,
+                                            enabledBorder:
+                                                HomeStyle.searchBorder,
+                                            focusedBorder:
+                                                HomeStyle.searchBorder.copyWith(
+                                                    borderSide:
+                                                        const BorderSide(
+                                                            color: ShadeColors
+                                                                .textMuted)),
+                                            prefixIcon: const Icon(
+                                                Icons.search_rounded,
+                                                size: 21),
+                                            suffixIcon: _search.text.isEmpty
+                                                ? null
+                                                : IconButton(
+                                                    tooltip: 'Очистить поиск',
+                                                    icon: const Icon(
+                                                        Icons.close_rounded,
+                                                        size: 18),
+                                                    onPressed: () {
+                                                      _search.clear();
+                                                      setState(() {});
+                                                    }))),
+                                    const SizedBox(height: 14),
+                                    Wrap(spacing: 8, children: [
+                                      _filter('Все чаты', false),
+                                      _filter('Избранное', true),
+                                    ]),
+                                    const SizedBox(height: 18),
+                                  ]))),
+                    ],
+                    body: ChatListView(
+                        query: _search.text, savedOnly: _savedOnly),
+                  )))),
       floatingActionButton: FloatingActionButton.extended(
-          onPressed: () => context.push('/search'),
-          icon: const Icon(Icons.edit_outlined, size: 21),
+          elevation: 0,
+          backgroundColor: HomeStyle.ink,
+          foregroundColor: Colors.black,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          onPressed: _openSearch,
+          icon: const Icon(Icons.edit_outlined, size: 20),
           label: const Text('Написать',
               style: TextStyle(fontWeight: FontWeight.w700))),
     );
+  }
+
+  Widget _filter(String title, bool saved) => ChoiceChip(
+      label: Text(title),
+      selected: _savedOnly == saved,
+      showCheckmark: false,
+      selectedColor: HomeStyle.ink,
+      backgroundColor: HomeStyle.surface,
+      labelStyle: TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w700,
+          color:
+              _savedOnly == saved ? Colors.black : ShadeColors.textSecondary),
+      side: BorderSide(
+          color: _savedOnly == saved ? Colors.transparent : HomeStyle.border),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      onSelected: (_) => setState(() => _savedOnly = saved));
+
+  Future<void> _openSearch() async {
+    await context.push('/search');
+    if (mounted) ref.invalidate(conversationsProvider);
   }
 
   Future<void> _openSelfChat() async {
@@ -227,7 +257,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
       if (mounted) {
         ref.invalidate(conversationsProvider);
-        context.push(
+        await context.push(
           '/chat/$conversationId',
           extra: ChatScreenArgs(
             conversationName: selfChatName,
@@ -246,7 +276,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         );
       }
     } finally {
-      if (mounted) setState(() => _isOpeningSelfChat = false);
+      if (mounted) {
+        ref.invalidate(conversationsProvider);
+        setState(() => _isOpeningSelfChat = false);
+      }
     }
   }
 }

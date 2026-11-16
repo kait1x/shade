@@ -38,6 +38,14 @@ const app = express();
 const CERT_DIR = process.env.CERT_DIR || path.join(__dirname, 'certs');
 let httpsServer = null;
 let httpServer = null;
+// Production behind a local reverse proxy (Caddy/Nginx): TLS terminates at the
+// proxy with a CA-signed certificate; Node listens in plain HTTP on loopback only.
+const TLS_BY_PROXY = process.env.TLS_TERMINATED_BY_PROXY === '1';
+const BIND_HOST = process.env.BIND_HOST || (TLS_BY_PROXY ? '127.0.0.1' : '0.0.0.0');
+if (TLS_BY_PROXY && !['127.0.0.1', '::1'].includes(BIND_HOST)) {
+  console.error('[FATAL] TLS_TERMINATED_BY_PROXY requires a loopback BIND_HOST');
+  process.exit(1);
+}
 
 function generateSelfSignedCerts() {
   const { execSync } = require('child_process');
@@ -55,7 +63,7 @@ function generateSelfSignedCerts() {
   console.log('[tls] Self-signed certificates generated in', certDir);
 }
 
-try {
+if (!TLS_BY_PROXY) try {
   const keyPath = path.join(CERT_DIR, 'key.pem');
   const certPath = path.join(CERT_DIR, 'cert.pem');
 
@@ -144,11 +152,20 @@ const corsOptions = {
   credentials: true,
 };
 
-// TLS is required in all modes
-const server = httpsServer;
+// TLS is required in all modes (directly or by the loopback-only reverse proxy)
+const server = TLS_BY_PROXY ? http.createServer(app) : httpsServer;
 if (!server) {
   console.error('[FATAL] TLS is required in all modes. Run gen-certs.sh to generate certificates.');
   process.exit(1);
+}
+
+// Only the configured local proxy hop is trusted; it appends the real peer last.
+function socketClientIp(socket) {
+  if (process.env.TRUST_PROXY === '1') {
+    const xff = String(socket.handshake.headers['x-forwarded-for'] || '').split(',').map(v => v.trim()).filter(Boolean);
+    if (xff.length) return xff[xff.length - 1];
+  }
+  return socket.handshake.address || socket.conn.remoteAddress || 'unknown';
 }
 
 const io = new Server(server || http.createServer(app), {
@@ -1439,7 +1456,8 @@ app.post('/fcm/unregister', requireUserAuth, async (req, res) => {
   res.status(saved === false ? 503 : 200).json({ ok: saved !== false });
 });
 
-require('./stickers').installStickers(app, requireUserAuth, users, loadMap('stickers.json'), map => saveMap('stickers.json', map));
+require('./stickers').installStickers(app, requireUserAuth, users, loadMap('stickers.json'), map => saveMap('stickers.json', map),
+  (username,revision) => io.to(`profile:${username}`).emit('avatarUpdated',{username,revision}));
 
 app.get('/user/:username', requireUserAuth, (req, res) => {
   // HIGH-06: Constant-time user lookup for all requests
@@ -1565,7 +1583,7 @@ io.on('connection', (socket) => {
   setTimeout(() => globalWsRateLimit.delete(bucket), 1000);
   
   // MED-07: Ограничение 5 одновременных подключений с одного IP
-  const clientIp = socket.handshake.address || socket.conn.remoteAddress || 'unknown';
+  const clientIp = socketClientIp(socket);
   const currentCount = wsConnectionsPerIp.get(clientIp) || 0;
   if (currentCount >= 50) {
     console.warn('[ws] Connection limit exceeded for IP:', clientIp);
@@ -1737,6 +1755,14 @@ io.on('connection', (socket) => {
   });
 
   directMessaging.attach(socket);
+
+  // One bounded batch replaces subscriptions; existing presence watches stay
+  // independent so opening/closing a profile cannot unwatch an active chat.
+  socket.on('watchProfiles', names => {
+    if (!Array.isArray(names) || names.length>256 || names.some(n=>typeof n!=='string' || !/^[a-z0-9_]{3,32}$/.test(n))) return;
+    for (const room of socket.rooms) if (room.startsWith('profile:')) socket.leave(room);
+    for (const name of new Set(names)) socket.join(`profile:${name}`);
+  });
 
   socket.on('groupMessage', (_payload, ack) => {
     if (typeof ack === 'function') ack({ ok: false, error: 'Groups are not available in this version' });
@@ -2558,8 +2584,8 @@ const PORT = httpsServer
   ? (process.env.HTTPS_PORT || 3443)
   : (process.env.PORT || 3000);
 
-server.listen(PORT, '0.0.0.0', () => {
-  const proto = httpsServer ? 'https' : 'http';
+server.listen(PORT, BIND_HOST, () => {
+  const proto = httpsServer ? 'https' : 'http (TLS by proxy)';
   console.log(`Shade ${proto} server on :${PORT}`);
 });
 

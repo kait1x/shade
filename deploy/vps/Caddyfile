@@ -1,0 +1,27 @@
+13-143-207-108.sslip.io {
+	encode gzip
+	request_body {
+		max_size 12MB
+	}
+	# Admin surfaces are not exposed publicly; use an SSH tunnel to 127.0.0.1:3000.
+	@admin path /admin* /dashboard* /logs /api/stats /api/dashboard-stats
+	respond @admin 404
+	reverse_proxy 127.0.0.1:3000 {
+		# Overwrite (never append) so clients cannot spoof their address.
+		header_up X-Forwarded-For {remote_host}
+	}
+	log {
+		output file /var/log/caddy/shade-access.log {
+			mode 0600
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Session-Token delete
+				request>headers>X-Username delete
+			}
+		}
+	}
+}

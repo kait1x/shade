@@ -1,0 +1,23 @@
+[Unit]
+Description=Shade isolated Web Alpha
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shade-alpha
+Group=shade-alpha
+WorkingDirectory=/opt/shade-alpha/current/server
+EnvironmentFile=/etc/shade-alpha/alpha.env
+ExecStart=/usr/bin/node alpha.mjs
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/shade-alpha/data
+
+[Install]
+WantedBy=multi-user.target

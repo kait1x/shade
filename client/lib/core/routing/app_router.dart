@@ -1,6 +1,7 @@
 import 'package:shade/core/services/connection_service.dart';
 import 'package:shade/core/routing/navigation_keys.dart';
 import 'package:flutter/material.dart';
+import 'package:shade/core/widgets/shade_motion.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -60,67 +61,102 @@ final goRouterProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
           path: '/profile',
-          builder: (ctx, state) {
+          pageBuilder: (ctx, state) {
             final auth = ref.read(authNotifierProvider);
-            return ProfileScreen(
-                username: auth.nickname ?? '',
-                publicKey: auth.publicKey,
-                displayName: auth.displayName,
-                email: auth.email,
-                avatarUrl: auth.avatarUrl,
-                isSelf: true);
+            return _homeTransition(
+                ctx,
+                state,
+                ProfileScreen(
+                    username: auth.nickname ?? '',
+                    publicKey: auth.publicKey,
+                    displayName: auth.displayName,
+                    email: auth.email,
+                    avatarUrl: auth.avatarUrl,
+                    isSelf: true));
           }),
       GoRoute(
           path: '/peer/:username',
-          builder: (ctx, state) {
+          pageBuilder: (ctx, state) {
             final name = state.pathParameters['username']!,
                 owner = ref.read(authNotifierProvider).nickname;
             final cached = state.extra as String?;
-            return Consumer(
-                builder: (ctx, ref, _) => ProfileScreen(
-                    key: ValueKey(name),
-                    username: name,
-                    viewerUsername: owner,
-                    publicKey: ref.watch(_peerKey(name)).valueOrNull ?? cached,
-                    onWrite: () async {
-                      if (cached != null && ctx.canPop()) {
-                        ctx.pop();
-                        return;
-                      }
-                      final id = await ref
-                          .read(connectionServiceProvider)
-                          .ensureConversation(name);
-                      if (ctx.mounted && id > 0) {
-                        ctx.pushReplacement('/chat/$id');
-                      }
-                    }));
+            return _homeTransition(
+                ctx,
+                state,
+                Consumer(
+                    builder: (ctx, ref, _) => ProfileScreen(
+                        key: ValueKey(name),
+                        username: name,
+                        viewerUsername: owner,
+                        publicKey:
+                            ref.watch(_peerKey(name)).valueOrNull ?? cached,
+                        onWrite: () async {
+                          if (cached != null && ctx.canPop()) {
+                            ctx.pop();
+                            return;
+                          }
+                          final id = await ref
+                              .read(connectionServiceProvider)
+                              .ensureConversation(name);
+                          if (ctx.mounted && id > 0) {
+                            ctx.pushReplacement('/chat/$id');
+                          }
+                        })));
           }),
       GoRoute(
         path: '/search',
-        builder: (context, state) => const UserSearchScreen(),
+        pageBuilder: (context, state) =>
+            _homeTransition(context, state, const UserSearchScreen()),
       ),
       GoRoute(
         path: '/chat/:id',
-        builder: (context, state) {
+        pageBuilder: (context, state) {
           final conversationId = int.tryParse(state.pathParameters['id'] ?? '');
           if (conversationId == null || conversationId <= 0) {
-            return const Scaffold(
-                body: Center(child: Text('Неверный адрес чата')));
+            return _homeTransition(
+                context,
+                state,
+                const Scaffold(
+                    body: Center(child: Text('Неверный адрес чата'))));
           }
           final chatArgs = state.extra;
           if (chatArgs is! ChatScreenArgs) {
-            return _RestoredChat(conversationId: conversationId);
+            return _homeTransition(
+                context, state, _RestoredChat(conversationId: conversationId));
           }
 
-          return ChatScreen(
-            conversationId: conversationId,
-            args: chatArgs,
-          );
+          return _homeTransition(
+              context,
+              state,
+              ChatScreen(
+                conversationId: conversationId,
+                args: chatArgs,
+              ));
         },
       ),
     ],
   );
 });
+
+/// Shared transitions preserve the stack and disable Hero flights with motion.
+CustomTransitionPage<void> _homeTransition(
+        BuildContext context, GoRouterState state, Widget child) =>
+    CustomTransitionPage<void>(
+        key: state.pageKey,
+        child: child,
+        transitionDuration: ShadeMotion.duration(context, 220),
+        reverseTransitionDuration: ShadeMotion.duration(context, 180),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          if (MediaQuery.disableAnimationsOf(context)) return child;
+          final curve = animation.drive(CurveTween(curve: Curves.easeOutCubic));
+          return FadeTransition(
+              opacity: curve,
+              child: SlideTransition(
+                  position:
+                      Tween(begin: const Offset(.035, 0), end: Offset.zero)
+                          .animate(curve),
+                  child: child));
+        });
 
 /// Converts a Riverpod [Ref] into a [Listenable] so GoRouter can refresh
 /// when [AuthState] changes.
@@ -186,8 +222,7 @@ class _RestoredChatState extends ConsumerState<_RestoredChat> {
       future: _args,
       builder: (context, snapshot) {
         if (snapshot.connectionState != ConnectionState.done) {
-          return const Scaffold(
-              body: Center(child: CircularProgressIndicator()));
+          return const Scaffold(body: Center(child: ShadeLoadingIndicator()));
         }
         final args = snapshot.data;
         if (args == null) {

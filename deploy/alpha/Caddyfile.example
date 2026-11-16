@@ -1,0 +1,5 @@
+# A NEW hostname only. Merge this block into Caddy after review; do not replace
+# the existing production Caddyfile. Node is reachable only on loopback.
+alpha.example.com {
+    reverse_proxy 127.0.0.1:3101
+}
