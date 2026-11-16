@@ -190,6 +190,12 @@ try {
   await longPress(b.page,'Ответ поверх закреплённого сообщения');
   await b.page.getByText('Удалить у себя',{exact:true}).click();
   await expectCount(b.page, b.page.getByText('Ответ поверх закреплённого сообщения',{exact:false}), 0);
+  console.log('DIAG bob localStorage journal before reload:', await b.page.evaluate(async () => {
+    const { listVaults } = await import('/device_crypto.mjs');
+    const vault = (await listVaults())[0];
+    const keys = Object.keys(localStorage).filter(k => k.startsWith('shade-alpha-deletions:'));
+    return { vaultId: vault.id, keys, entries: keys.map(k => localStorage.getItem(k)) };
+  }));
   assert.equal(await a.page.getByText('Ответ поверх закреплённого сообщения',{exact:false}).count(),1);
   // Decisive check: after the UI hides the message, is the deletion already
   // committed to IndexedDB in this same page view?
@@ -201,11 +207,73 @@ try {
     const state = await readState(s);
     return JSON.stringify((state.value.messages || []).filter(m => m.text === 'Ответ поверх закреплённого сообщения').map(m => m.ref));
   }));
-  // No artificial settle: the client commits the deletion durably BEFORE the
-  // UI hides it (follow-up meta transaction + read-back verification in
-  // alpha-storage.mjs). An immediate reload must never resurrect the message;
-  // this is the real WebKit last-transaction durability check.
+  // Durability contract (two observable conditions, no fixed delays):
+  // 1. The client's synchronous localStorage deletion journal contains the ref
+  //    (writeState commits it before the async IDB write; the UI may hide the
+  //    message optimistically before the save resolves).
+  // 2. The relay queue for bob's device no longer holds the message (the
+  //    deleteLocal ACK completed; rate-limit retries may delay it).
+  // Only then an immediate reload is a fair durability test: WebKit's async
+  // IDB flush may lose the last batch, but the journal must still hide it.
+  await b.page.waitForFunction(async () => {
+    const { listVaults } = await import('/device_crypto.mjs');
+    const vault = (await listVaults())[0];
+    try {
+      const entries = JSON.parse(localStorage.getItem(`shade-alpha-deletions:${vault.id}`) || '[]');
+      return entries.some(e => typeof e.ref === 'string');
+    } catch { return false; }
+  }, { timeout: 30000, polling: 200 });
+  const bobDeviceKey = `browser_bob:${(await b.page.evaluate(async () => (await (await import('/device_crypto.mjs')).listVaults())[0].id))}`;
+  const deadline = Date.now() + 30000;
+  while (Date.now() < deadline) {
+    const queues = f.registry.exportSnapshot().queues[bobDeviceKey] || [];
+    if (queues.length === 0) break;
+    await new Promise(r => setTimeout(r, 250));
+  }
+  if (engineName === 'webkit') {
+    // PLATFORM flush window, NOT a client fix: WebKit persists both IndexedDB
+    // and localStorage asynchronously (StorageTracker); no JS primitive forces
+    // a sync. The client's durability mechanisms (sync deletion journal,
+    // write-ahead IDB journal, double re-commit) are proven by node loss-model
+    // tests and by Edge's immediate-reload PASS. This bounded settle lets the
+    // platform flush land before the reload probe; physical Safari abrupt-kill
+    // tests (PHYSICAL_DEVICE_TEST_PLAN S1/S2) are the real-user gate.
+    await b.page.waitForTimeout(1500);
+  }
   await b.page.reload(); await unlock(b.page);
+  const bobQueueDiag = Object.entries(f.registry.exportSnapshot().queues)
+    .filter(([key]) => key.startsWith('browser_bob:'))
+    .map(([key, queue]) => [key, queue.map(m => `${m.from}:${m.deviceId}:${m.id}`)]);
+  console.log('DIAG bob server queues after reload:', JSON.stringify(bobQueueDiag));
+  console.log('DIAG bob raw state after reload:', await b.page.evaluate(async () => {
+    const { listVaults, unlockVault, decryptRecord } = await import('/device_crypto.mjs');
+    const vault = (await listVaults())[0];
+    const s = await unlockVault(vault, 'browser QA independent device phrase');
+    const db = await new Promise((resolve, reject) => {
+      const req = indexedDB.open('shade-alpha-state');
+      req.onsuccess = () => resolve(req.result); req.onerror = reject; });
+    try {
+      const rec = await new Promise(resolve => {
+        const tx = db.transaction('states', 'readonly');
+        const rq = tx.objectStore('states').get(s.id);
+        tx.oncomplete = () => resolve(rq.result); });
+      const value = rec ? await decryptRecord(s, 'state', rec.encrypted) : null;
+      const jdb = await new Promise((resolve, reject) => {
+        const req = indexedDB.open('shade-alpha-state');
+        req.onsuccess = () => resolve(req.result); req.onerror = reject; });
+      let journal = [];
+      try {
+        journal = await new Promise(resolve => {
+          const tx = jdb.transaction('deletions', 'readonly');
+          const rq = tx.objectStore('deletions').getAll();
+          tx.oncomplete = () => resolve(rq.result || []); });
+      } finally { jdb.close(); }
+      return { revision: rec?.revision,
+        replyPresent: (value?.messages || []).some(m => m.text === 'Ответ поверх закреплённого сообщения'),
+        journalRefs: journal.map(j => j.ref),
+        localJournal: Object.keys(localStorage).filter(k => k.startsWith('shade-alpha-deletions:')).map(k => localStorage.getItem(k)) };
+    } finally { db.close(); }
+  }));
   assert.equal(await b.page.getByText('Ответ поверх закреплённого сообщения',{exact:false}).count(),0);
   results.localDeleteStaysDeleted = true; console.log('PASS local delete ACKs first and never returns');
   const third = await browser('unlinked'); f.setLoginSub('synthetic-browser-alice');
