@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -44,6 +45,9 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
   final ScrollController _scroll = ScrollController();
   bool _atBottom = true;
   int _newWhileAway = 0;
+  String? _typingPeer;
+  Timer? _typingTimer;
+  final Map<String, bool> _presence = {};
 
   @override
   void initState() {
@@ -54,6 +58,18 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
             crypto: ref.read(cryptoServiceProvider),
             database: ref.read(databaseServiceProvider));
     _scroll.addListener(_onScroll);
+    _backend.onTyping = (account, until) {
+      if (!mounted || _peer != account) return;
+      _typingTimer?.cancel();
+      setState(() => _typingPeer = account);
+      final ms = until - DateTime.now().millisecondsSinceEpoch;
+      _typingTimer = Timer(Duration(milliseconds: ms.clamp(0, 5000)), () {
+        if (mounted) setState(() => _typingPeer = null);
+      });
+    };
+    _backend.onPresence = (account, online) {
+      if (mounted) setState(() => _presence[account] = online);
+    };
     _init();
   }
 
@@ -82,6 +98,7 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
   @override
   void dispose() {
     _chatTimer?.cancel();
+    _typingTimer?.cancel();
     _origin.dispose();
     _passphrase.dispose();
     _scroll.dispose();
@@ -118,6 +135,9 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
 
   Future<void> _loadContacts() async {
     final contacts = await _backend.contacts();
+    for (final c in contacts) {
+      if (c['confirmed'] == true) _backend.watch(c['account'] as String);
+    }
     if (mounted) setState(() => _contacts = contacts);
   }
 
@@ -216,9 +236,11 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
       _replyTo = null;
       _newWhileAway = 0;
       _atBottom = true;
+      _typingPeer = null;
       await _loadMessages();
       if (!mounted) return;
       setState(() => _stage = _Stage.chat);
+      _backend.watch(peer);
       WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToLatest());
       _chatTimer?.cancel();
       _chatTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
@@ -256,6 +278,14 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
       _messages = messages;
       if (!_atBottom) _newWhileAway += freshIncoming;
     });
+    // Read-ACK: просмотренные входящие подтверждаются подписанной операцией.
+    final unread = messages
+        .where((m) => m['direction'] == 'in' && m['status'] != 'retracted')
+        .map((m) => m['ref'] as String)
+        .toList();
+    if (unread.isNotEmpty) {
+      _backend.markRead(unread).catchError((Object _) {});
+    }
     if (_atBottom) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_scroll.hasClients) {
@@ -308,10 +338,29 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
                       style: TextStyle(
                           color: ShadeColors.textSecondary, fontSize: 12)),
                   onTap: () => Navigator.pop(ctx, 'delete')),
+              if (message['direction'] == 'out' &&
+                  message['status'] != 'retracted')
+                ListTile(
+                    leading: const Icon(Icons.undo_rounded,
+                        color: Color(0xFFEF4444)),
+                    title: const Text('Отозвать у всех',
+                        style: TextStyle(color: Color(0xFFEF4444))),
+                    subtitle: const Text(
+                        'Недоставленные копии удаляются с сервера',
+                        style: TextStyle(
+                            color: ShadeColors.textSecondary, fontSize: 12)),
+                    onTap: () => Navigator.pop(ctx, 'retract')),
             ])));
     if (!mounted || action == null) return;
     if (action == 'reply') {
       setState(() => _replyTo = message);
+      return;
+    }
+    if (action == 'retract') {
+      await _run(() async {
+        await _backend.retract(message['ref'] as String);
+        await _loadMessages();
+      });
       return;
     }
     await _run(() async {
@@ -325,9 +374,13 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
 
   void _leaveChat() {
     _chatTimer?.cancel();
+    _typingTimer?.cancel();
+    final peer = _peer;
+    if (peer != null) _backend.unwatch(peer);
     setState(() {
       _stage = _Stage.home;
       _peer = null;
+      _typingPeer = null;
     });
     _loadContacts();
   }
@@ -338,12 +391,21 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
         backgroundColor: ShadeColors.black,
         appBar: AppBar(
             backgroundColor: ShadeColors.black,
-            title: Text(
-                _stage == _Stage.chat
-                    ? (_peer == _backend.account ? 'Избранное' : _peer ?? '')
-                    : 'Shade Alpha',
-                style: const TextStyle(
-                    color: ShadeColors.textPrimary, fontSize: 17)),
+            title: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                      _stage == _Stage.chat
+                          ? (_peer == _backend.account ? 'Избранное' : _peer ?? '')
+                          : 'Shade Alpha',
+                      style: const TextStyle(
+                          color: ShadeColors.textPrimary, fontSize: 17)),
+                  if (_stage == _Stage.chat && _typingPeer == _peer)
+                    const Text('печатает…',
+                        style: TextStyle(
+                            color: ShadeColors.textMuted, fontSize: 11)),
+                ]),
             leading: _stage == _Stage.chat
                 ? IconButton(
                     icon: const Icon(Icons.arrow_back_rounded,
@@ -599,7 +661,9 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
                 style: const TextStyle(
                     color: ShadeColors.textPrimary, fontSize: 14)),
             subtitle: Text(
-                c['confirmed'] == true ? 'genesis сверен' : 'не подтверждён',
+                c['confirmed'] == true
+                    ? '${_presence[c['account']] == true ? 'в сети' : 'не в сети'} · genesis сверен'
+                    : 'не подтверждён',
                 style: const TextStyle(
                     color: ShadeColors.textSecondary, fontSize: 12)),
             trailing: const Icon(Icons.chevron_right_rounded,
@@ -632,20 +696,35 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
                       final ack = devices
                           .where((d) => d['acknowledgedAt'] != null)
                           .length;
+                      final readCount =
+                          devices.where((d) => d['readAt'] != null).length;
+                      final retracted = m['status'] == 'retracted';
+                      final isImage = m['isImage'] == true;
                       final reply = m['reply'] as Map<String, dynamic>?;
                       return MessageBubble(
-                          text: m['text'] as String,
+                          text: retracted
+                              ? 'Сообщение отозвано отправителем'
+                              : m['text'] as String,
                           timestamp: DateTime.fromMillisecondsSinceEpoch(
                               m['createdAt'] as int),
                           isMine: isMine,
                           isEncrypted: true,
+                          isImage: isImage,
+                          imageData: isImage ? m['imageData'] as Uint8List? : null,
                           status: isMine
-                              ? (devices.isNotEmpty && ack == devices.length
-                                  ? 'delivered'
-                                  : 'sent')
+                              ? (retracted
+                                  ? 'blocked'
+                                  : devices.isNotEmpty &&
+                                          readCount == devices.length
+                                      ? 'read'
+                                      : devices.isNotEmpty && ack == devices.length
+                                          ? 'delivered'
+                                          : 'sent')
                               : 'read',
                           deliveryLabel: isMine && devices.isNotEmpty
-                              ? 'Доставлено: $ack/${devices.length}'
+                              ? (readCount == devices.length
+                                  ? 'Прочитано'
+                                  : 'Доставлено: $ack/${devices.length}')
                               : null,
                           replyText: reply?['text'] as String?,
                           replySender: reply?['from'] as String?,
@@ -698,7 +777,23 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
                       size: 16, color: ShadeColors.textMuted),
                   onPressed: () => setState(() => _replyTo = null)),
             ])),
-      MessageInput(onSend: _send),
+      MessageInput(
+          onSend: _send,
+          onTyping: () {
+            final peer = _peer;
+            if (peer != null) _backend.sendTyping(peer);
+          },
+          onImageSelected: _sendMedia),
     ]);
+  }
+
+  Future<void> _sendMedia(List<int> bytes) async {
+    final peer = _peer;
+    if (peer == null || bytes.isEmpty) return;
+    await _run(() async {
+      await _backend.sendMedia(peer, bytes);
+      await _loadMessages();
+      _jumpToLatest();
+    });
   }
 }

@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -81,6 +83,50 @@ class FakeBackend implements AlphaV2Backend {
     messageList.removeWhere((m) => m['ref'] == ref);
   }
 
+  List<String> readRefs = [];
+  List<String> retracted = [];
+  List<String> typingSent = [];
+  List<String> watched = [];
+  List<List<int>> mediaSent = [];
+  @override
+  void Function(String account, int until)? onTyping;
+  @override
+  void Function(String account, bool online)? onPresence;
+  @override
+  Future<void> markRead(List<String> refs) async => readRefs.addAll(refs);
+  @override
+  Future<void> retract(String ref) async {
+    retracted.add(ref);
+    messageList.firstWhere((m) => m['ref'] == ref)['status'] = 'retracted';
+  }
+
+  @override
+  Future<String> sendMedia(String peer, List<int> bytes,
+      {String mime = 'image/jpeg'}) async {
+    mediaSent.add(bytes);
+    messageList.add({
+      'ref': 'native_android:primary:media${mediaSent.length}',
+      'peer': peer,
+      'direction': 'out',
+      'messageId': 'media${mediaSent.length}',
+      'createdAt': DateTime.now().millisecondsSinceEpoch,
+      'text': '',
+      'reply': null,
+      'status': 'server',
+      'acked': true,
+      'isImage': true,
+      'imageData': Uint8List.fromList(bytes)
+    });
+    return 'media${mediaSent.length}';
+  }
+
+  @override
+  void watch(String peer) => watched.add(peer);
+  @override
+  void unwatch(String peer) => watched.remove(peer);
+  @override
+  void sendTyping(String peer) => typingSent.add(peer);
+
   @override
   Future<int> sync() async => 0;
   @override
@@ -151,7 +197,7 @@ void main() {
     await tester.pumpWidget(_wrap(backend));
     await tester.pumpAndSettle();
     expect(find.text('@native_web'), findsOneWidget);
-    expect(find.text('genesis сверен'), findsOneWidget);
+    expect(find.textContaining('genesis сверен'), findsOneWidget);
 
     await tester.tap(find.text('Добавить'));
     await tester.pumpAndSettle();
@@ -270,5 +316,68 @@ void main() {
     await tester.pumpAndSettle();
     expect(backend.sent, ['заметка']);
     expect(backend.contactList, isEmpty);
+  });
+
+  testWidgets('retract menu, read receipts and typing signal are wired',
+      (tester) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final backend = FakeBackend()
+      ..session = true
+      ..isEnrolled = true
+      ..contactList = [
+        {'account': 'native_web', 'genesisDigest': 'cd' * 32, 'confirmed': true}
+      ]
+      ..messageList = [
+        {
+          'ref': 'native_web:webdev:in1',
+          'peer': 'native_web',
+          'direction': 'in',
+          'messageId': 'in1',
+          'createdAt': now,
+          'text': 'входящее',
+          'reply': null,
+          'status': 'received',
+          'acked': true
+        },
+        {
+          'ref': 'native_android:primary:out1',
+          'peer': 'native_web',
+          'direction': 'out',
+          'messageId': 'out1',
+          'createdAt': now + 1,
+          'text': 'исходящее',
+          'reply': null,
+          'status': 'server',
+          'acked': true
+        }
+      ];
+    await tester.pumpWidget(_wrap(backend));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('@native_web'));
+    await tester.pumpAndSettle();
+    // Presence watch and read receipts fired on open.
+    expect(backend.watched, contains('native_web'));
+    expect(backend.readRefs, contains('native_web:webdev:in1'));
+
+    // Typing signal from the reused MessageInput.
+    await tester.enterText(
+        find.descendant(
+            of: find.byType(MessageInput), matching: find.byType(TextField)),
+        'печатаю');
+    await tester.pumpAndSettle();
+    expect(backend.typingSent, contains('native_web'));
+
+    // Retract-for-all from the long-press menu.
+    await tester.longPress(find.text('исходящее'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Отозвать у всех'));
+    await tester.pumpAndSettle();
+    expect(backend.retracted, ['native_android:primary:out1']);
+    expect(find.text('Сообщение отозвано отправителем'), findsOneWidget);
+
+    // Incoming typing hint renders the indicator.
+    backend.onTyping?.call('native_web', now + 3000);
+    await tester.pump();
+    expect(find.text('печатает…'), findsOneWidget);
   });
 }

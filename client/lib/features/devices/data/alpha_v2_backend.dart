@@ -5,6 +5,8 @@
 /// alpha-процесс. Production v1-поток не затрагивается.
 library;
 
+import 'dart:typed_data';
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -32,10 +34,18 @@ abstract class AlphaV2Backend {
   Future<void> confirmContact(String account, String genesisDigest);
   Future<List<Map<String, dynamic>>> messages(String peer);
   Future<void> send(String peer, String text, {Map<String, dynamic>? reply});
+  Future<String> sendMedia(String peer, List<int> bytes, {String mime});
   Future<void> deleteLocal(String ref);
+  Future<void> retract(String ref);
+  Future<void> markRead(List<String> refs);
   Future<int> sync();
   Future<List<Map<String, dynamic>>> delivery(String ref);
   Future<void> renewLease();
+  void watch(String peer);
+  void unwatch(String peer);
+  void sendTyping(String peer);
+  void Function(String account, int until)? onTyping;
+  void Function(String account, bool online)? onPresence;
   void dispose();
 }
 
@@ -52,6 +62,36 @@ class RealAlphaV2Backend implements AlphaV2Backend {
   String? _privateKey;
 
   RealAlphaV2Backend({required this.crypto, required this.database});
+
+  @override
+  void Function(String account, int until)? onTyping;
+  @override
+  void Function(String account, bool online)? onPresence;
+
+  void _attachSignals() {
+    _transport?.onTyping = (account, until) => onTyping?.call(account, until);
+    _transport?.onPresence = (account, online) => onPresence?.call(account, online);
+  }
+
+  @override
+  Future<void> markRead(List<String> refs) => _requireRepo.markRead(refs);
+
+  @override
+  Future<void> retract(String ref) => _requireRepo.retractMessage(ref);
+
+  @override
+  Future<String> sendMedia(String peer, List<int> bytes,
+          {String mime = 'image/jpeg'}) =>
+      _requireRepo.sendMedia(peer, Uint8List.fromList(bytes), mime: mime);
+
+  @override
+  void watch(String peer) => _transport?.watch(peer);
+
+  @override
+  void unwatch(String peer) => _transport?.unwatch(peer);
+
+  @override
+  void sendTyping(String peer) => _transport?.sendTyping(peer);
 
   V2ChatRepository get _requireRepo {
     final repo = _repo;
@@ -75,6 +115,7 @@ class RealAlphaV2Backend implements AlphaV2Backend {
     final transport = AlphaTransport(origin, crypto);
     transport.sessionCookie = cookie;
     _transport = transport;
+    _attachSignals();
     final repo = V2ChatRepository(
         transport: transport,
         crypto: crypto,
@@ -161,6 +202,7 @@ class RealAlphaV2Backend implements AlphaV2Backend {
     _root = await publicSpki(publicKey);
     _privateKey = privateKey;
     _transport = transport;
+    _attachSignals();
     _repo = V2ChatRepository(
         transport: transport,
         crypto: crypto,
