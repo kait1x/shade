@@ -173,6 +173,17 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
         for (const d of dir.devices) io.to(room(m.from, d.id)).emit('receipts');
       }
     } else if (op === 'status') result = await registry.status(body, auth);
+    else if (op === 'retract') {
+      result = await registry.retract(body, auth);
+      const snap = registry.exportSnapshot();
+      for (const ref of body) {
+        const delivery = snap.delivery[ref];
+        if (!delivery) continue;
+        for (const d of delivery.devices) io.to(room(d.account, d.id)).emit('retracted');
+        const senderDir = snap.accounts[delivery.from]?.history.at(-1);
+        if (senderDir) for (const d of senderDir.devices) io.to(room(delivery.from, d.id)).emit('retracted');
+      }
+    } else if (op === 'retractions') result = await registry.retractions(body, auth);
     else {
       check(['users', 'directory', 'install'].includes(op), 'Unknown operation');
       await registry.authorize(auth, await operationDigest(op, body));

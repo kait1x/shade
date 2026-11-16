@@ -19,7 +19,7 @@ export function legacyRoot(pem) {
 export async function createDeviceRegistry({ users, persist, snapshot, clock = Date.now, verifyGoogle }) {
   check(users instanceof Map && typeof persist === 'function');
   // Additive snapshot: never rewrite users, legacy messages, tokens or keys.
-  let state = { format: 2, accounts: {}, queues: {}, receipts: {}, delivery: {}, stickers: {} };
+  let state = { format: 2, accounts: {}, queues: {}, receipts: {}, delivery: {}, stickers: {}, retractions: {} };
   const initialAccounts = [];
   for (const [account, user] of users) {
     check(/^[a-z0-9_]{3,32}$/.test(account), 'Invalid legacy account');
@@ -57,6 +57,7 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     state = structuredClone(snapshot);
     state.delivery ||= {};
     state.stickers ||= {};
+    state.retractions ||= {};
   }
   const challenges = new Map();
   let tail = Promise.resolve();
@@ -186,6 +187,46 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
       await authenticate(auth, await operationDigest('status', refs));
       return Object.fromEntries(refs.map(ref => [ref, state.delivery[ref]?.from === auth.account
         ? structuredClone(state.delivery[ref].devices) : []]));
+    }),
+    // Delete-for-all (contract C3): sender-only, idempotent, purges offline
+    // queues and leaves a bounded tombstone for already-delivered copies.
+    retract: (refs, auth) => serial(async () => {
+      check(Array.isArray(refs) && refs.length <= 200 && refs.every(ref => typeof ref === 'string' &&
+        /^[a-z0-9_]{3,32}:(primary|[a-f0-9]{64}):[a-f0-9]{64}$/.test(ref)), 'Invalid retraction refs');
+      await authenticate(auth, await operationDigest('retract', refs));
+      check(refs.every(ref => ref.split(':')[0] === auth.account), 'Only the sender can retract');
+      return transaction(next => {
+        const now = clock();
+        for (const [ref, t] of Object.entries(next.retractions)) {
+          if (t.deletedAt <= now - 7 * 24 * 60 * 60 * 1000) delete next.retractions[ref];
+        }
+        let retracted = 0;
+        for (const ref of refs) {
+          if (next.retractions[ref]) continue;
+          check(Object.keys(next.retractions).length < 10000, 'Retraction capacity reached');
+          next.retractions[ref] = { from: auth.account, deletedAt: now };
+          retracted++;
+        }
+        const refSet = new Set(refs);
+        for (const [key, queue] of Object.entries(next.queues)) {
+          next.queues[key] = queue.filter(m => !refSet.has(messageRef(m)));
+        }
+        return { retracted };
+      });
+    }),
+    // Tombstones are visible only to the sender account and recipient devices.
+    retractions: (body, auth) => serial(async () => {
+      const since = body?.since ?? 0;
+      check(Number.isSafeInteger(since) && since >= 0, 'Invalid cursor');
+      await authenticate(auth, await operationDigest('retractions', body ?? null));
+      const out = [];
+      for (const [ref, t] of Object.entries(state.retractions)) {
+        if (t.deletedAt <= since) continue;
+        const recipient = state.delivery[ref]?.devices?.some(d => d.account === auth.account && d.id === auth.id);
+        if (t.from === auth.account || recipient) out.push({ ref, deletedAt: t.deletedAt, from: t.from });
+        if (out.length >= 500) break;
+      }
+      return { retractions: out };
     }),
     assertLegacyAllowed(account) {
       check(!current(state, account), 'Client upgrade required: account uses device protocol v2');
