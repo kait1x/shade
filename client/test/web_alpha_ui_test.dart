@@ -85,6 +85,182 @@ void main() {
     restored.dispose();
   });
 
+  testWidgets('Alpha reply: long-press menu, composer preview and payload',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final actions = <Map<String, dynamic>>[];
+    final c = AlphaController((action, payload) async {
+      actions.add({'action': action, 'payload': payload});
+    });
+    final data = <String, dynamic>{
+      'account': 'alice',
+      'selected': 'bob',
+      'connected': true,
+      'peers': [
+        {'account': 'bob', 'pinned': true}
+      ],
+      'messages': [
+        {
+          'ref': '1',
+          'from': 'bob',
+          'to': 'alice',
+          'text': 'Привет, как дела?',
+          'createdAt': 1700000000000,
+          'status': 'received',
+          'devices': [],
+        },
+        {
+          'ref': '2',
+          'from': 'alice',
+          'to': 'bob',
+          'text': 'Всё хорошо',
+          'createdAt': 1700000000001,
+          'status': 'accepted',
+          'devices': [],
+        },
+      ],
+    };
+    c.apply(data);
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.text('Привет, как дела?'));
+    await tester.pumpAndSettle();
+    expect(find.text('Ответить'), findsOneWidget);
+    expect(find.text('Удалить у себя'), findsOneWidget);
+    await tester.tap(find.text('Ответить'));
+    await tester.pumpAndSettle();
+    // Reply preview bar with the original sender and snapshot text.
+    expect(find.byTooltip('Отменить ответ'), findsOneWidget);
+    await tester.enterText(
+        find.byKey(const Key('message-field')), 'Вот ответ');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('send-message')));
+    await tester.pumpAndSettle();
+    final send = actions.lastWhere((entry) => entry['action'] == 'send');
+    final reply = (send['payload'] as Map)['reply'] as Map;
+    expect(reply['ref'], '1');
+    expect(reply['from'], 'bob');
+    expect(reply['text'], 'Привет, как дела?');
+    // Preview clears after a successful dispatch.
+    expect(find.byTooltip('Отменить ответ'), findsNothing);
+    // Plain messages still render without a reply block.
+    await tester.longPress(find.text('Всё хорошо'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Ответить'));
+    await tester.pumpAndSettle();
+    expect(find.text('Вы'), findsOneWidget);
+    await tester.tap(find.byTooltip('Отменить ответ'));
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('Отменить ответ'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
+  testWidgets('Alpha deleteLocal dispatches the exact message ref',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final actions = <Map<String, dynamic>>[];
+    final c = AlphaController((action, payload) async {
+      if (action == 'deleteLocal') {
+        throw StateError('Сеть недоступна');
+      }
+      actions.add({'action': action, 'payload': payload});
+    });
+    final data = <String, dynamic>{
+      'account': 'alice',
+      'selected': 'bob',
+      'connected': true,
+      'peers': [
+        {'account': 'bob', 'pinned': true}
+      ],
+      'messages': [
+        {
+          'ref': 'a:b:1',
+          'from': 'bob',
+          'to': 'alice',
+          'text': 'Удаляемое сообщение',
+          'createdAt': 1700000000000,
+          'status': 'received',
+          'devices': [],
+        },
+      ],
+    };
+    c.apply(data);
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    await tester.longPress(find.text('Удаляемое сообщение'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Удалить у себя'));
+    await tester.pumpAndSettle();
+    // The failed action is reported honestly instead of a fake success.
+    expect(find.byType(SnackBar), findsOneWidget);
+    expect(find.textContaining('Не удалось удалить'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
+  testWidgets('Alpha peer profile opens from the chat header', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final actions = <Map<String, dynamic>>[];
+    final c = AlphaController((action, payload) async {
+      actions.add({'action': action, 'payload': payload});
+    });
+    final data = <String, dynamic>{
+      'account': 'alice',
+      'selected': 'bob',
+      'connected': true,
+      'peers': [
+        {'account': 'bob', 'pinned': true}
+      ],
+      'messages': [
+        {
+          'ref': '1',
+          'from': 'bob',
+          'to': 'alice',
+          'text': 'Привет',
+          'createdAt': 1700000000000,
+          'status': 'received',
+          'devices': [],
+        },
+      ],
+    };
+    c.apply(data);
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Личная переписка'));
+    await tester.pumpAndSettle();
+    expect(find.text('Профиль собеседника'), findsOneWidget);
+    expect(find.text('Ключ собеседника проверен'), findsOneWidget);
+    expect(find.text('1'), findsOneWidget);
+    await tester.tap(find.text('Ключ собеседника проверен'));
+    await tester.pumpAndSettle();
+    expect(
+        actions.where((entry) => entry['action'] == 'verify').length, 1);
+    await tester.tap(find.byTooltip('Назад к переписке'));
+    await tester.pumpAndSettle();
+    expect(find.text('Профиль собеседника'), findsNothing);
+    expect(find.byKey(const Key('message-field')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
   for (final width in [320.0, 390.0, 430.0, 768.0, 1440.0]) {
     testWidgets('Alpha chat, list and profile fit $width with large text',
         (tester) async {

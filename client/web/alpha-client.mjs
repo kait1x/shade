@@ -4,6 +4,31 @@ import { readState, writeState } from './alpha-storage.mjs';
 
 export const ref = m => `${m.from}:${m.deviceId}:${m.id}`;
 export const digest = (op, body = null) => hash(JSON.stringify([op, body]));
+// Alpha wire payload agreement (opaque to the signed device-v2 envelope):
+// plain text stays plain text; a reply adds {"shade":1,"t","r":{ref,from,text}}.
+// Old histories without the marker keep rendering as plain text.
+const REPLY_PREVIEW_LIMIT = 2000;
+function encodePayload(text, reply) {
+  check(typeof reply.ref === 'string' && reply.ref.length <= 200 &&
+    typeof reply.from === 'string' && typeof reply.text === 'string' && reply.text.length > 0,
+    'Некорректное сообщение для ответа');
+  return JSON.stringify({ shade: 1, t: text, r: { ref: reply.ref, from: reply.from,
+    text: reply.text.slice(0, REPLY_PREVIEW_LIMIT) } });
+}
+function decodePayload(payload) {
+  try {
+    const parsed = JSON.parse(payload);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) &&
+      parsed.shade === 1 && typeof parsed.t === 'string' &&
+      (parsed.r === null || parsed.r === undefined || (typeof parsed.r === 'object' &&
+        typeof parsed.r.ref === 'string' && typeof parsed.r.from === 'string' &&
+        typeof parsed.r.text === 'string'))) {
+      return { text: parsed.t, reply: parsed.r ? { ref: parsed.r.ref, from: parsed.r.from,
+        text: parsed.r.text } : null };
+    }
+  } catch { /* JSON-like plain text renders unchanged. */ }
+  return { text: payload, reply: null };
+}
 const contact = (state, account) => Object.hasOwn(state.contacts, account) ? state.contacts[account] : null;
 const putContact = (state, account, value) => Object.defineProperty(state.contacts, account,
   { value, enumerable: true, configurable: true, writable: true });
@@ -151,25 +176,44 @@ export class AlphaClient extends EventTarget {
       senderGenesis: sender.genesis, recipientGenesis: recipient.genesis,
       senderCheckpoint: sender.checkpoint, recipientCheckpoint: recipient.checkpoint };
   }
-  async send(account, text) {
+  async send(account, text, reply = null) {
     return this.exclusive(async () => {
       check(text.trim().length > 0, 'Введите сообщение');
+      if (reply != null) check(reply.text.trim().length > 0, 'Некорректное сообщение для ответа');
       // Refresh directories while online; offline sends use a pinned, unexpired
       // roster. A stale signed outbox entry is retained and shown as blocked.
       if (navigator.onLine) {
         await this.refreshOwn();
         const next = structuredClone(this.state); putContact(next, account, await this.inspectContact(account)); await this.save(next);
       }
-      const m = await c.sealMessage(text, this.state.own.history, contact(this.state, account)?.history,
+      const m = await c.sealMessage(reply ? encodePayload(text, reply) : text,
+        this.state.own.history, contact(this.state, account)?.history,
         this.session, this.trust(this.session.account, account));
       const next = structuredClone(this.state);
-      next.outbox.push(m); next.messages.push({ ref: ref(m), from: m.from, to: m.to, text,
+      next.outbox.push(m); next.messages.push({ ref: ref(m), from: m.from, to: m.to, text, reply,
         createdAt: m.createdAt, status: 'queued', devices: [] });
       await this.save(next);
       if (navigator.onLine) {
         try { await this.flush(); } catch (error) { this.lastError = error.message; this.changed(); }
       }
       return m.id; // Local commit succeeded; keep retrying the exact ciphertext.
+    });
+  }
+  // Local-only removal, mirroring Android «Удалить у себя». A queued send is
+  // cancelled; a fetched message is ACKed first so the relay queue cannot
+  // redeliver it after deletion. Other devices keep their copy.
+  async deleteLocal(messageRef) {
+    return this.exclusive(async () => {
+      check(typeof messageRef === 'string', 'Некорректное сообщение');
+      const next = structuredClone(this.state);
+      const message = next.messages.find(m => m.ref === messageRef);
+      check(message, 'Сообщение не найдено');
+      const pending = next.pendingAck.includes(messageRef);
+      if (pending) await this.operation('ack', [messageRef]);
+      next.pendingAck = next.pendingAck.filter(item => item !== messageRef);
+      next.outbox = next.outbox.filter(m => ref(m) !== messageRef);
+      next.messages = next.messages.filter(m => m.ref !== messageRef);
+      await this.save(next);
     });
   }
   async flush() {
@@ -211,9 +255,11 @@ export class AlphaClient extends EventTarget {
             const verified = await this.verifyDirectory({ ...pinned, history }, pinned);
             if (own) next.own = verified; else putContact(next, account, verified);
           }
-          const text = await c.openMessage(bundle, this.session, this.trust(m.from, m.to, next));
+          const payload = await c.openMessage(bundle, this.session, this.trust(m.from, m.to, next));
+          const decoded = decodePayload(payload);
           if (!next.messages.some(item => item.ref === ref(m))) next.messages.push({ ref: ref(m), from: m.from, to: m.to,
-            text, createdAt: m.createdAt, status: m.from === this.session.account ? 'accepted' : 'received', devices: [] });
+            text: decoded.text, reply: decoded.reply, createdAt: m.createdAt,
+            status: m.from === this.session.account ? 'accepted' : 'received', devices: [] });
           if (!next.pendingAck.includes(ref(m))) next.pendingAck.push(ref(m));
         }
         // Local ciphertext/history + replay IDs + checkpoints committed BEFORE ACK.

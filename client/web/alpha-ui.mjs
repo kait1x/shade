@@ -76,7 +76,8 @@ function render() {
   window.shadeReceive(JSON.stringify({
     account: client.session.account, selected, connection, connected: client.connected && navigator.onLine && !client.lastError,
     peers: accounts.map(account => ({ account, pinned: !!contact(account), unverified: (client.unverified || []).includes(account) })),
-    messages: client.state.messages.map(({ref,from,to,text,createdAt,status,devices}) => ({ref,from,to,text,createdAt,status,devices})),
+    messages: client.state.messages.map(({ref,from,to,text,reply,createdAt,status,devices}) =>
+      ({ref,from,to,text,reply,createdAt,status,devices})),
     devices: (client.state.own.history.at(-1)?.devices || []).map(({id}) => ({id, current:id === client.session.id})),
     positions: ui.positions, readUntil: ui.readUntil,
   }));
@@ -109,7 +110,8 @@ async function openApp() {
           if (data.until > previous) { ui.readUntil[data.account] = data.until; saveUi(); render(); } break;
         }
         case 'position': ui.positions[data.account] = {offset:Math.max(0,data.offset),bottom:!!data.bottom}; saveUi(); break;
-        case 'send': await client.send(data.account, data.text); client.sync().catch(e => notice(errors[e.message] || e.message)); break;
+        case 'send': await client.send(data.account, data.text, data.reply || null); client.sync().catch(e => notice(errors[e.message] || e.message)); break;
+        case 'deleteLocal': await client.deleteLocal(data.ref); break;
         case 'verify': verifyContact(data.account); break;
         case 'refresh': users = await client.users(); render(); break;
         case 'identity': showDialog('Ваш отпечаток', [node('p', '@' + client.session.account),

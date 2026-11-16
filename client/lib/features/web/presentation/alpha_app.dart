@@ -34,6 +34,7 @@ class _Shell extends StatefulWidget {
 
 class _ShellState extends State<_Shell> {
   bool profile = false;
+  bool peerProfile = false;
   @override
   Widget build(BuildContext context) {
     final c = widget.controller;
@@ -42,15 +43,23 @@ class _ShellState extends State<_Shell> {
       final right = profile
           ? _Profile(
               controller: c, close: () => setState(() => profile = false))
-          : _Conversation(
-              key: ValueKey(c.selected),
-              controller: c,
-              back: () => c.act('back'));
+          : peerProfile && c.selected != null
+              ? _PeerProfile(
+                  controller: c,
+                  peer: c.selected!,
+                  openChat: () => setState(() => peerProfile = false))
+              : _Conversation(
+                  key: ValueKey(c.selected),
+                  controller: c,
+                  back: () => c.act('back'),
+                  openPeer: () => setState(() => peerProfile = true));
       return PopScope(
-          canPop: c.selected == null && !profile,
+          canPop: c.selected == null && !profile && !peerProfile,
           onPopInvokedWithResult: (didPop, _) {
             if (!didPop) {
-              if (profile) {
+              if (peerProfile) {
+                setState(() => peerProfile = false);
+              } else if (profile) {
                 setState(() => profile = false);
               } else {
                 c.act('back');
@@ -69,8 +78,10 @@ class _ShellState extends State<_Shell> {
                                       width: bounds.maxWidth < 1200 ? 340 : 380,
                                       child: _Chats(
                                           controller: c,
-                                          openChat: () =>
-                                              setState(() => profile = false),
+                                          openChat: () => setState(() {
+                                                profile = false;
+                                                peerProfile = false;
+                                              }),
                                           profile: () => setState(
                                               () => profile = !profile))),
                                   const VerticalDivider(width: 1),
@@ -78,12 +89,16 @@ class _ShellState extends State<_Shell> {
                                 ])
                               : AnimatedSwitcher(
                                   duration: ShadeMotion.duration(context),
-                                  child: profile || c.selected != null
+                                  child: profile ||
+                                          peerProfile && c.selected != null ||
+                                          c.selected != null
                                       ? right
                                       : _Chats(
                                           controller: c,
-                                          openChat: () =>
-                                              setState(() => profile = false),
+                                          openChat: () => setState(() {
+                                                profile = false;
+                                                peerProfile = false;
+                                              }),
                                           profile: () => setState(
                                               () => profile = true))))))));
     });
@@ -350,9 +365,13 @@ String _time(Map<String, dynamic> item) {
 
 class _Conversation extends StatefulWidget {
   const _Conversation(
-      {super.key, required this.controller, required this.back});
+      {super.key,
+      required this.controller,
+      required this.back,
+      required this.openPeer});
   final AlphaController controller;
   final VoidCallback back;
+  final VoidCallback openPeer;
   @override
   State<_Conversation> createState() => _ConversationState();
 }
@@ -363,6 +382,7 @@ class _ConversationState extends State<_Conversation>
   Set<String>? known;
   Timer? positionTimer;
   bool restored = false, atBottom = true;
+  Map<String, dynamic>? replyTo;
   late final String? activeAccount;
   @override
   void initState() {
@@ -403,6 +423,61 @@ class _ConversationState extends State<_Conversation>
         'offset': scroll.offset,
         'bottom': atBottom
       });
+    }
+  }
+
+  void _showMessageMenu(Map<String, dynamic> m) {
+    ShadeMotion.selection(context);
+    showModalBottomSheet(
+      context: context,
+      sheetAnimationStyle: ShadeMotion.sheet(context),
+      showDragHandle: true,
+      backgroundColor: ShadeColors.surfaceCard,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+          child: SingleChildScrollView(
+              child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.reply_rounded, color: ShadeColors.cyan),
+            title: const Text('Ответить',
+                style: TextStyle(color: ShadeColors.textPrimary)),
+            onTap: () {
+              Navigator.pop(ctx);
+              setState(() => replyTo = {
+                    'ref': m['ref'],
+                    'from': m['from'],
+                    'text': m['text'],
+                  });
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.delete_outline_rounded,
+                color: ShadeColors.textSecondary),
+            title: const Text('Удалить у себя',
+                style: TextStyle(color: ShadeColors.textPrimary)),
+            onTap: () {
+              Navigator.pop(ctx);
+              _deleteMessage(m['ref'] as String);
+            },
+          ),
+        ],
+      ))),
+    );
+  }
+
+  Future<void> _deleteMessage(String ref) async {
+    try {
+      await widget.controller.act('deleteLocal', {'ref': ref});
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content:
+                Text('Не удалось удалить. Проверьте сеть и повторите.')));
+      }
     }
   }
 
@@ -483,24 +558,32 @@ class _ConversationState extends State<_Conversation>
                 tooltip: 'Назад к чатам',
                 onPressed: widget.back,
                 icon: const Icon(Icons.chevron_left_rounded)),
-            AvatarView(name: peer, size: 40),
-            const SizedBox(width: 12),
             Expanded(
-                child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                  Text(peer,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          fontSize: 16, fontWeight: FontWeight.w700)),
-                  const SizedBox(height: 3),
-                  const Text('Личная переписка',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          fontSize: 11, color: ShadeColors.textMuted)),
-                ])),
+                child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: widget.openPeer,
+                    child: Row(children: [
+                      AvatarView(name: peer, size: 40),
+                      const SizedBox(width: 12),
+                      Expanded(
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                            Text(peer,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w700)),
+                            const SizedBox(height: 3),
+                            const Text('Личная переписка',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                    fontSize: 11,
+                                    color: ShadeColors.textMuted)),
+                          ])),
+                    ]))),
             IconButton(
                 tooltip: 'Проверить ключ контакта',
                 onPressed: () => c.act('verify', {'account': peer}),
@@ -549,6 +632,7 @@ class _ConversationState extends State<_Conversation>
                             final m = items[i],
                                 date = DateTime.fromMillisecondsSinceEpoch(
                                     (m['createdAt'] as num).toInt());
+                            final reply = m['reply'] as Map?;
                             bool grouped(int j) =>
                                 j >= 0 &&
                                 j < items.length &&
@@ -581,7 +665,14 @@ class _ConversationState extends State<_Conversation>
                                       deliveryLabel:
                                           AlphaController.delivery(m),
                                       groupedWithPrevious: grouped(i - 1),
-                                      groupedWithNext: grouped(i + 1))),
+                                      groupedWithNext: grouped(i + 1),
+                                      onLongPress: () => _showMessageMenu(m),
+                                      replyText: reply?['text'] as String?,
+                                      replySender: reply == null
+                                          ? null
+                                          : reply['from'] == c.account
+                                              ? 'Вы'
+                                              : peer)),
                             ]);
                           })))),
       if (!c.pinned(peer))
@@ -593,7 +684,37 @@ class _ConversationState extends State<_Conversation>
                     onPressed: () => c.act('verify', {'account': peer}),
                     icon: const Icon(Icons.shield_outlined),
                     label: const Text('Сверить отпечаток'))))
-      else
+      else ...[
+        // Reply preview, mirroring the Android composer attachment bar.
+        if (replyTo != null)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            color: ShadeColors.surfaceElevated,
+            child: Row(children: [
+              Container(width: 3, height: 40, color: ShadeColors.cyan),
+              const SizedBox(width: 12),
+              Expanded(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    Text(replyTo!['from'] == c.account ? 'Вы' : peer,
+                        style: const TextStyle(
+                            color: ShadeColors.cyan,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600)),
+                    Text(replyTo!['text'] as String,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            color: ShadeColors.textSecondary, fontSize: 13)),
+                  ])),
+              IconButton(
+                  icon: const Icon(Icons.close_rounded,
+                      size: 18, color: ShadeColors.textMuted),
+                  tooltip: 'Отменить ответ',
+                  onPressed: () => setState(() => replyTo = null)),
+            ]),
+          ),
         Align(
             alignment: Alignment.bottomCenter,
             child: ConstrainedBox(
@@ -607,8 +728,17 @@ class _ConversationState extends State<_Conversation>
                         : 5,
                     onSend: (text) async {
                       atBottom = true;
-                      await c.act('send', {'account': peer, 'text': text});
+                      final reply = replyTo == null
+                          ? null
+                          : Map<String, dynamic>.from(replyTo!);
+                      await c.act('send', {
+                        'account': peer,
+                        'text': text,
+                        if (reply != null) 'reply': reply,
+                      });
+                      if (mounted) setState(() => replyTo = null);
                     }))),
+      ],
     ]);
   }
 }
@@ -714,4 +844,93 @@ class _Profile extends StatelessWidget {
                               color: ShadeColors.textMuted)),
                     ])))),
       ]);
+}
+
+class _PeerProfile extends StatelessWidget {
+  const _PeerProfile(
+      {required this.controller, required this.peer, required this.openChat});
+  final AlphaController controller;
+  final String peer;
+  final VoidCallback openChat;
+  @override
+  Widget build(BuildContext context) {
+    final c = controller;
+    final pinned = c.pinned(peer);
+    final messages = c.conversation(peer).length;
+    return Column(children: [
+      Row(children: [
+        IconButton(
+            tooltip: 'Назад к переписке',
+            onPressed: openChat,
+            icon: const Icon(Icons.chevron_left_rounded)),
+        const Flexible(
+            child: FittedBox(
+                fit: BoxFit.scaleDown,
+                child: Text('Профиль собеседника',
+                    style:
+                        TextStyle(fontSize: 18, fontWeight: FontWeight.w700)))),
+      ]),
+      Expanded(
+          child: Center(
+              child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 560),
+                  child: ListView(padding: const EdgeInsets.all(24), children: [
+                    Center(child: AvatarView(name: peer, size: 100)),
+                    const SizedBox(height: 20),
+                    Text(peer,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                            fontSize: 28, fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 6),
+                    Text('@$peer',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: ShadeColors.textMuted)),
+                    const SizedBox(height: 32),
+                    const Text('ПЕРЕПИСКА И БЕЗОПАСНОСТЬ',
+                        style: TextStyle(
+                            fontSize: 11,
+                            letterSpacing: 1.5,
+                            color: ShadeColors.textMuted)),
+                    const SizedBox(height: 12),
+                    Card(
+                        child: Column(children: [
+                      ListTile(
+                          leading: Icon(
+                              pinned
+                                  ? Icons.verified_user_outlined
+                                  : Icons.shield_outlined,
+                              color: pinned
+                                  ? ShadeColors.cyan
+                                  : ShadeColors.textSecondary),
+                          title: Text(pinned
+                              ? 'Ключ собеседника проверен'
+                              : 'Ключ ещё не проверен'),
+                          subtitle: Text(pinned
+                              ? 'Отпечаток закреплён за этим аккаунтом'
+                              : 'Сверьте отпечатки через независимый доверенный канал'),
+                          trailing: const Icon(Icons.chevron_right_rounded),
+                          onTap: () => c.act('verify', {'account': peer})),
+                      const Divider(height: 1, indent: 56),
+                      ListTile(
+                          leading:
+                              const Icon(Icons.forum_outlined),
+                          title: Text('$messages'),
+                          subtitle: const Text('Сообщений в переписке')),
+                    ])),
+                    const SizedBox(height: 20),
+                    OutlinedButton.icon(
+                        onPressed: openChat,
+                        icon: const Icon(Icons.chat_bubble_outline_rounded),
+                        label: const Text('Открыть переписку')),
+                    const SizedBox(height: 20),
+                    const Text(
+                        'Shade подтверждает ключи только вашей личной сверкой.\nGoogle и сервер не гарантируют личность собеседника.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            fontSize: 12,
+                            height: 1.6,
+                            color: ShadeColors.textMuted)),
+                  ])))),
+    ]);
+  }
 }
