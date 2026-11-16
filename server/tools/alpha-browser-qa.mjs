@@ -137,7 +137,7 @@ try {
   await pin(a.page,'browser_bob',bf); await pin(b.page,'browser_alice',af); console.log('PASS pinned contacts');
   const first = 'Первое реальное HTTPS сообщение 🔐';
   await send(a.page,first); await b.page.getByText(first,{exact:false}).last().waitFor();
-  await a.page.getByText(/Доставлено: 1\/1 устройств/).first().waitFor();
+  await a.page.getByText(/(Доставлено|Прочитано): 1\/1 устройств/).first().waitFor();
   await send(b.page,'Ответ из второго профиля'); await a.page.getByText('Ответ из второго профиля',{exact:false}).last().waitFor();
   results.bidirectionalMessaging = true;
   results.wss = frames.length >= 2 && frames.every(url => url.startsWith('wss:'));
@@ -150,7 +150,7 @@ try {
   });
   assert.equal(fields.nonExtractable,true); assert.ok(!fields.keys.some(k => /private|password/i.test(k)));
   assert.equal(await a.page.evaluate(async text => {
-    const db = await new Promise((resolve,reject) => { const req = indexedDB.open('shade-alpha-state',1); req.onsuccess = () => resolve(req.result);req.onerror=reject; });
+    const db = await new Promise((resolve,reject) => { const req = indexedDB.open('shade-alpha-state'); req.onsuccess = () => resolve(req.result);req.onerror=reject; });
     try { return await new Promise(resolve => { const tx=db.transaction('states');const req=tx.objectStore('states').getAll();tx.oncomplete=() => resolve(JSON.stringify(req.result).includes(text)); }); }
     finally { db.close(); }
   },first),false);
@@ -169,7 +169,7 @@ try {
   await send(a.page,'Сообщение во время разрыва сети');
   await a.page.getByText(/На сервере · ожидает ACK/).first().waitFor();
   // Only the first outgoing message has an ACK while Bob is offline.
-  assert.equal(await a.page.getByText(/Доставлено: 1\/1 устройств/).count(),1);
+  assert.equal(await a.page.getByText(/(Доставлено|Прочитано): 1\/1 устройств/).count(),1);
   await b.page.reload(); await unlock(b.page);
   await b.page.getByText(first,{exact:false}).last().waitFor();
   results.offlineHistory = true;
@@ -177,7 +177,7 @@ try {
   await b.context.setOffline(false);
   await b.page.getByText('Сообщение во время разрыва сети',{exact:false}).last().waitFor({timeout:60000});
   await a.page.getByText('Исходящее из offline очереди',{exact:false}).last().waitFor({timeout:60000});
-  await a.page.getByText(/Доставлено: 1\/1 устройств/).nth(1).waitFor();
+  await a.page.getByText(/(Доставлено|Прочитано): 1\/1 устройств/).nth(1).waitFor();
   results.reconnectAndOfflineOutbox = true; console.log('PASS offline reload + durable outbox + reconnect');
   // Reply rides inside the signed opaque envelope; both clients render the
   // original-message snapshot, and a local delete must stay gone after reload.
@@ -201,11 +201,10 @@ try {
     const state = await readState(s);
     return JSON.stringify((state.value.messages || []).filter(m => m.text === 'Ответ поверх закреплённого сообщения').map(m => m.ref));
   }));
-  // WebKit defers the last IndexedDB flush; reloading within a second can
-  // read the pre-delete snapshot. A short settle is automation-only and does
-  // not weaken the client: the deletion is committed before the UI hides it
-  // (verified by reading the encrypted state on this very page).
-  await b.page.waitForTimeout(1500);
+  // No artificial settle: the client commits the deletion durably BEFORE the
+  // UI hides it (follow-up meta transaction + read-back verification in
+  // alpha-storage.mjs). An immediate reload must never resurrect the message;
+  // this is the real WebKit last-transaction durability check.
   await b.page.reload(); await unlock(b.page);
   assert.equal(await b.page.getByText('Ответ поверх закреплённого сообщения',{exact:false}).count(),0);
   results.localDeleteStaysDeleted = true; console.log('PASS local delete ACKs first and never returns');
