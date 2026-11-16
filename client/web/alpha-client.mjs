@@ -199,6 +199,20 @@ export class AlphaClient extends EventTarget {
       return m.id; // Local commit succeeded; keep retrying the exact ciphertext.
     });
   }
+  // Local-only contact note, mirroring Android's per-contact note. Stored in
+  // the encrypted state (unlike Android's plain SharedPreferences) and never
+  // sent to the relay.
+  async saveNote(account, text) {
+    return this.exclusive(async () => {
+      check(typeof account === 'string' && typeof text === 'string' &&
+        text.trim().length <= 2000, 'Некорректная заметка');
+      const next = structuredClone(this.state);
+      next.notes = { ...(next.notes || {}) };
+      const trimmed = text.trim();
+      if (trimmed) next.notes[account] = trimmed; else delete next.notes[account];
+      await this.save(next);
+    });
+  }
   // Local-only removal, mirroring Android «Удалить у себя». A queued send is
   // cancelled; a fetched message is ACKed first so the relay queue cannot
   // redeliver it after deletion. Other devices keep their copy.

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shade/core/theme/shade_theme.dart';
 import 'package:shade/core/widgets/avatar_view.dart';
 import 'package:shade/core/widgets/shade_logo.dart';
@@ -118,6 +119,7 @@ class _Chats extends StatefulWidget {
 
 class _ChatsState extends State<_Chats> {
   final search = TextEditingController();
+  final seenAccounts = <String>{};
   bool directory = false;
   @override
   void dispose() {
@@ -243,16 +245,28 @@ class _ChatsState extends State<_Chats> {
           SliverToBoxAdapter(
               child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 36),
-                  child: ShadeEmptyState(
-                      icon: query.isEmpty
-                          ? Icons.chat_bubble_outline_rounded
-                          : Icons.search_off_rounded,
-                      title: query.isEmpty
-                          ? 'Здесь начнётся общение'
-                          : 'Ничего не нашлось',
-                      description: query.isEmpty
-                          ? 'Найдите друга по никнейму\nи отправьте первое сообщение.'
-                          : 'Попробуйте другое имя или слово из сообщения.')))
+                  child: Column(children: [
+                    ShadeEmptyState(
+                        icon: query.isEmpty
+                            ? Icons.chat_bubble_outline_rounded
+                            : Icons.search_off_rounded,
+                        title: query.isEmpty
+                            ? 'Здесь начнётся общение'
+                            : 'Ничего не нашлось',
+                        description: query.isEmpty
+                            ? 'Найдите друга по никнейму\nи отправьте первое сообщение.'
+                            : 'Попробуйте другое имя или слово из сообщения.'),
+                    if (query.isEmpty)
+                      Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: OutlinedButton.icon(
+                              onPressed: () {
+                                setState(() => directory = true);
+                                c.act('refresh');
+                              },
+                              icon: const Icon(Icons.person_search_rounded),
+                              label: const Text('Найти собеседника'))),
+                  ])))
         else
           SliverPadding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -264,7 +278,20 @@ class _ChatsState extends State<_Chats> {
                     final peer = peers[i]['account'] as String;
                     final latest = c.conversation(peer).lastOrNull;
                     final unread = c.unread(peer);
-                    return ListTile(
+                    // Android animates only genuinely new tiles; a stable key
+                    // keeps an existing row from replaying its entrance.
+                    return TweenAnimationBuilder<double>(
+                        key: ValueKey(peer),
+                        tween: Tween(
+                            begin: seenAccounts.add(peer) ? 0 : 1, end: 1),
+                        duration: ShadeMotion.duration(context, 200),
+                        curve: Curves.easeOut,
+                        builder: (context, t, child) => Opacity(
+                            opacity: t,
+                            child: Transform.translate(
+                                offset: Offset(0, 14 * (1 - t)),
+                                child: child)),
+                        child: ListTile(
                         selected: c.selected == peer,
                         selectedTileColor: ShadeColors.surfaceCard,
                         contentPadding: const EdgeInsets.symmetric(
@@ -330,13 +357,13 @@ class _ChatsState extends State<_Chats> {
                                         color: ShadeColors.textPrimary,
                                         borderRadius:
                                             BorderRadius.circular(10)),
-                                    child: Text('$unread',
+                                    child: Text(unread > 99 ? '99+' : '$unread',
                                         semanticsLabel: '$unread непрочитанных',
                                         style: const TextStyle(
                                             fontSize: 11,
                                             color: Colors.black,
                                             fontWeight: FontWeight.w700))),
-                            ])));
+                            ]))));
                   })),
       ])),
       SafeArea(
@@ -351,7 +378,14 @@ class _ChatsState extends State<_Chats> {
                     child: Text(c.connection,
                         maxLines: 2,
                         style: const TextStyle(
-                            fontSize: 11, color: ShadeColors.textMuted)))
+                            fontSize: 11, color: ShadeColors.textMuted))),
+                if (!c.connected)
+                  Flexible(
+                      child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: TextButton(
+                              onPressed: () => c.act('sync'),
+                              child: const Text('Повторить')))),
               ]))),
     ]);
   }
@@ -360,7 +394,12 @@ class _ChatsState extends State<_Chats> {
 String _time(Map<String, dynamic> item) {
   final date =
       DateTime.fromMillisecondsSinceEpoch((item['createdAt'] as num).toInt());
-  return '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+  if (DateUtils.isSameDay(date, DateTime.now())) {
+    return '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+  }
+  final day = date.day.toString().padLeft(2, '0');
+  final month = date.month.toString().padLeft(2, '0');
+  return '$day.$month';
 }
 
 class _Conversation extends StatefulWidget {
@@ -835,6 +874,26 @@ class _Profile extends StatelessWidget {
   const _Profile({required this.controller, required this.close});
   final AlphaController controller;
   final VoidCallback close;
+
+  Future<void> _confirmLogout(
+      BuildContext context, AlphaController controller) async {
+    final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialog) => AlertDialog(
+            title: const Text('Выйти из аккаунта?'),
+            content: const Text(
+                'Сессия Google завершится. Ключи и история останутся в этом '
+                'браузере; для входа понадобится фраза устройства.'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(dialog, false),
+                  child: const Text('Отмена')),
+              TextButton(
+                  onPressed: () => Navigator.pop(dialog, true),
+                  child: const Text('Выйти')),
+            ]));
+    if (confirmed == true) await controller.act('logout');
+  }
   @override
   Widget build(BuildContext context) => Column(children: [
         Row(children: [
@@ -920,7 +979,7 @@ class _Profile extends StatelessWidget {
                           label: const Text('Установить Shade')),
                       const SizedBox(height: 12),
                       TextButton(
-                          onPressed: () => controller.act('logout'),
+                          onPressed: () => _confirmLogout(context, controller),
                           child: const Text('Выйти из аккаунта')),
                       const SizedBox(height: 20),
                       const Text(
@@ -940,11 +999,49 @@ class _PeerProfile extends StatelessWidget {
   final AlphaController controller;
   final String peer;
   final VoidCallback openChat;
+
+  Future<void> _editNote(BuildContext context) async {
+    final current = controller.notes[peer] as String? ?? '';
+    final field = TextEditingController(text: current);
+    final updated = await showDialog<String>(
+        context: context,
+        builder: (dialog) => AlertDialog(
+            title: const Text('Личная заметка'),
+            content: TextField(
+                controller: field,
+                autofocus: true,
+                maxLines: 4,
+                maxLength: 2000,
+                style: const TextStyle(
+                    fontSize: 15, height: 1.5),
+                decoration: const InputDecoration(
+                    hintText: 'Заметка о собеседнике')),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(dialog),
+                  child: const Text('Отмена')),
+              TextButton(
+                  onPressed: () => Navigator.pop(dialog, field.text),
+                  child: const Text('Сохранить')),
+            ]));
+    if (updated == null || !context.mounted) return;
+    if (updated.trim() == current) return;
+    try {
+      await controller.act('note', {'account': peer, 'text': updated});
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content:
+                Text('Не удалось сохранить заметку. Проверьте сеть и повторите.')));
+      }
+    }
+  }
   @override
   Widget build(BuildContext context) {
     final c = controller;
     final pinned = c.pinned(peer);
     final messages = c.conversation(peer).length;
+    final note = c.notes[peer] as String? ?? '';
     return Column(children: [
       Row(children: [
         IconButton(
@@ -980,7 +1077,7 @@ class _PeerProfile extends StatelessWidget {
                             letterSpacing: 1.5,
                             color: ShadeColors.textMuted)),
                     const SizedBox(height: 12),
-                    Card(
+                      Card(
                         child: Column(children: [
                       ListTile(
                           leading: Icon(
@@ -1004,6 +1101,33 @@ class _PeerProfile extends StatelessWidget {
                               const Icon(Icons.forum_outlined),
                           title: Text('$messages'),
                           subtitle: const Text('Сообщений в переписке')),
+                      const Divider(height: 1, indent: 56),
+                      ListTile(
+                          leading: const Icon(Icons.sticky_note_2_outlined),
+                          title: Text(note.isEmpty
+                              ? 'Добавить заметку'
+                              : 'Личная заметка'),
+                          subtitle: Text(
+                              note.isEmpty
+                                  ? 'Только для себя · зашифровано на этом устройстве'
+                                  : note,
+                              maxLines: 3,
+                              overflow: TextOverflow.ellipsis),
+                          trailing: const Icon(Icons.chevron_right_rounded),
+                          onTap: () => _editNote(context)),
+                      const Divider(height: 1, indent: 56),
+                      ListTile(
+                          leading: const Icon(Icons.copy_rounded),
+                          title: const Text('Копировать ник'),
+                          onTap: () async {
+                            await Clipboard.setData(ClipboardData(text: peer));
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(
+                                      content:
+                                          Text('Никнейм скопирован')));
+                            }
+                          }),
                     ])),
                     const SizedBox(height: 20),
                     OutlinedButton.icon(

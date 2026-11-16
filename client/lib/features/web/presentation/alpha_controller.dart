@@ -14,6 +14,8 @@ class AlphaController extends ChangeNotifier {
   List<Map<String, dynamic>> get peers => _maps(data['peers']);
   List<Map<String, dynamic>> get messages => _maps(data['messages']);
   List<Map<String, dynamic>> get devices => _maps(data['devices']);
+  Map<String, dynamic> get notes =>
+      Map<String, dynamic>.from(data['notes'] as Map? ?? {});
   Map<String, dynamic> get positions =>
       Map<String, dynamic>.from(data['positions'] as Map? ?? {});
   Map<String, dynamic> get readUntil =>

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shade/features/web/presentation/alpha_app.dart';
 import 'package:shade/features/web/presentation/alpha_controller.dart';
@@ -327,6 +328,192 @@ void main() {
     await tester.tap(find.byKey(const Key('jump-to-latest')));
     await settle();
     expect(find.byKey(const Key('jump-to-latest')), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
+  testWidgets('Alpha chat list parity: 99+ cap, old-message dates, retry',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final actions = <String>[];
+    final c = AlphaController((action, payload) async {
+      actions.add(action);
+    });
+    final semantics = tester.ensureSemantics();
+    final now = DateTime.now();
+    final yesterday =
+        now.subtract(const Duration(days: 1)).millisecondsSinceEpoch;
+    final messages = [
+      for (var i = 0; i < 120; i++)
+        {
+          'ref': 'old-$i',
+          'from': 'bob',
+          'to': 'alice',
+          'text': 'История $i',
+          'createdAt': yesterday + i,
+          'status': 'received',
+          'devices': [],
+        },
+    ];
+    c.apply(<String, dynamic>{
+      'account': 'alice',
+      'selected': null,
+      'connected': false,
+      'connection': 'Нет связи · история на устройстве',
+      'peers': [
+        {'account': 'bob', 'pinned': true}
+      ],
+      'messages': messages,
+    });
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    expect(find.text('99+'), findsOneWidget);
+    // The full count stays available to assistive technology.
+    expect(
+        tester.widget<Text>(find.text('99+')).semanticsLabel,
+        '120 непрочитанных');
+    expect(find.text('Повторить'), findsOneWidget);
+    await tester.tap(find.text('Повторить'));
+    await tester.pumpAndSettle();
+    expect(actions, contains('sync'));
+    expect(tester.takeException(), isNull);
+    semantics.dispose();
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
+  testWidgets('Alpha empty state opens the directory', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final actions = <String>[];
+    final c = AlphaController((action, payload) async {
+      actions.add(action);
+    });
+    c.apply(<String, dynamic>{
+      'account': 'alice',
+      'connected': true,
+      'peers': <Map<String, dynamic>>[],
+      'messages': <Map<String, dynamic>>[],
+    });
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    expect(find.text('Здесь начнётся общение'), findsOneWidget);
+    await tester.tap(find.text('Найти собеседника'));
+    await tester.pumpAndSettle();
+    expect(actions, contains('refresh'));
+    // Directory mode replaces the empty headline.
+    expect(find.text('Новый диалог'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
+  testWidgets('Alpha profile parity: logout confirm, copy nick, note',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final actions = <Map<String, dynamic>>[];
+    final c = AlphaController((action, payload) async {
+      actions.add({'action': action, 'payload': payload});
+    });
+    final clipboard = <String, String>{};
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') {
+        clipboard['text'] = (call.arguments as Map)['text'] as String;
+        return null;
+      }
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null));
+    final data = <String, dynamic>{
+      'account': 'alice',
+      'selected': 'bob',
+      'connected': true,
+      'peers': [
+        {'account': 'bob', 'pinned': true}
+      ],
+      'messages': [
+        {
+          'ref': '1',
+          'from': 'bob',
+          'to': 'alice',
+          'text': 'Привет',
+          'createdAt': 1700000000000,
+          'status': 'received',
+          'devices': [],
+        },
+      ],
+      'devices': [
+        {'id': 'd1', 'current': true}
+      ],
+    };
+    c.apply(data);
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    // Peer profile: copy nickname.
+    await tester.tap(find.text('Личная переписка'));
+    await tester.pumpAndSettle();
+    expect(find.text('Профиль собеседника'), findsOneWidget);
+    expect(find.text('Добавить заметку'), findsOneWidget);
+    await tester.tap(find.text('Копировать ник'));
+    await tester.pumpAndSettle();
+    expect(find.text('Никнейм скопирован'), findsOneWidget);
+    expect(clipboard['text'], 'bob');
+    // Contact note round-trips through the encrypted client state action.
+    await tester.tap(find.text('Добавить заметку'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+        find.widgetWithText(TextField, 'Заметка о собеседнике'),
+        'Работаем над проектом');
+    await tester.tap(find.text('Сохранить'));
+    await tester.pumpAndSettle();
+    final note =
+        actions.lastWhere((entry) => entry['action'] == 'note');
+    final notePayload = note['payload'] as Map;
+    expect(notePayload['account'], 'bob');
+    expect(notePayload['text'], 'Работаем над проектом');
+    // Back to the conversation, then to the chat list, before self profile.
+    await tester.tap(find.byTooltip('Назад к переписке'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Назад к чатам'));
+    await tester.pumpAndSettle();
+    // Without the JS bridge the projection does not change on its own.
+    c.apply({...data, 'selected': null});
+    await tester.pumpAndSettle();
+    // Self profile: logout needs an explicit confirmation.
+    await tester.tap(find.byTooltip('Профиль'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Выйти из аккаунта'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Выйти из аккаунта'));
+    await tester.pumpAndSettle();
+    expect(find.text('Выйти из аккаунта?'), findsOneWidget);
+    await tester.tap(find.text('Отмена'));
+    await tester.pumpAndSettle();
+    expect(
+        actions.where((entry) => entry['action'] == 'logout').length, 0);
+    await tester.tap(find.text('Выйти из аккаунта'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Выйти'));
+    await tester.pumpAndSettle();
+    expect(
+        actions.where((entry) => entry['action'] == 'logout').length, 1);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     c.dispose();
