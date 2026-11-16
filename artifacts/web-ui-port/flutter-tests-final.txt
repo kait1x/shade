@@ -1,0 +1,176 @@
+00:00 +0: loading C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart
+00:00 +0: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:00 +1: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:00 +2: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:00 +3: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:00 +4: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:00 +5: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+[CryptoService] writeKey rsa_private_key to OS secure storage
+00:00 +6: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:00 +7: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:00 +8: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:00 +9: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] readKey rsa_public_key from OS secure storage
+[CryptoService] readKey rsa_private_key from OS secure storage
+00:01 +10: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:01 +11: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:02 +12: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:02 +13: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:02 +14: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:02 +15: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:02 +16: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:02 +17: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:03 +18: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:03 +19: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:03 +20: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:04 +20: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should generate RSA key pair
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] readKey rsa_public_key from OS secure storage
+[CryptoService] Keys cleared from secure storage
+00:04 +21: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:04 +21: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/device_crypto_interop_test.dart: real native CryptoService interoperates with WebCrypto without exporting the Android identity
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] readKey rsa_public_key from OS secure storage
+[CryptoService] readKey rsa_private_key from OS secure storage
+[CryptoService] readKey rsa_private_key from OS secure storage
+[CryptoService] readKey rsa_public_key from OS secure storage
+00:05 +22: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:05 +23: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+[CryptoService] readKey rsa_private_key from OS secure storage
+[CryptoService] readKey rsa_public_key from OS secure storage
+00:05 +24: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/alpha_http_interop_test.dart: existing Android CryptoService exchanges signed v2 messages over real HTTP without replacing RSA
+00:05 +25: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should encrypt and decrypt data successfully
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] readKey rsa_public_key from OS secure storage
+[CryptoService] readKey rsa_private_key from OS secure storage
+[CryptoService] Keys cleared from secure storage
+00:06 +26: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should encrypt different texts to different ciphertexts
+00:07 +26: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/home_repository_test.dart: home counts incoming unread, sorts by activity and preserves delivery metadata
+[ChatRepository] decrypt preview error
+00:07 +27: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should encrypt different texts to different ciphertexts
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] readKey rsa_public_key from OS secure storage
+[CryptoService] Keys cleared from secure storage
+00:08 +28: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should fail to decrypt with tampered ciphertext
+00:08 +28: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/icon_render_test.dart: app icon set renders on #080808 and respects safe zones
+icon-1024 bounds=Rect.fromLTRB(218.0, 188.0, 809.0, 834.0) farthest=396.7px (limit 452px)
+adaptive-foreground bounds=Rect.fromLTRB(311.0, 291.0, 715.0, 732.0) farthest=270.9px (limit 313px)
+adaptive-monochrome bounds=Rect.fromLTRB(311.0, 291.0, 715.0, 732.0) farthest=270.9px (limit 313px)
+00:08 +29: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should fail to decrypt with tampered ciphertext
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] readKey rsa_public_key from OS secure storage
+[CryptoService] readKey rsa_private_key from OS secure storage
+[CryptoService] Keys cleared from secure storage
+00:09 +30: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should handle empty string encryption
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] readKey rsa_public_key from OS secure storage
+[CryptoService] readKey rsa_private_key from OS secure storage
+[CryptoService] Keys cleared from secure storage
+00:11 +31: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Tests should handle unicode and emoji in encryption
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] readKey rsa_public_key from OS secure storage
+[CryptoService] readKey rsa_private_key from OS secure storage
+[CryptoService] Keys cleared from secure storage
+00:12 +32: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Key Exchange Simulation Alice should send encrypted message to Bob
+00:13 +33: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Key Exchange Simulation Alice should send encrypted message to Bob
+00:13 +34: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Key Exchange Simulation Alice should send encrypted message to Bob
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] Keys cleared from secure storage
+[CryptoService] Keys cleared from secure storage
+00:14 +35: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/profile_preview_test.dart: full profiles with populated sticker walls
+00:15 +36: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/profile_preview_test.dart: full profiles with populated sticker walls
+00:15 +37: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Key Exchange Simulation Bob should not be able to decrypt message encrypted with Alice's key
+00:15 +38: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Key Exchange Simulation Bob should not be able to decrypt message encrypted with Alice's key
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+00:15 +39: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Key Exchange Simulation Bob should not be able to decrypt message encrypted with Alice's key
+00:15 +40: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/crypto_service_test.dart: CryptoService Key Exchange Simulation Bob should not be able to decrypt message encrypted with Alice's key
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] decryptData FAILED
+[CryptoService] Keys cleared from secure storage
+[CryptoService] Keys cleared from secure storage
+00:16 +41: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/profile_preview_test.dart: profile showcase renders actual self, contact and key sheet (variant: TargetPlatform.android)
+00:16 +42: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:16 +43: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:16 +44: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:16 +45: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:16 +46: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:16 +47: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:16 +48: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+00:17 +49: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/security_regressions_test.dart: key signature requires explicit trust, correct username and the same relay
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] NEW server key detected - user confirmation required
+[CryptoService] NEW server key detected - user confirmation required
+[CryptoService] Server key fingerprint trusted and saved
+[CryptoService] Server key fingerprint verified (TOFU)
+[CryptoService] Server key fingerprint verified (TOFU)
+[CryptoService] Server signature verification error: RSAException: crypto/rsa: verification error
+[CryptoService] NEW server key detected - user confirmation required
+[CryptoService] writeKey rsa_private_key to OS secure storage
+[CryptoService] writeKey rsa_public_key to OS secure storage
+[CryptoService] Identity keys generated
+[CryptoService] WARNING: Server key fingerprint changed! Possible MitM attack.
+  Stored: 1f:45:ed:ed:3e:96:70:f2:4f:8f:62:3b:7f:4a:b0:7d:6a:1e:1b:78:b7:d9:6d:5a:4c:d0:d3:35:0c:e7:34:58
+  Got:    47:5f:fd:8e:82:c0:59:ee:fa:4b:ad:03:cc:49:0d:04:ae:49:7e:25:82:e7:54:a3:7c:68:ce:da:14:4d:d6:7f
+[CryptoService] Keys cleared from secure storage
+00:21 +50: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/sticker_collection_test.dart: wall draft survives error, owner gestures, duplicate book pages, private peel and gift dialog
+00:21 +51: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/sticker_collection_test.dart: wall draft survives error, owner gestures, duplicate book pages, private peel and gift dialog
+00:42 +52: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/sticker_collection_test.dart: wall draft survives error, owner gestures, duplicate book pages, private peel and gift dialog
+00:42 +53: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/sticker_collection_test.dart: wall draft survives error, owner gestures, duplicate book pages, private peel and gift dialog
+00:43 +54: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/sticker_collection_test.dart: wall draft survives error, owner gestures, duplicate book pages, private peel and gift dialog
+00:43 +55: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/sticker_collection_test.dart: wall draft survives error, owner gestures, duplicate book pages, private peel and gift dialog
+00:43 +56: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: real profile routes preserve back stack and authenticated owner
+00:43 +57: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: real profile routes preserve back stack and authenticated owner
+00:43 +58: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: real profile routes preserve back stack and authenticated owner
+00:43 +59: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: real profile routes preserve back stack and authenticated owner
+00:43 +60: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/web_alpha_ui_test.dart: Alpha chat, list and profile fit 320.0 with large text
+00:43 +61: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: real app exposes in-app notifications and server trust confirmation (variant: TargetPlatform.android)
+00:43 +62: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/web_alpha_ui_test.dart: Alpha chat, list and profile fit 390.0 with large text
+00:44 +63: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/web_alpha_ui_test.dart: Alpha chat, list and profile fit 390.0 with large text
+00:44 +64: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/widget_test.dart: Google welcome validates nickname and reports missing OAuth configuration
+00:44 +65: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/widget_test.dart: Google welcome validates nickname and reports missing OAuth configuration
+00:44 +66: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/widget_test.dart: Google welcome validates nickname and reports missing OAuth configuration
+00:44 +67: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/widget_test.dart: Google welcome validates nickname and reports missing OAuth configuration
+00:44 +68: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/widget_test.dart: Google welcome validates nickname and reports missing OAuth configuration
+00:44 +69: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/widget_test.dart: Google welcome validates nickname and reports missing OAuth configuration
+00:44 +70: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/widget_test.dart: Google welcome validates nickname and reports missing OAuth configuration
+00:45 +71: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/widget_test.dart: Google welcome validates nickname and reports missing OAuth configuration
+[ShadeAuth] sign-in failed: Bad state: Google-вход ещё не настроен: нужен OAuth Web Client ID.
+00:45 +72: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: home connection loss and recovery retain local chats
+00:45 +73: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: home loading and storage error retry recover
+00:45 +74: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: conversation renders real bubbles and date separator (variant: TargetPlatform.android)
+00:45 +75: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: new conversation screen has a usable empty state (variant: TargetPlatform.android)
+00:45 +76: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: composer disables empty sends, submits once and opens attachments (variant: TargetPlatform.android)
+00:45 +77: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: narrow phone and large text do not overflow (variant: TargetPlatform.android)
+00:45 +78: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: chat pagination survives refresh, failed page retries without gaps
+00:45 +79: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: long conversation fits narrow large text and keyboard; lazily loads history
+00:46 +80: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: failed send preserves draft and prevents duplicate asynchronous sends
+00:46 +81: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: photo reply fits a constrained pane and opens full screen
+00:46 +82: C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/ui_design_test.dart: (tearDownAll)
+00:46 +82: All tests passed!

@@ -1,0 +1,717 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:shade/core/theme/shade_theme.dart';
+import 'package:shade/core/widgets/avatar_view.dart';
+import 'package:shade/core/widgets/shade_logo.dart';
+import 'package:shade/core/widgets/shade_motion.dart';
+import 'package:shade/core/widgets/shade_states.dart';
+import 'package:shade/features/chats/presentation/widgets/message_bubble.dart';
+import 'package:shade/features/chats/presentation/widgets/message_input.dart';
+import 'alpha_controller.dart';
+
+class ShadeAlphaApp extends StatelessWidget {
+  const ShadeAlphaApp({super.key, required this.controller});
+  final AlphaController controller;
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+      title: 'Shade',
+      debugShowCheckedModeBanner: false,
+      theme: buildShadeTheme().copyWith(
+          textTheme: buildShadeTheme()
+              .textTheme
+              .apply(fontFamilyFallback: const ['ShadeEmoji'])),
+      home: ListenableBuilder(
+          listenable: controller,
+          builder: (_, __) => _Shell(controller: controller)));
+}
+
+class _Shell extends StatefulWidget {
+  const _Shell({required this.controller});
+  final AlphaController controller;
+  @override
+  State<_Shell> createState() => _ShellState();
+}
+
+class _ShellState extends State<_Shell> {
+  bool profile = false;
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.controller;
+    return LayoutBuilder(builder: (context, bounds) {
+      final wide = bounds.maxWidth >= 900;
+      final right = profile
+          ? _Profile(
+              controller: c, close: () => setState(() => profile = false))
+          : _Conversation(
+              key: ValueKey(c.selected),
+              controller: c,
+              back: () => c.act('back'));
+      return PopScope(
+          canPop: c.selected == null && !profile,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop) {
+              if (profile) {
+                setState(() => profile = false);
+              } else {
+                c.act('back');
+              }
+            }
+          },
+          child: Scaffold(
+              body: SafeArea(
+                  bottom: false,
+                  child: Center(
+                      child: ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 1600),
+                          child: wide
+                              ? Row(children: [
+                                  SizedBox(
+                                      width: bounds.maxWidth < 1200 ? 340 : 380,
+                                      child: _Chats(
+                                          controller: c,
+                                          openChat: () =>
+                                              setState(() => profile = false),
+                                          profile: () => setState(
+                                              () => profile = !profile))),
+                                  const VerticalDivider(width: 1),
+                                  Expanded(child: right),
+                                ])
+                              : AnimatedSwitcher(
+                                  duration: ShadeMotion.duration(context),
+                                  child: profile || c.selected != null
+                                      ? right
+                                      : _Chats(
+                                          controller: c,
+                                          openChat: () =>
+                                              setState(() => profile = false),
+                                          profile: () => setState(
+                                              () => profile = true))))))));
+    });
+  }
+}
+
+class _Chats extends StatefulWidget {
+  const _Chats(
+      {required this.controller,
+      required this.profile,
+      required this.openChat});
+  final AlphaController controller;
+  final VoidCallback profile, openChat;
+  @override
+  State<_Chats> createState() => _ChatsState();
+}
+
+class _ChatsState extends State<_Chats> {
+  final search = TextEditingController();
+  bool directory = false;
+  @override
+  void dispose() {
+    search.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.controller;
+    final query = search.text.trim().toLowerCase();
+    final peers = c.peers.where((p) {
+      final account = p['account'] as String;
+      final items = c.conversation(account);
+      final hasChat =
+          items.isNotEmpty || p['pinned'] == true || p['unverified'] == true;
+      return (directory || hasChat) &&
+          (account.contains(query) ||
+              (items.lastOrNull?['text'] as String? ?? '')
+                  .toLowerCase()
+                  .contains(query));
+    }).toList()
+      ..sort((a, b) {
+        final at = c
+                .conversation(a['account'] as String)
+                .lastOrNull?['createdAt'] as num? ??
+            0;
+        final bt = c
+                .conversation(b['account'] as String)
+                .lastOrNull?['createdAt'] as num? ??
+            0;
+        return bt.compareTo(at);
+      });
+    return Column(children: [
+      Expanded(
+          child: CustomScrollView(slivers: [
+        SliverToBoxAdapter(
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Padding(
+              padding: const EdgeInsets.fromLTRB(24, 14, 14, 0),
+              child: Row(children: [
+                const ShadeLogo(size: 28),
+                const SizedBox(width: 10),
+                const Flexible(
+                    child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        child: Text('SHADE',
+                            style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 3.2)))),
+                const Spacer(),
+                IconButton(
+                    tooltip: 'Профиль',
+                    onPressed: widget.profile,
+                    icon: AvatarView(name: c.account, size: 34)),
+                IconButton(
+                    tooltip: 'Найти собеседника',
+                    onPressed: () {
+                      setState(() => directory = !directory);
+                      c.act('refresh');
+                    },
+                    icon: Icon(
+                        directory ? Icons.close_rounded : Icons.edit_square,
+                        size: 22)),
+              ])),
+          Padding(
+              padding: const EdgeInsets.fromLTRB(24, 28, 24, 18),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(directory ? 'Новый диалог' : 'Сообщения',
+                        style: const TextStyle(
+                            fontSize: 34,
+                            height: 1.15,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: -1.3)),
+                    const SizedBox(height: 10),
+                    const Text('Личное остаётся личным',
+                        style: TextStyle(
+                            fontSize: 14, color: ShadeColors.textMuted)),
+                    const SizedBox(height: 24),
+                    TextField(
+                        controller: search,
+                        onChanged: (_) => setState(() {}),
+                        style: const TextStyle(fontSize: 16),
+                        decoration: InputDecoration(
+                            hintText: directory
+                                ? 'Найти пользователя'
+                                : 'Поиск в переписках',
+                            prefixIcon:
+                                const Icon(Icons.search_rounded, size: 21),
+                            suffixIcon: query.isEmpty
+                                ? null
+                                : IconButton(
+                                    tooltip: 'Очистить поиск',
+                                    onPressed: () {
+                                      search.clear();
+                                      setState(() {});
+                                    },
+                                    icon: const Icon(Icons.close_rounded,
+                                        size: 18)))),
+                  ])),
+          Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Row(children: [
+                Expanded(
+                    child: Text(
+                        directory ? 'ПОЛЬЗОВАТЕЛИ SHADE' : 'ЛИЧНЫЕ СООБЩЕНИЯ',
+                        style: const TextStyle(
+                            fontSize: 10,
+                            letterSpacing: 1.5,
+                            color: ShadeColors.textMuted,
+                            fontWeight: FontWeight.w700))),
+                IconButton(
+                    tooltip: 'Обновить список',
+                    onPressed: () => c.act('refresh'),
+                    icon: const Icon(Icons.refresh_rounded, size: 18)),
+              ])),
+        ])),
+        if (peers.isEmpty)
+          SliverToBoxAdapter(
+              child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 36),
+                  child: ShadeEmptyState(
+                      icon: query.isEmpty
+                          ? Icons.chat_bubble_outline_rounded
+                          : Icons.search_off_rounded,
+                      title: query.isEmpty
+                          ? 'Здесь начнётся общение'
+                          : 'Ничего не нашлось',
+                      description: query.isEmpty
+                          ? 'Найдите друга по никнейму\nи отправьте первое сообщение.'
+                          : 'Попробуйте другое имя или слово из сообщения.')))
+        else
+          SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              sliver: SliverList.separated(
+                  itemCount: peers.length,
+                  separatorBuilder: (_, __) =>
+                      const Divider(height: 1, indent: 80, endIndent: 12),
+                  itemBuilder: (context, i) {
+                    final peer = peers[i]['account'] as String;
+                    final latest = c.conversation(peer).lastOrNull;
+                    final unread = c.unread(peer);
+                    return ListTile(
+                        selected: c.selected == peer,
+                        selectedTileColor: ShadeColors.surfaceCard,
+                        contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(18)),
+                        horizontalTitleGap: 15,
+                        leading: AvatarView(name: peer, size: 54),
+                        onTap: () {
+                          widget.openChat();
+                          c.act('select', {'account': peer});
+                        },
+                        title: Row(children: [
+                          Expanded(
+                              child: Text(peer,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w700))),
+                          if (latest != null) ...[
+                            const SizedBox(width: 8),
+                            Text(_time(latest),
+                                style: const TextStyle(
+                                    fontSize: 11, color: ShadeColors.textMuted))
+                          ]
+                        ]),
+                        subtitle: Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Row(children: [
+                              if (latest != null &&
+                                  latest['from'] == c.account) ...[
+                                Icon(
+                                    AlphaController.status(latest) ==
+                                            'delivered'
+                                        ? Icons.done_all_rounded
+                                        : AlphaController.status(latest) ==
+                                                'queued'
+                                            ? Icons.schedule_rounded
+                                            : Icons.done_rounded,
+                                    size: 15,
+                                    color: ShadeColors.textMuted),
+                                const SizedBox(width: 4)
+                              ],
+                              Expanded(
+                                  child: Text(
+                                      latest?['text'] as String? ??
+                                          (c.pinned(peer)
+                                              ? 'Отправьте первое сообщение'
+                                              : 'Сверьте отпечаток ключа'),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                          fontSize: 13,
+                                          height: 1.4,
+                                          color: ShadeColors.textMuted))),
+                              if (unread > 0)
+                                Container(
+                                    margin: const EdgeInsets.only(left: 8),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 7, vertical: 3),
+                                    decoration: BoxDecoration(
+                                        color: ShadeColors.textPrimary,
+                                        borderRadius:
+                                            BorderRadius.circular(10)),
+                                    child: Text('$unread',
+                                        semanticsLabel: '$unread непрочитанных',
+                                        style: const TextStyle(
+                                            fontSize: 11,
+                                            color: Colors.black,
+                                            fontWeight: FontWeight.w700))),
+                            ])));
+                  })),
+      ])),
+      SafeArea(
+          top: false,
+          child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 14, 16, 14),
+              child: Row(children: [
+                const Icon(Icons.lock_outline_rounded,
+                    size: 14, color: ShadeColors.textMuted),
+                const SizedBox(width: 8),
+                Expanded(
+                    child: Text(c.connection,
+                        maxLines: 2,
+                        style: const TextStyle(
+                            fontSize: 11, color: ShadeColors.textMuted)))
+              ]))),
+    ]);
+  }
+}
+
+String _time(Map<String, dynamic> item) {
+  final date =
+      DateTime.fromMillisecondsSinceEpoch((item['createdAt'] as num).toInt());
+  return '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+}
+
+class _Conversation extends StatefulWidget {
+  const _Conversation(
+      {super.key, required this.controller, required this.back});
+  final AlphaController controller;
+  final VoidCallback back;
+  @override
+  State<_Conversation> createState() => _ConversationState();
+}
+
+class _ConversationState extends State<_Conversation>
+    with WidgetsBindingObserver {
+  late final ScrollController scroll;
+  Set<String>? known;
+  Timer? positionTimer;
+  bool restored = false, atBottom = true;
+  late final String? activeAccount;
+  @override
+  void initState() {
+    super.initState();
+    activeAccount = widget.controller.selected;
+    final saved = widget.controller.positions[activeAccount] as Map?;
+    // Restore before the first sliver layout: clamping to its initial estimated
+    // extent loses positions in histories with tall, lazily laid-out messages.
+    scroll = ScrollController(
+        initialScrollOffset: saved != null && saved['bottom'] == false
+            ? (saved['offset'] as num).toDouble()
+            : 0,
+        keepScrollOffset: false);
+    WidgetsBinding.instance.addObserver(this);
+    scroll.addListener(_scroll);
+  }
+
+  void _scroll() {
+    if (!scroll.hasClients || !restored) return;
+    atBottom = scroll.position.extentAfter < 80;
+    positionTimer?.cancel();
+    positionTimer = Timer(const Duration(milliseconds: 180), () {
+      _savePosition();
+      if (mounted && atBottom && activeAccount == widget.controller.selected) {
+        final items = widget.controller.conversation(activeAccount!);
+        if (items.isNotEmpty) {
+          widget.controller.act('read',
+              {'account': activeAccount, 'until': items.last['createdAt']});
+        }
+      }
+    });
+  }
+
+  void _savePosition() {
+    if (scroll.hasClients && restored && activeAccount != null) {
+      widget.controller.act('position', {
+        'account': activeAccount,
+        'offset': scroll.offset,
+        'bottom': atBottom
+      });
+    }
+  }
+
+  void _jumpToBottom([int attempts = 6]) {
+    if (!mounted || !scroll.hasClients) return;
+    scroll.jumpTo(scroll.position.maxScrollExtent);
+    if (attempts > 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted &&
+            atBottom &&
+            scroll.hasClients &&
+            scroll.position.extentAfter > 1) {
+          _jumpToBottom(attempts - 1);
+        }
+      });
+    }
+  }
+
+  @override
+  void didChangeMetrics() {
+    if (atBottom) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && scroll.hasClients) {
+          _jumpToBottom();
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _savePosition();
+    positionTimer?.cancel();
+    scroll.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.controller, peer = c.selected;
+    if (peer == null) {
+      return const ShadeEmptyState(
+          icon: Icons.forum_outlined,
+          title: 'Личное остаётся личным',
+          description:
+              'Выберите диалог слева.\nПереписка зашифрована на ваших устройствах.');
+    }
+    final items = c.conversation(peer),
+        ids = items.map((m) => m['ref'] as String).toSet();
+    final added = known == null ? <String>{} : ids.difference(known!);
+    known = ids;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !scroll.hasClients) return;
+      if (!restored) {
+        final saved = c.positions[peer] as Map?;
+        if (saved == null || saved['bottom'] == true) _jumpToBottom();
+        restored = true;
+        atBottom = scroll.position.extentAfter < 80;
+      } else if (added.isNotEmpty && atBottom) {
+        scroll.animateTo(scroll.position.maxScrollExtent,
+            duration: ShadeMotion.duration(context, 180),
+            curve: Curves.easeOut);
+      }
+      if (atBottom && items.isNotEmpty) {
+        c.act('read', {'account': peer, 'until': items.last['createdAt']});
+      }
+    });
+    return Column(children: [
+      Container(
+          padding: const EdgeInsets.fromLTRB(8, 10, 12, 10),
+          decoration: const BoxDecoration(
+              border: Border(
+                  bottom:
+                      BorderSide(color: ShadeColors.greyBorder, width: .5))),
+          child: Row(children: [
+            IconButton(
+                tooltip: 'Назад к чатам',
+                onPressed: widget.back,
+                icon: const Icon(Icons.chevron_left_rounded)),
+            AvatarView(name: peer, size: 40),
+            const SizedBox(width: 12),
+            Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                  Text(peer,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 3),
+                  const Text('Личная переписка',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 11, color: ShadeColors.textMuted)),
+                ])),
+            IconButton(
+                tooltip: 'Проверить ключ контакта',
+                onPressed: () => c.act('verify', {'account': peer}),
+                icon: Icon(
+                    c.pinned(peer)
+                        ? Icons.verified_user_outlined
+                        : Icons.shield_outlined,
+                    size: 21)),
+          ])),
+      AnimatedSize(
+          duration: ShadeMotion.duration(context),
+          child: !c.connected
+              ? Container(
+                  width: double.infinity,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  color: ShadeColors.surfaceCard,
+                  child: Text(c.connection,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          fontSize: 12, color: ShadeColors.textSecondary)))
+              : const SizedBox(width: double.infinity)),
+      Expanded(
+          child: Align(
+              alignment: Alignment.topCenter,
+              child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 840),
+                  child: items.isEmpty
+                      ? ShadeEmptyState(
+                          icon: Icons.lock_outline_rounded,
+                          title: c.pinned(peer)
+                              ? 'Только между вами'
+                              : 'Сверьте отпечаток ключа',
+                          description: c.pinned(peer)
+                              ? 'Сообщения шифруются на устройстве.\nНачните с простого «Привет».'
+                              : 'Сравните отпечатки через доверенный канал,\nчтобы начать безопасную переписку.')
+                      : ListView.builder(
+                          controller: scroll,
+                          padding: const EdgeInsets.only(top: 8, bottom: 16),
+                          itemCount: items.length,
+                          keyboardDismissBehavior:
+                              ScrollViewKeyboardDismissBehavior.onDrag,
+                          itemBuilder: (context, i) {
+                            final m = items[i],
+                                date = DateTime.fromMillisecondsSinceEpoch(
+                                    (m['createdAt'] as num).toInt());
+                            bool grouped(int j) =>
+                                j >= 0 &&
+                                j < items.length &&
+                                items[j]['from'] == m['from'] &&
+                                ((items[j]['createdAt'] as num) -
+                                            (m['createdAt'] as num))
+                                        .abs() <
+                                    180000 &&
+                                DateUtils.isSameDay(
+                                    date,
+                                    DateTime.fromMillisecondsSinceEpoch(
+                                        (items[j]['createdAt'] as num)
+                                            .toInt()));
+                            final showDate = i == 0 ||
+                                !DateUtils.isSameDay(
+                                    date,
+                                    DateTime.fromMillisecondsSinceEpoch(
+                                        (items[i - 1]['createdAt'] as num)
+                                            .toInt()));
+                            return Column(key: ValueKey(m['ref']), children: [
+                              if (showDate) ShadeDateSeparator(date: date),
+                              ShadeMessageArrival(
+                                  animate: added.contains(m['ref']),
+                                  child: MessageBubble(
+                                      text: m['text'] as String,
+                                      timestamp: date,
+                                      isMine: m['from'] == c.account,
+                                      isEncrypted: true,
+                                      status: AlphaController.status(m),
+                                      deliveryLabel:
+                                          AlphaController.delivery(m),
+                                      groupedWithPrevious: grouped(i - 1),
+                                      groupedWithNext: grouped(i + 1))),
+                            ]);
+                          })))),
+      if (!c.pinned(peer))
+        SafeArea(
+            top: false,
+            child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: OutlinedButton.icon(
+                    onPressed: () => c.act('verify', {'account': peer}),
+                    icon: const Icon(Icons.shield_outlined),
+                    label: const Text('Сверить отпечаток'))))
+      else
+        Align(
+            alignment: Alignment.bottomCenter,
+            child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 840),
+                child: MessageInput(
+                    key: ValueKey('composer-$peer'),
+                    maxLines: MediaQuery.sizeOf(context).height -
+                                MediaQuery.viewInsetsOf(context).bottom <
+                            600
+                        ? 3
+                        : 5,
+                    onSend: (text) async {
+                      atBottom = true;
+                      await c.act('send', {'account': peer, 'text': text});
+                    }))),
+    ]);
+  }
+}
+
+class _Profile extends StatelessWidget {
+  const _Profile({required this.controller, required this.close});
+  final AlphaController controller;
+  final VoidCallback close;
+  @override
+  Widget build(BuildContext context) => Column(children: [
+        Row(children: [
+          IconButton(
+              tooltip: 'Назад',
+              onPressed: close,
+              icon: const Icon(Icons.chevron_left_rounded)),
+          const Text('Профиль',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))
+        ]),
+        Expanded(
+            child: Center(
+                child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 560),
+                    child:
+                        ListView(padding: const EdgeInsets.all(24), children: [
+                      Center(
+                          child:
+                              AvatarView(name: controller.account, size: 100)),
+                      const SizedBox(height: 20),
+                      Text(controller.account,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              fontSize: 28, fontWeight: FontWeight.w700)),
+                      const SizedBox(height: 6),
+                      Text('@${controller.account}',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(color: ShadeColors.textMuted)),
+                      const SizedBox(height: 32),
+                      const Text('АККАУНТ И БЕЗОПАСНОСТЬ',
+                          style: TextStyle(
+                              fontSize: 11,
+                              letterSpacing: 1.5,
+                              color: ShadeColors.textMuted)),
+                      const SizedBox(height: 12),
+                      Card(
+                          child: Column(children: [
+                        ListTile(
+                            leading: const Icon(Icons.key_outlined),
+                            title: const Text('Ключ шифрования'),
+                            subtitle:
+                                const Text('Публичный отпечаток · SHA-256'),
+                            trailing: const Icon(Icons.chevron_right_rounded),
+                            onTap: () => controller.act('identity')),
+                        const Divider(height: 1, indent: 56),
+                        ListTile(
+                            leading: const Icon(Icons.file_download_outlined),
+                            title: const Text('Recovery-пакет'),
+                            subtitle:
+                                const Text('Сохранить зашифрованную копию'),
+                            onTap: () => controller.act('backup')),
+                      ])),
+                      const SizedBox(height: 24),
+                      const Text('ПОДКЛЮЧЁННЫЕ УСТРОЙСТВА',
+                          style: TextStyle(
+                              fontSize: 11,
+                              letterSpacing: 1.5,
+                              color: ShadeColors.textMuted)),
+                      const SizedBox(height: 12),
+                      Card(
+                          child: Column(
+                              children: controller.devices
+                                  .map((d) => ListTile(
+                                      leading: Icon(d['current'] == true
+                                          ? Icons.devices_rounded
+                                          : Icons.phonelink_rounded),
+                                      title: Text(
+                                          d['current'] == true
+                                              ? 'Этот браузер'
+                                              : 'Устройство',
+                                          style: const TextStyle(fontSize: 15)),
+                                      subtitle: Text(d['id'] as String,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                              fontSize: 11,
+                                              color: ShadeColors.textMuted))))
+                                  .toList())),
+                      const SizedBox(height: 20),
+                      OutlinedButton.icon(
+                          onPressed: () => controller.act('install'),
+                          icon: const Icon(Icons.ios_share_rounded),
+                          label: const Text('Установить Shade')),
+                      const SizedBox(height: 12),
+                      TextButton(
+                          onPressed: () => controller.act('logout'),
+                          child: const Text('Выйти из аккаунта')),
+                      const SizedBox(height: 20),
+                      const Text(
+                          'Ключи и история остаются в этом браузере.\nНе очищайте данные сайта без recovery-пакета.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                              fontSize: 12,
+                              height: 1.6,
+                              color: ShadeColors.textMuted)),
+                    ])))),
+      ]);
+}

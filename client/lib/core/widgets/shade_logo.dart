@@ -12,14 +12,30 @@ class ShadeLogo extends StatelessWidget {
       child: SizedBox(
           width: size,
           height: size,
-          child: CustomPaint(painter: _ShadeGhostPainter())));
+          child: const CustomPaint(painter: ShadeGhostPainter())));
 }
 
-class _ShadeGhostPainter extends CustomPainter {
+/// The mascot in its original 100-unit coordinate space.
+///
+/// The silhouette is shrunk and lifted around its own centre so the wavy
+/// tail clears the rim of circular medals without moving the medallion.
+///
+/// With [silhouette] the body is flat white and the eyes and smile are
+/// punched out (BlendMode.clear) — Android's monochrome adaptive-icon layer
+/// is derived from the alpha channel only.
+class ShadeGhostPainter extends CustomPainter {
+  final bool silhouette;
+  const ShadeGhostPainter({this.silhouette = false});
+
+  static const _fit = .82;
+
   @override
   void paint(Canvas canvas, Size size) {
     canvas.save();
     canvas.scale(size.width / 100, size.height / 100);
+    canvas.translate(50, 50);
+    canvas.scale(_fit, _fit);
+    canvas.translate(-53, -51.5);
     final body = Path()
       ..moveTo(18, 48)
       ..cubicTo(18, 25, 31, 13, 50, 13)
@@ -31,15 +47,22 @@ class _ShadeGhostPainter extends CustomPainter {
       ..cubicTo(34, 92, 20, 91, 19, 80)
       ..cubicTo(18, 70, 18, 58, 18, 48)
       ..close();
-    canvas.drawPath(
-        body,
-        Paint()
-          ..shader = const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xFFFFFFFF), Color(0xFFE3E3E3)])
-              .createShader(const Rect.fromLTWH(15, 13, 74, 80)));
-    final ink = Paint()..color = const Color(0xFF181818);
+    if (silhouette) {
+      canvas.drawPath(
+          body, Paint()..color = const Color(0xFFFFFFFF));
+    } else {
+      canvas.drawPath(
+          body,
+          Paint()
+            ..shader = const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFFFFFFFF), Color(0xFFE3E3E3)])
+                .createShader(const Rect.fromLTWH(15, 13, 74, 80)));
+    }
+    final ink = Paint()
+      ..color = const Color(0xFF181818)
+      ..blendMode = silhouette ? BlendMode.clear : BlendMode.srcOver;
     canvas.drawOval(const Rect.fromLTWH(32, 38, 11, 18), ink);
     canvas.drawOval(const Rect.fromLTWH(57, 36, 11, 18), ink);
     canvas.drawPath(
@@ -48,6 +71,7 @@ class _ShadeGhostPainter extends CustomPainter {
           ..quadraticBezierTo(51, 70, 58, 62),
         Paint()
           ..color = const Color(0xFF181818)
+          ..blendMode = ink.blendMode
           ..style = PaintingStyle.stroke
           ..strokeCap = StrokeCap.round
           ..strokeWidth = 3.5);
@@ -55,5 +79,6 @@ class _ShadeGhostPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _ShadeGhostPainter oldDelegate) => false;
+  bool shouldRepaint(covariant ShadeGhostPainter oldDelegate) =>
+      oldDelegate.silhouette != silhouette;
 }

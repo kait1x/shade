@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <!-- Shell-only policy: no third-party SDKs or relay requests until v2 auth is integrated. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; frame-src 'none'">
+  <base href="$FLUTTER_BASE_HREF">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="description" content="Shade Web Beta — тестовая оболочка для iPhone. Переписка пока недоступна.">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Shade">
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="manifest" href="manifest.json">
+  <title>Shade Web Beta</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; color: #f5f5f7; }
+    #loading { padding: max(32px, env(safe-area-inset-top)) 24px; font: 16px/1.5 system-ui; }
+    #loading p { color: #8e8e93; max-width: 32em; }
+    #retry { display: none; color: #f5f5f7; }
+  </style>
+</head>
+<body>
+  <div id="loading" role="status">
+    <h1>Shade <small>Web Beta</small></h1>
+    <p id="loading-message">Загрузка оболочки… Переписка в Web Beta пока недоступна.</p>
+    <a id="retry" href=".">Повторить загрузку</a>
+  </div>
+  <noscript>Для запуска Shade включите JavaScript в Safari.</noscript>
+  <script src="pwa.js" defer></script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

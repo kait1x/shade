@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/*.test.js"
+    "start:alpha": "node alpha.mjs",
+    "test": "node --test test/*.test.js test/*.test.mjs"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",
