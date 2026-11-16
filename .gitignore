@@ -1,4 +1,3 @@
-```
 # Compiled and build artifacts
 *.pyc
 __pycache__/
@@ -69,7 +68,7 @@ Thumbs.db
 *.tar.bz2
 *.tar.xz
 *.tar.zst
-```
+
 # Local credentials and generated Flutter plugin state
 client/.flutter-plugins-dependencies
 client/android/local.properties
@@ -85,6 +84,7 @@ flutter-analyze-*.txt
 
 client/config/production.json
 
-# Generated Android build artifacts
-artifacts/*.apk
-/artifacts/stickers/frames/
+# Local QA artifacts, third-party tools and stray backups stay on disk, never committed
+/artifacts/
+/tools/
+*.bak
