@@ -8,6 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, createHash } from 'node:crypto';
 import { OAuth2Client } from 'google-auth-library';
 import { Server } from 'socket.io';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const webPush = require('web-push');
 import { createAuthProof } from './auth-proof.js';
 import { createDeviceRegistry, operationDigest } from './multidevice/registry.mjs';
 import { createV2Stickers } from './multidevice/v2-stickers.mjs';
@@ -21,7 +24,8 @@ const SESSION_MS = 8 * 60 * 60 * 1000;
 // Injected OAuth providers are available ONLY to in-process tests. No test login
 // route, environment bypass or fake identity provider is shipped to users.
 export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
-  clientId = '', clientSecret = '', oauthProvider, verifyGoogle, legacyUsers = new Map(), tls } = {}) {
+  clientId = '', clientSecret = '', oauthProvider, verifyGoogle, legacyUsers = new Map(), tls,
+  vapidKeys = null, pushSender = null } = {}) {
   check(dataDir && publicOrigin, 'Explicit alpha dataDir and publicOrigin required');
   const origin = new URL(publicOrigin);
   check(origin.origin === publicOrigin && (origin.protocol === 'https:' ||
@@ -31,6 +35,30 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   const sessions = new Map(), flows = new Map();
   const oauth = new OAuth2Client(clientId, clientSecret, `${publicOrigin}/auth/google/callback`);
   const verifier = createAuthProof({ audience: clientId, verifyGoogle });
+  // Web Push (C6): wake-only notifications, no E2EE content or message refs.
+  const pushEnabled = Boolean(vapidKeys?.publicKey && vapidKeys?.privateKey);
+  const vapidDetails = pushEnabled ? {
+    subject: vapidKeys.subject || 'mailto:alpha@shade.local',
+    publicKey: vapidKeys.publicKey, privateKey: vapidKeys.privateKey } : null;
+  const sendPush = pushSender || ((subscription, payload, options) =>
+    webPush.sendNotification({ endpoint: subscription.endpoint, keys: subscription.keys },
+      JSON.stringify(payload), { ...options, vapidDetails }));
+  function checkSubscription(sub) {
+    check(sub && typeof sub === 'object' && typeof sub.endpoint === 'string' &&
+      sub.endpoint.length <= 2048 && sub.keys && typeof sub.keys === 'object', 'Invalid push subscription');
+    let url;
+    try { url = new URL(sub.endpoint); } catch { check(false, 'Invalid push endpoint'); }
+    const host = url.hostname;
+    // SSRF guard: public HTTPS endpoints only (no loopback/private/IP literals).
+    check(url.protocol === 'https:' && !host.includes(':') &&
+      !/^\d+\.\d+\.\d+\.\d+$/.test(host) &&
+      !/^(localhost|.*\.local|.*\.internal)$/i.test(host) &&
+      !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.|0\.)/.test(host), 'Push endpoint rejected');
+    check(typeof sub.keys.p256dh === 'string' && typeof sub.keys.auth === 'string' &&
+      sub.keys.p256dh.length <= 256 && sub.keys.auth.length <= 256 &&
+      /^[A-Za-z0-9_-]+$/.test(sub.keys.p256dh) && /^[A-Za-z0-9_-]+$/.test(sub.keys.auth), 'Invalid push keys');
+    return { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } };
+  }
   const provider = oauthProvider || {
     configured: Boolean(clientId && clientSecret),
     start({ state, nonce, codeChallenge }) {
@@ -164,6 +192,20 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       result = await registry.send(body, auth);
       relations.add(pairKey(body.from, body.to));
       for (const e of body.envelopes) io.to(room(e.account, e.deviceId)).emit('inbox');
+      if (pushEnabled) {
+        for (const e of body.envelopes) {
+          if (e.account === body.from) continue;
+          const sub = registry.pushSubscription(e.account, e.deviceId);
+          if (!sub) continue;
+          try { await sendPush(sub, { type: 'wake' }, { TTL: 60 }); }
+          catch (error) {
+            // Gone endpoints are pruned; push never fails the E2EE send.
+            if (error?.statusCode === 404 || error?.statusCode === 410) {
+              await registry.dropPushSubscription(e.account, e.deviceId);
+            }
+          }
+        }
+      }
     } else if (op === 'fetch') result = await registry.fetch(auth);
     else if (op === 'ack') {
       const pending = registry.exportSnapshot().queues[room(auth.account, auth.id)] || [];
@@ -192,7 +234,13 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
         if (senderDir) for (const d of senderDir.devices) io.to(room(delivery.from, d.id)).emit('retracted');
       }
     } else if (op === 'retractions') result = await registry.retractions(body, auth);
-    else {
+    else if (op === 'push.subscribe' || op === 'push.unsubscribe') {
+      check(pushEnabled, 'Push is not configured');
+      await registry.authorize(auth, await operationDigest(op, body));
+      result = op === 'push.subscribe'
+        ? await registry.pushSubscribe(auth, checkSubscription(body))
+        : await registry.pushUnsubscribe(auth);
+    } else {
       check(['users', 'directory', 'install'].includes(op), 'Unknown operation');
       await registry.authorize(auth, await operationDigest(op, body));
       if (op === 'users') result = registry.list();
@@ -292,6 +340,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     const code = /already|Stale|capacity|queue full|history limit/.test(message) ? 409 : 400;
     // No tokens, public/private keys or OAuth provider diagnostics in responses/logs.
     res.status(code).json({ error: /Google OAuth is not configured/.test(message) ? 'google_not_configured' :
+      /Push is not configured/.test(message) ? 'push_not_configured' :
       /already registered/.test(message) ? 'account_requires_linking' : 'operation_rejected' });
   });
   return { app, server, io, registry,
@@ -302,7 +351,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   check(process.env.SHADE_ENV === 'alpha', 'Set SHADE_ENV=alpha; production startup forbidden');
   const instance = await createAlphaServer({ dataDir: process.env.ALPHA_DATA_DIR,
     storageSecret: process.env.ALPHA_STORAGE_SECRET, publicOrigin: process.env.ALPHA_PUBLIC_ORIGIN,
-    clientId: process.env.ALPHA_GOOGLE_CLIENT_ID, clientSecret: process.env.ALPHA_GOOGLE_CLIENT_SECRET });
+    clientId: process.env.ALPHA_GOOGLE_CLIENT_ID, clientSecret: process.env.ALPHA_GOOGLE_CLIENT_SECRET,
+    vapidKeys: process.env.ALPHA_VAPID_PUBLIC_KEY && process.env.ALPHA_VAPID_PRIVATE_KEY ? {
+      publicKey: process.env.ALPHA_VAPID_PUBLIC_KEY, privateKey: process.env.ALPHA_VAPID_PRIVATE_KEY,
+      subject: process.env.ALPHA_VAPID_SUBJECT } : null });
   const port = Number(process.env.ALPHA_PORT || 3101);
   instance.server.once('error', error => {
     console.error(`Alpha listener failed: ${error.code || 'unknown'}`);

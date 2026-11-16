@@ -19,7 +19,7 @@ export function legacyRoot(pem) {
 export async function createDeviceRegistry({ users, persist, snapshot, clock = Date.now, verifyGoogle }) {
   check(users instanceof Map && typeof persist === 'function');
   // Additive snapshot: never rewrite users, legacy messages, tokens or keys.
-  let state = { format: 2, accounts: {}, queues: {}, receipts: {}, delivery: {}, stickers: {}, retractions: {} };
+  let state = { format: 2, accounts: {}, queues: {}, receipts: {}, delivery: {}, stickers: {}, retractions: {}, pushSubscriptions: {} };
   const initialAccounts = [];
   for (const [account, user] of users) {
     check(/^[a-z0-9_]{3,32}$/.test(account), 'Invalid legacy account');
@@ -58,6 +58,7 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     state.delivery ||= {};
     state.stickers ||= {};
     state.retractions ||= {};
+    state.pushSubscriptions ||= {};
   }
   const challenges = new Map();
   let tail = Promise.resolve();
@@ -243,6 +244,24 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
       }
       return { retractions: out };
     }),
+    // Web Push subscriptions (contract C6): one per device, encrypted at rest
+    // inside the snapshot, bound to the authenticated account/device.
+    pushSubscribe: (auth, subscription) => serial(() => transaction(next => {
+      const key = `${auth.account}:${auth.id}`;
+      check(Object.hasOwn(next.pushSubscriptions, key) ||
+        Object.keys(next.pushSubscriptions).length < 10000, 'Push capacity reached');
+      next.pushSubscriptions[key] = { ...subscription, createdAt: clock() };
+      return { subscribed: true };
+    })),
+    pushUnsubscribe: auth => serial(() => transaction(next => {
+      delete next.pushSubscriptions[`${auth.account}:${auth.id}`];
+      return { subscribed: false };
+    })),
+    pushSubscription: (account, id) => state.pushSubscriptions[`${account}:${id}`]
+      ? structuredClone(state.pushSubscriptions[`${account}:${id}`]) : null,
+    dropPushSubscription: (account, id) => serial(() => transaction(next => {
+      delete next.pushSubscriptions[`${account}:${id}`];
+    })),
     assertLegacyAllowed(account) {
       check(!current(state, account), 'Client upgrade required: account uses device protocol v2');
     },
