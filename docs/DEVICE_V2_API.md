@@ -148,16 +148,38 @@ multi-device/restart), `alpha-retract` (авторизация/offline/идем�
 Клиентские golden-векторы: `client/test/assets/device_v2_vectors.json`
 (генератор `client/tools/generate_v2_vectors.mjs`, включая self-векторы).
 
-## 10. Ограничения / следующие шаги
+## 10. Security hardening (интеграционная ветка, по независимому ревью)
 
-- Медиа-кодек `m` и UI reply/media/typing/presence/read/retract/push в PWA и
-  Android — клиентская работа ZCODE/следующая итерация (контракты выше).
-- DNS-rebinding SSRF для push-endpoint не закрыт полностью (только литералы/
-  приватные диапазоны); для production — резолв с проверкой адреса.
-- Nonce для native ID token-входа (рекомендация Kimi-ревью) — перед публичным
-  production; для изолированного alpha приемлемо.
-- `upgrade_required` guard для v1-маршрутов после enrollment (`assertLegacyAllowed`)
-  существует в модели, но не подключён к production `server.js` — отдельное
+- `POST /api/v2/session/google`: **Origin обязателен** и равен publicOrigin
+  (fail-closed); PWA и native-транспорт отправляют Origin.
+- Challenge: per-account quota **100** активных nonce (глобальный 1000 сохранён).
+- `retract`: tombstone создаётся **только для реально отправленных** ref
+  (receipts); неизвестные ref — no-op; per-account quota **2000** tombstones.
+- Typing: троттлинг **per-pair** 2 с (не per-account).
+- Push: опциональный allowlist хостов `ALPHA_PUSH_ALLOWED_HOSTS` (CSV) поверх
+  SSRF-guard; wake-only payload без изменений.
+- IndexedDB: durability-flush (follow-up meta-транзакция) + read-back
+  verification для vault и state; `tx.commit()`; `onversionchange → close`;
+  аддитивный апгрейд БД v1→v2 (stores `meta`).
+- ACK/status/read изолированы per-device (подтверждено негативными тестами
+  `alpha-security-hardening`): чужой ACK — no-op, чужой status — пустой список.
+
+## 11. Статус интеграции и ограничения
+
+- Ветка `integration-android-pwa` объединяет `android-web-e2ee` (backend B1–B9,
+  Android v2 клиент) и `zcode/pwa-parity` (PWA-клиент B1–B9, профили/наклейки/
+  reverse-чаты). Конфликтов нет; self-chat протокол идентичен в обеих ветках.
+- PWA-клиент подключён к адаптеру профилей/наклеек, read/retract/retractions,
+  typing/presence, медиа-кодеку `m` (GLM, коммит 192224a). **Web Push-подписка
+  на клиенте PWA ещё не подключена** (backend готов, контракт §2/§7).
+- Android v2: read/retract/typing/presence/media подключены в transport +
+  repository + UI; Web Push для Android не применяется (FCM v1 не затронут).
+- DNS-rebinding SSRF для push-endpoint не закрыт полностью — настроить
+  allowlist или egress-резолв до production.
+- Nonce для native ID token-входа — перед публичным production (для закрытой
+  альфы приемлемо).
+- `upgrade_required` guard не подключён к production `server.js` — отдельное
   разрешение на production-миграцию.
-- Реальный Google OAuth/APK/iPhone не проверялись; тесты — синтетические
-  идентичности против реального alpha HTTP/WSS.
+- Реальный Google OAuth/APK/iPhone не проверялись; план физических испытаний:
+  `docs/PHYSICAL_DEVICE_TEST_PLAN.md` (обязательный шлюз перед реальными
+  пользователями).
