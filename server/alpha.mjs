@@ -20,7 +20,7 @@ const SESSION_MS = 8 * 60 * 60 * 1000;
 // Injected OAuth providers are available ONLY to in-process tests. No test login
 // route, environment bypass or fake identity provider is shipped to users.
 export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
-  clientId = '', clientSecret = '', oauthProvider, legacyUsers = new Map(), tls } = {}) {
+  clientId = '', clientSecret = '', oauthProvider, verifyGoogle, legacyUsers = new Map(), tls } = {}) {
   check(dataDir && publicOrigin, 'Explicit alpha dataDir and publicOrigin required');
   const origin = new URL(publicOrigin);
   check(origin.origin === publicOrigin && (origin.protocol === 'https:' ||
@@ -29,7 +29,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   const store = await alphaStore(dataDir, storageSecret);
   const sessions = new Map(), flows = new Map();
   const oauth = new OAuth2Client(clientId, clientSecret, `${publicOrigin}/auth/google/callback`);
-  const verifier = createAuthProof({ audience: clientId });
+  const verifier = createAuthProof({ audience: clientId, verifyGoogle });
   const provider = oauthProvider || {
     configured: Boolean(clientId && clientSecret),
     start({ state, nonce, codeChallenge }) {
@@ -110,6 +110,22 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     const sid = token(); sessions.set(sid, { profile, expiresAt: Date.now() + SESSION_MS });
     res.cookie(sidName, sid, { ...cookieOptions, maxAge: SESSION_MS });
     res.redirect('/');
+  }));
+  // Native (Android) Google sign-in: the google_sign_in plugin obtains an ID
+  // token for the same OAuth client; verification is identical to the browser
+  // code flow (audience, signature, verified email). Device proofs are still
+  // required for every operation; the cookie alone never authorizes reads.
+  app.post('/api/v2/session/google', rateLimit({ windowMs: 60000, limit: 15 }), wrap(async (req, res) => {
+    // Audience (the OAuth client ID) is mandatory for ID-token verification.
+    check(Boolean(clientId), 'Google OAuth is not configured');
+    const { idToken } = req.body || {};
+    check(typeof idToken === 'string' && idToken.length > 0 && idToken.length <= 10000, 'Invalid Google ID token');
+    const profile = await verifier.googleProfile(idToken);
+    const old = req.cookies[sidName]; if (old) sessions.delete(old);
+    const sid = token(); sessions.set(sid, { profile, expiresAt: Date.now() + SESSION_MS });
+    res.cookie(sidName, sid, { ...cookieOptions, maxAge: SESSION_MS });
+    const account = registry.accountForGoogle(profile.googleSub);
+    res.json({ authenticated: true, account, directory: account ? registry.directory(account) : null });
   }));
   app.post('/api/logout', requireGoogle, (req, res) => {
     sessions.delete(req.alphaSid); res.clearCookie(sidName, cookieOptions);

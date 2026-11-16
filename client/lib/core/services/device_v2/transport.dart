@@ -27,7 +27,10 @@ class AlphaTransport {
   final String origin;
   final CryptoService crypto;
   final HttpClient _client = HttpClient();
-  String? _sessionCookie;
+
+  /// Для восстановленной сессии или тестового fixture; в production cookie
+  /// выдаётся сервером после проверки Google.
+  String? sessionCookie;
   io.Socket? _socket;
   Timer? _pollTimer;
   Timer? _reconnectTimer;
@@ -48,24 +51,18 @@ class AlphaTransport {
     check(origin == uri.origin, 'Invalid origin');
   }
 
-  String? get sessionCookie => _sessionCookie;
-
-  /// Для восстановленной сессии или тестового fixture; в production cookie
-  /// выдаётся сервером после проверки Google.
-  set sessionCookie(String? value) => _sessionCookie = value;
-
-  bool get hasSession => _sessionCookie != null;
+  bool get hasSession => sessionCookie != null;
 
   Future<dynamic> _send(String method, String path, {Object? body}) async {
     final request = await _client.openUrl(method, Uri.parse('$origin$path'));
     request.headers.set('Content-Type', 'application/json');
     request.headers.set('Origin', origin);
-    if (_sessionCookie != null) request.headers.set('Cookie', _sessionCookie!);
+    if (sessionCookie != null) request.headers.set('Cookie', sessionCookie!);
     if (body != null) request.write(jsonEncode(body));
     final response = await request.close();
     for (final cookie in response.cookies) {
       if (cookie.name == 'shade-alpha' || cookie.name == '__Host-shade-alpha') {
-        _sessionCookie = '${cookie.name}=${cookie.value}';
+        sessionCookie = '${cookie.name}=${cookie.value}';
       }
     }
     final text = await response.transform(utf8.decoder).join();
@@ -90,7 +87,7 @@ class AlphaTransport {
 
   Future<void> logout() async {
     await _send('POST', '/api/logout');
-    _sessionCookie = null;
+    sessionCookie = null;
     _disconnectSocket();
   }
 
@@ -194,7 +191,7 @@ class AlphaTransport {
               .disableAutoConnect()
               .disableReconnection()
               .setAuth({'account': account, 'id': id, 'nonce': nonce, 'proof': proof})
-              .setExtraHeaders({if (_sessionCookie != null) 'Cookie': _sessionCookie!})
+              .setExtraHeaders({if (sessionCookie != null) 'Cookie': sessionCookie!})
               .build());
       _socket = socket;
       socket.on('inbox', (_) => onWake?.call());

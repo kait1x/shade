@@ -40,7 +40,13 @@ export async function fixture(options) {
     const callback = await request(new URL(first.response.headers.get('location')).pathname + new URL(first.response.headers.get('location')).search, undefined, flow);
     return callback.response.headers.getSetCookie().find(s => s.startsWith(`${options.tls ? '__Host-' : ''}shade-alpha=`)).split(';')[0];
   }
-  return { ...instance, origin, port, request, login, setLoginSub: value => { loginSub = value; } };
+  // Native-style login with an injected verifyGoogle (tests only).
+  async function loginToken(idToken) {
+    const reply = await request('/api/v2/session/google', { idToken });
+    if (reply.response.status !== 200) throw Error(JSON.stringify(reply.result));
+    return reply.response.headers.getSetCookie().find(s => s.startsWith(`${options.tls ? '__Host-' : ''}shade-alpha=`)).split(';')[0];
+  }
+  return { ...instance, origin, port, request, login, loginToken, setLoginSub: value => { loginSub = value; } };
 }
 export async function identity(account) {
   const phrase = 'synthetic alpha device passphrase only';
