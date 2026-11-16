@@ -183,12 +183,14 @@ class DeviceV2Crypto {
     final senderAt = _atRevision(senderHistory, m['fromRevision'] as int);
     final recipientAt = _atRevision(recipientHistory, m['toRevision'] as int);
     check(senderAt != null && recipientAt != null, 'Missing historical directory');
+    final senderDir = senderAt!;
+    final recipientDir = recipientAt!;
     final createdAt = m['createdAt'] as int;
-    check((senderAt!['issuedAt'] as int) <= createdAt &&
-        (senderAt['expiresAt'] as int) > createdAt &&
-        (recipientAt!['issuedAt'] as int) <= createdAt &&
-        (recipientAt['expiresAt'] as int) > createdAt, 'Message outside directory lease');
-    await verifier.verifyMessage(m, senderAt, recipientAt, now: now);
+    check((senderDir['issuedAt'] as int) <= createdAt &&
+        (senderDir['expiresAt'] as int) > createdAt &&
+        (recipientDir['issuedAt'] as int) <= createdAt &&
+        (recipientDir['expiresAt'] as int) > createdAt, 'Message outside directory lease');
+    await verifier.verifyMessage(m, senderDir, recipientDir, now: now);
     final own = (m['envelopes'] as List).cast<Map<String, dynamic>>().where(
         (e) => e['account'] == session.account && e['deviceId'] == session.id).firstOrNull;
     check(own != null, 'Device is not a recipient');
