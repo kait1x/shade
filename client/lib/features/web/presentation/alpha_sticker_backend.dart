@@ -28,7 +28,8 @@ class AlphaStickerBackend implements StickerBackend {
   }
 
   @override
-  Future<void> gift(String to, String art, String note, String requestId) =>
-      Future.error(StateError(
-          'Подарки недоступны в Web Alpha: нужен device-v2 API для обмена наклейками'));
+  Future<void> gift(String to, String art, String note, String requestId) async {
+    await controller.dispatch('stickers.gift',
+        {'to': to, 'art': art, 'note': note, 'requestId': requestId});
+  }
 }

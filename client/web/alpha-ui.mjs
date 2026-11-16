@@ -119,11 +119,27 @@ function render() {
   const connection = !navigator.onLine ? 'Нет сети · история сохранена' : client.lastError ?
     (errors[client.lastError] || 'Ошибка синхронизации · повтор через 15 секунд') :
     client.connected ? 'Подключено · E2EE' : 'Переподключение…';
+  // Peer display names and avatar digests arrive through the v2 profile API;
+  // metadata is fetched in the background once per account and cached.
+  const meta = account => {
+    const cached = client.peerMetaCache?.[account];
+    if (!cached) {
+      client.peerMeta(account).then(() => render()).catch(() => {});
+      return {};
+    }
+    return { name: cached.name, avatarDigest: cached.digest, frame: cached.frame };
+  };
   window.shadeReceive(JSON.stringify({
     account: client.session.account, selected, connection, connected: client.connected && navigator.onLine && !client.lastError,
-    peers: accounts.map(account => ({ account, pinned: !!contact(account), unverified: (client.unverified || []).includes(account) })),
-    messages: client.state.messages.map(({ref,from,to,text,reply,createdAt,status,devices}) =>
-      ({ref,from,to,text,reply,createdAt,status,devices})),
+    peers: [
+      { account: client.session.account, favorites: true, pinned: true,
+        name: 'Избранное', avatarDigest: client.state.profile?.avatarDigest || '' },
+      ...accounts.map(account => ({ account, pinned: !!contact(account),
+        unverified: (client.unverified || []).includes(account), ...meta(account) })),
+    ],
+    messages: client.state.messages.map(({ref,from,to,text,reply,createdAt,status,devices,media,readAt,chunkRefs}) =>
+      ({ref,from,to,text,reply,createdAt,status,devices,media,readAt,
+        chunkRefs: media && chunkRefs ? chunkRefs.length : undefined})),
     notes: client.state.notes ?? {},
     profile: {
       displayName: client.state.profile?.displayName || '',
@@ -131,6 +147,8 @@ function render() {
       digest: client.state.profile?.avatarDigest || '',
       revision: client.state.profile?.avatarRevision || 0,
     },
+    typing: client.typingUntil || {},
+    presence: client.presence || {},
     devices: (client.state.own.history.at(-1)?.devices || []).map(({id}) => ({id, current:id === client.session.id})),
     positions: ui.positions, readUntil: ui.readUntil,
   }));
@@ -156,26 +174,43 @@ async function openApp() {
         case 'ready': loading.remove(); render(); break;
         case 'select':
           selected = data.account; ui.selected = selected; saveUi(); render();
-          if (!contact(selected)) verifyContact(selected); break;
-        case 'back': selected = null; ui.selected = null; saveUi(); render(); break;
+          client.watchPeer(selected, true);
+          client.loadProfile().catch(() => {});
+          if (!contact(selected) && selected !== client.session.account) verifyContact(selected); break;
+        case 'back': selected = null; ui.selected = null; saveUi(); render();
+          if (data.account) client.watchPeer(data.account, false); break;
+        case 'typing': client.sendTyping(data.account); break;
         case 'read': {
           if (document.hidden || selected !== data.account) break;
           const previous = ui.readUntil[data.account] || 0;
-          if (data.until > previous) { ui.readUntil[data.account] = data.until; saveUi(); render(); } break;
+          if (data.until > previous) {
+            ui.readUntil[data.account] = data.until; saveUi();
+            // Read-ACK (contract C5): the relay op runs on refs the read mark
+            // covers; failures surface honestly without breaking the UI.
+            const refs = client.state.messages
+              .filter(m => m.from === data.account && m.createdAt <= data.until &&
+                !m.readAt && m.status === 'received')
+              .slice(-200).map(m => m.ref);
+            if (refs.length) client.markRead(data.account, refs)
+              .catch(e => notice(errors[e.message] || e.message));
+            render();
+          } break;
         }
         case 'position': ui.positions[data.account] = {offset:Math.max(0,data.offset),bottom:!!data.bottom}; saveUi(); break;
         case 'send': await client.send(data.account, data.text, data.reply || null); client.sync().catch(e => notice(errors[e.message] || e.message)); break;
+        case 'sendMedia': await client.sendMedia(data.account, data.image, data.mime || 'image/jpeg'); client.sync().catch(e => notice(errors[e.message] || e.message)); break;
         case 'deleteLocal': await client.deleteLocal(data.ref); break;
+        case 'retract': await client.retract(data.ref); break;
         case 'sync': await client.sync(); break;
         case 'note': await client.saveNote(data.account, data.text); break;
         case 'profile.save': await client.saveProfile(data); break;
         // The avatar image travels on demand, not in every projection.
         case 'profile.avatar': return JSON.stringify({ ok: true, data: { image: client.state.profile?.avatarImage || null } });
-        case 'stickers.load': {
-          if (data.owner !== true) throw Error('Стена собеседника появится с device-v2 API');
-          return JSON.stringify({ ok: true, data: client.stickers() });
-        }
+        case 'peer.avatar': return JSON.stringify({ ok: true, data: await client.peerAvatar(data.account) });
+        case 'stickers.load': return JSON.stringify({ ok: true, data: await client.loadStickers(data.name, data.owner === true) });
         case 'stickers.save': return JSON.stringify({ ok: true, data: await client.saveStickers(data.revision, data.wall) });
+        case 'stickers.gift': return JSON.stringify({ ok: true, data: await client.giftSticker(data.to, data.art, data.note, data.requestId) });
+        case 'devices.revoke': await client.revokeDevice(data.id); break;
         case 'verify': verifyContact(data.account); break;
         case 'refresh': users = await client.users(); render(); break;
         case 'identity': showDialog('Ваш отпечаток', [node('p', '@' + client.session.account),
@@ -195,7 +230,7 @@ async function openApp() {
   const script = node('script'); script.src = '/flutter-ui/flutter_bootstrap.js';
   script.onerror = () => notice('Не удалось загрузить Flutter UI. Проверьте сборку и соединение; ключи сохранены.');
   document.head.append(script);
-  try { await client.start(); users = await client.users(); render(); }
+  try { await client.start(); users = await client.users(); client.loadProfile().catch(() => {}); render(); }
   catch (error) { notice(errors[error.message] || error.message); }
 }
 function verifyContact(account) {

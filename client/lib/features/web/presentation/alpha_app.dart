@@ -181,7 +181,7 @@ class _ChatsState extends State<_Chats> {
                 IconButton(
                     tooltip: 'Профиль',
                     onPressed: widget.profile,
-                    icon: AlphaAvatar(controller: c, size: 34)),
+                    icon: AccountAvatar(controller: c, account: c.account, size: 34)),
                 IconButton(
                     tooltip: 'Найти собеседника',
                     onPressed: () {
@@ -304,14 +304,18 @@ class _ChatsState extends State<_Chats> {
                         shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(18)),
                         horizontalTitleGap: 15,
-                        leading: AvatarView(name: peer, size: 54),
+                        leading: AccountAvatar(
+                            controller: c,
+                            account: peer,
+                            size: 54,
+                            favorites: peer == c.account),
                         onTap: () {
                           widget.openChat();
                           c.act('select', {'account': peer});
                         },
                         title: Row(children: [
                           Expanded(
-                              child: Text(peer,
+                              child: Text(c.peerName(peer),
                                   maxLines: 2,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
@@ -330,8 +334,9 @@ class _ChatsState extends State<_Chats> {
                               if (latest != null &&
                                   latest['from'] == c.account) ...[
                                 Icon(
-                                    AlphaController.status(latest) ==
-                                            'delivered'
+                                    AlphaController.status(latest) == 'read' ||
+                                            AlphaController.status(latest) ==
+                                                'delivered'
                                         ? Icons.done_all_rounded
                                         : AlphaController.status(latest) ==
                                                 'queued'
@@ -344,9 +349,11 @@ class _ChatsState extends State<_Chats> {
                               Expanded(
                                   child: Text(
                                       latest?['text'] as String? ??
-                                          (c.pinned(peer)
-                                              ? 'Отправьте первое сообщение'
-                                              : 'Сверьте отпечаток ключа'),
+                                          (latest?['media'] != null
+                                              ? '📷 Фото'
+                                              : (c.pinned(peer)
+                                                  ? 'Отправьте первое сообщение'
+                                                  : 'Сверьте отпечаток ключа')),
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
                                       style: const TextStyle(
@@ -394,6 +401,14 @@ class _ChatsState extends State<_Chats> {
               ]))),
     ]);
   }
+}
+
+// Typing (contract C2) wins over presence; both degrade to the static line.
+String _statusLine(AlphaController c, String peer) {
+  final typingUntil = c.typing[peer] as num? ?? 0;
+  if (typingUntil > DateTime.now().millisecondsSinceEpoch) return 'печатает…';
+  if (c.presence[peer] == true) return 'В сети';
+  return 'Личная переписка';
 }
 
 String _time(Map<String, dynamic> item) {
@@ -511,9 +526,34 @@ class _ConversationState extends State<_Conversation>
               _deleteMessage(m['ref'] as String);
             },
           ),
+          // Delete-for-all (contract C3): only the sender, only non-queued.
+          if (m['from'] == widget.controller.account &&
+              m['status'] != 'queued' &&
+              m['status'] != 'blocked')
+            ListTile(
+                leading:
+                    const Icon(Icons.delete_forever_rounded, color: Color(0xFFEF4444)),
+                title: const Text('Удалить у всех',
+                    style: TextStyle(color: Color(0xFFEF4444))),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _retractMessage(m['ref'] as String);
+                }),
         ],
       ))),
     );
+  }
+
+  Future<void> _retractMessage(String ref) async {
+    try {
+      await widget.controller.act('retract', {'ref': ref});
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                'Не удалось отозвать. Проверьте сеть и повторите.')));
+      }
+    }
   }
 
   Future<void> _deleteMessage(String ref) async {
@@ -660,27 +700,34 @@ class _ConversationState extends State<_Conversation>
             Expanded(
                 child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
-                    onTap: widget.openPeer,
+                    onTap: peer == c.account ? null : widget.openPeer,
                     child: Row(children: [
-                      AvatarView(name: peer, size: 40),
+                      AccountAvatar(
+                          controller: c,
+                          account: peer,
+                          size: 40,
+                          favorites: peer == c.account),
                       const SizedBox(width: 12),
                       Expanded(
                           child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                            Text(peer,
+                            Text(c.peerName(peer),
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
                                     fontSize: 16,
                                     fontWeight: FontWeight.w700)),
                             const SizedBox(height: 3),
-                            const Text('Личная переписка',
+                            Text(_statusLine(c, peer),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
                                     fontSize: 11,
-                                    color: ShadeColors.textMuted)),
+                                    color: (c.typing[peer] as num? ?? 0) >
+                                            DateTime.now().millisecondsSinceEpoch
+                                        ? ShadeColors.cyan
+                                        : ShadeColors.textMuted)),
                           ])),
                     ]))),
             IconButton(
@@ -736,6 +783,10 @@ class _ConversationState extends State<_Conversation>
                                 date = DateTime.fromMillisecondsSinceEpoch(
                                     (m['createdAt'] as num).toInt());
                             final reply = m['reply'] as Map?;
+                            final media = m['media'] as Map?;
+                            final mediaBytes = media == null
+                                ? null
+                                : base64Decode(media['data'] as String);
                             bool grouped(int originalIndex) =>
                                 originalIndex >= 0 &&
                                 originalIndex < items.length &&
@@ -760,10 +811,12 @@ class _ConversationState extends State<_Conversation>
                               ShadeMessageArrival(
                                   animate: added.contains(m['ref']),
                                   child: MessageBubble(
-                                      text: m['text'] as String,
+                                      text: media != null ? '' : m['text'] as String,
                                       timestamp: date,
                                       isMine: m['from'] == c.account,
                                       isEncrypted: true,
+                                      isImage: media != null,
+                                      imageData: mediaBytes,
                                       status: AlphaController.status(m),
                                       deliveryLabel:
                                           AlphaController.delivery(m),
@@ -867,6 +920,16 @@ class _ConversationState extends State<_Conversation>
                             600
                         ? 3
                         : 5,
+                    onTyping: () => c.act('typing', {'account': peer}),
+                    onImageSelected: (bytes) async {
+                      atBottom = true;
+                      await c.act('sendMedia', {
+                        'account': peer,
+                        'image': base64Encode(bytes),
+                        'mime': 'image/jpeg',
+                      });
+                      await c.act('sync', const {});
+                    },
                     onSend: (text) async {
                       atBottom = true;
                       final reply = replyTo == null
@@ -965,6 +1028,36 @@ class _Profile extends StatelessWidget {
             ]));
     if (confirmed == true) await controller.act('logout');
   }
+
+  Future<void> _confirmRevoke(
+      BuildContext context, AlphaController controller, String id) async {
+    final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (dialog) => AlertDialog(
+            title: const Text('Отозвать устройство?'),
+            content: const Text(
+                'Очередь и push-подписка устройства будут удалены. '
+                'Действие необратимо: ключи отозванного устройства больше '
+                'не смогут получать сообщения.'),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(dialog, false),
+                  child: const Text('Отмена')),
+              TextButton(
+                  onPressed: () => Navigator.pop(dialog, true),
+                  child: const Text('Отозвать')),
+            ]));
+    if (confirmed != true || !context.mounted) return;
+    try {
+      await controller.act('devices.revoke', {'id': id});
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                'Не удалось отозвать устройство. Проверьте сеть и повторите.')));
+      }
+    }
+  }
   @override
   Widget build(BuildContext context) => Column(children: [
         Row(children: [
@@ -985,8 +1078,10 @@ class _Profile extends StatelessWidget {
                           child: GestureDetector(
                               onTap: () => _editAvatar(context),
                               child: Stack(children: [
-                                AlphaAvatar(
-                                    controller: controller, size: 100),
+                                AccountAvatar(
+                                    controller: controller,
+                                    account: controller.account,
+                                    size: 100),
                                 Positioned(
                                     right: 0,
                                     bottom: 0,
@@ -1100,7 +1195,20 @@ class _Profile extends StatelessWidget {
                                           overflow: TextOverflow.ellipsis,
                                           style: const TextStyle(
                                               fontSize: 11,
-                                              color: ShadeColors.textMuted))))
+                                              color: ShadeColors.textMuted)),
+                                      trailing: d['current'] == true
+                                          ? null
+                                          : IconButton(
+                                              tooltip: 'Отозвать устройство',
+                                              icon: const Icon(
+                                                  Icons.delete_outline_rounded,
+                                                  size: 18,
+                                                  color: ShadeColors
+                                                      .textSecondary),
+                                              onPressed: () =>
+                                                  _confirmRevoke(context,
+                                                      controller,
+                                                      d['id'] as String))))
                                   .toList())),
                       const SizedBox(height: 20),
                       OutlinedButton.icon(
@@ -1190,9 +1298,11 @@ class _PeerProfile extends StatelessWidget {
               child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 560),
                   child: ListView(padding: const EdgeInsets.all(24), children: [
-                    Center(child: AvatarView(name: peer, size: 100)),
+                    Center(
+                        child: AccountAvatar(
+                            controller: c, account: peer, size: 100)),
                     const SizedBox(height: 20),
-                    Text(peer,
+                    Text(c.peerName(peer),
                         textAlign: TextAlign.center,
                         style: const TextStyle(
                             fontSize: 28, fontWeight: FontWeight.w700)),
@@ -1259,6 +1369,16 @@ class _PeerProfile extends StatelessWidget {
                             }
                           }),
                     ])),
+                    const SizedBox(height: 24),
+                    const Text('ПОДАРКИ · ВИНИЛОВАЯ СТЕНА',
+                        style: TextStyle(
+                            fontSize: 11,
+                            letterSpacing: 1.5,
+                            color: ShadeColors.textMuted)),
+                    StickerCollection(
+                        username: peer,
+                        owner: false,
+                        backend: AlphaStickerBackend(controller)),
                     const SizedBox(height: 20),
                     OutlinedButton.icon(
                         onPressed: openChat,
@@ -1277,40 +1397,69 @@ class _PeerProfile extends StatelessWidget {
   }
 }
 
-/// The signed-in user's avatar: local image bytes keyed by the projected
-/// digest, plus the local frame. Peers have no v2 profile API yet, so their
-/// avatars stay initials by design.
-class AlphaAvatar extends StatefulWidget {
-  const AlphaAvatar(
-      {super.key, required this.controller, required this.size});
+/// Avatar for any account: the signed-in user resolves through the local
+/// profile projection, peers through the v2 profile adapter (display name,
+/// frame and bytes keyed by the projected digest). Accounts without a v2
+/// avatar stay initials by design.
+class AccountAvatar extends StatefulWidget {
+  const AccountAvatar(
+      {super.key,
+      required this.controller,
+      required this.account,
+      required this.size,
+      this.favorites = false});
   final AlphaController controller;
+  final String account;
   final double size;
+  final bool favorites;
   @override
-  State<AlphaAvatar> createState() => _AlphaAvatarState();
+  State<AccountAvatar> createState() => _AccountAvatarState();
 }
 
-class _AlphaAvatarState extends State<AlphaAvatar> {
+class _AccountAvatarState extends State<AccountAvatar> {
   Uint8List? bytes;
   String loadedDigest = '';
   @override
   Widget build(BuildContext context) {
     final c = widget.controller;
+    if (widget.favorites) {
+      return AvatarView(name: '', saved: true, size: widget.size);
+    }
+    if (widget.account == c.account) {
+      final frame = AvatarFrame.values.firstWhere(
+          (f) => f.name == c.profile['frame'],
+          orElse: () => AvatarFrame.none);
+      final digest = c.profile['digest'] as String? ?? '';
+      _load(digest, () => c.avatarImage(digest));
+      return AvatarView(
+          name: c.account, image: bytes, frame: frame, size: widget.size);
+    }
+    final peer = c.peers
+        .where((p) => p['account'] == widget.account)
+        .fold<Map<String, dynamic>?>(null, (acc, p) => p);
     final frame = AvatarFrame.values.firstWhere(
-        (f) => f.name == c.profile['frame'],
+        (f) => f.name == (peer?['frame'] ?? 'none'),
         orElse: () => AvatarFrame.none);
-    final digest = c.profile['digest'] as String? ?? '';
+    final digest = peer?['avatarDigest'] as String? ?? '';
+    _load(digest, () => c.peerAvatarBytes(widget.account, digest));
+    return AvatarView(
+        name: c.peerName(widget.account),
+        image: bytes,
+        frame: bytes == null ? frame : AvatarFrame.none,
+        size: widget.size);
+  }
+
+  void _load(String digest, Future<Uint8List?> Function() fetch) {
     if (digest != loadedDigest) {
       loadedDigest = digest;
       bytes = null;
       if (digest.isNotEmpty) {
-        c.avatarImage(digest).then((value) {
+        fetch().then((value) {
           if (mounted && loadedDigest == digest) {
             setState(() => bytes = value);
           }
         });
       }
     }
-    return AvatarView(
-        name: c.account, image: bytes, frame: frame, size: widget.size);
   }
 }
