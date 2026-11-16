@@ -158,9 +158,11 @@ multi-device/restart), `alpha-retract` (авторизация/offline/идем�
 - Typing: троттлинг **per-pair** 2 с (не per-account).
 - Push: опциональный allowlist хостов `ALPHA_PUSH_ALLOWED_HOSTS` (CSV) поверх
   SSRF-guard; wake-only payload без изменений.
-- IndexedDB: durability-flush (follow-up meta-транзакция) + read-back
-  verification для vault и state; `tx.commit()`; `onversionchange → close`;
-  аддитивный апгрейд БД v1→v2 (stores `meta`).
+- IndexedDB durability (WebKit): синхронный localStorage-журнал удалений
+  (refs без содержимого) + IDB write-ahead журнал + double re-commit +
+  meta-flush + фоновая конвергенция; `tx.commit()`; `onversionchange → close`;
+  аддитивный апгрейд БД до v3 (`meta`, `deletions`). Остаточный риск потери
+  последнего батча истории при abrupt kill — PHYSICAL_DEVICE_TEST_PLAN.md.
 - ACK/status/read изолированы per-device (подтверждено негативными тестами
   `alpha-security-hardening`): чужой ACK — no-op, чужой status — пустой список.
 
