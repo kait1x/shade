@@ -10,8 +10,10 @@ import 'package:shade/core/widgets/shade_motion.dart';
 import 'package:shade/core/widgets/shade_states.dart';
 import 'package:shade/features/chats/presentation/widgets/message_bubble.dart';
 import 'package:shade/features/chats/presentation/widgets/message_input.dart';
+import 'package:shade/features/stickers/collection.dart';
 import 'alpha_avatar_editor.dart';
 import 'alpha_controller.dart';
+import 'alpha_sticker_backend.dart';
 
 class ShadeAlphaApp extends StatelessWidget {
   const ShadeAlphaApp({super.key, required this.controller});
@@ -1047,6 +1049,24 @@ class _Profile extends StatelessWidget {
                                 const Text('Сохранить зашифрованную копию'),
                             onTap: () => controller.act('backup')),
                       ])),
+                      const SizedBox(height: 24),
+                      const Text('ПОДАРКИ · ВИНИЛОВАЯ СТЕНА',
+                          style: TextStyle(
+                              fontSize: 11,
+                              letterSpacing: 1.5,
+                              color: ShadeColors.textMuted)),
+                      const SizedBox(height: 4),
+                      const Text(
+                          'Обмен подарками появится с device-v2 API; '
+                          'оформление локальной стены уже работает.',
+                          style: TextStyle(
+                              fontSize: 12,
+                              height: 1.5,
+                              color: ShadeColors.textMuted)),
+                      StickerCollection(
+                          username: controller.account,
+                          owner: true,
+                          backend: AlphaStickerBackend(controller)),
                       const SizedBox(height: 24),
                       const Text('ПОДКЛЮЧЁННЫЕ УСТРОЙСТВА',
                           style: TextStyle(

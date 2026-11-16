@@ -1,6 +1,7 @@
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shade/core/services/connection_service.dart';
-
+// Transport-agnostic sticker models and the backend seam. The v1
+// ConnectionService implementation lives in connection_stickers.dart; the web
+// alpha provides its own adapter. No dart:io may be imported here: the whole
+// rendering stack is shared with the Flutter web build.
 class Gift {
   final String id, art;
   final String? from, note;
@@ -46,30 +47,11 @@ class Collection {
         ];
 }
 
-final stickerRepository =
-    Provider((ref) => StickerRepository(ref.watch(connectionServiceProvider)));
-
-class StickerRepository {
-  final ConnectionService conn;
-  StickerRepository(this.conn);
-  Future<Collection> load(String name, bool owner) async =>
-      Collection(await conn.profileRequest(
-          'GET',
-          owner
-              ? '/stickers/inventory'
-              : '/user/${Uri.encodeComponent(name)}/stickers'));
-  Future<Map<String, dynamic>> save(int rev, List<Placement> wall) =>
-      conn.profileRequest('PUT', '/stickers/wall', {
-        'revision': rev,
-        'wall': [for (var i = 0; i < wall.length; i++) wall[i].json(i)]
-      });
-  Future<void> gift(
-      String to, String art, String note, String requestId) async {
-    await conn.profileRequest('POST', '/stickers/gift', {
-      'toUsername': to,
-      'stickerId': art,
-      'note': note,
-      'requestId': requestId
-    });
-  }
+/// Data seam for the sticker collection. Implementations provide the account
+/// binding and transport (v1 session headers today; a device-v2 contract is
+/// pending for the web alpha).
+abstract interface class StickerBackend {
+  Future<Collection> load(String name, bool owner);
+  Future<Map<String, dynamic>> save(int rev, List<Placement> wall);
+  Future<void> gift(String to, String art, String note, String requestId);
 }

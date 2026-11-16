@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:shade/core/widgets/shade_motion.dart';
 import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 import 'package:shade/features/stickers/collection.dart';
+import 'package:shade/features/stickers/connection_stickers.dart';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
@@ -516,7 +517,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                               StickerCollection(
                                   key: ValueKey(widget.username),
                                   username: widget.username,
-                                  owner: widget.isSelf),
+                                  owner: widget.isSelf,
+                                  backend: ref.read(stickerRepository),
+                                  reloadStream: ref
+                                      .read(connectionServiceProvider)
+                                      .connectionChanges),
                               if (widget.isSelf) ...[
                                 const SizedBox(height: 16),
                                 _Section(children: [

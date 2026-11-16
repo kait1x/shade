@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shade/features/stickers/aluminium.dart';
 import 'package:shade/features/web/presentation/alpha_app.dart';
 import 'package:shade/features/web/presentation/alpha_controller.dart';
 
@@ -674,6 +675,71 @@ void main() {
     }});
     await tester.pumpAndSettle();
     expect(avatarRequests, 2);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
+  testWidgets('Alpha sticker wall loads, saves and stays honest', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final actions = <Map<String, dynamic>>[];
+    final c = AlphaController((action, payload) async {
+      actions.add({'action': action, 'payload': payload});
+      if (action == 'profile.avatar') return {'image': null};
+      if (action == 'stickers.load') {
+        return {
+          'inventory': [],
+          'wall': [],
+          'revision': 3
+        };
+      }
+      if (action == 'stickers.save') {
+        return {
+          'inventory': [],
+          'wall': payload['wall'],
+          'revision': 4
+        };
+      }
+      return null;
+    });
+    final data = <String, dynamic>{
+      'account': 'alice',
+      'selected': null,
+      'connected': true,
+      'peers': <Map<String, dynamic>>[],
+      'messages': <Map<String, dynamic>>[],
+    };
+    c.apply(data);
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Профиль'));
+    await tester.pumpAndSettle();
+    // The aluminium wall renders even with an empty inventory, and the load
+    // is owner-scoped through the real adapter action.
+    expect(find.byType(ReferenceLid), findsOneWidget);
+    final load = actions.lastWhere((entry) => entry['action'] == 'stickers.load');
+    expect((load['payload'] as Map)['owner'], true);
+    // The gift entry point must not exist: the v2 contract is missing.
+    expect(find.text('Подарить'), findsNothing);
+    expect(find.textContaining('Обмен подарками появится'), findsOneWidget);
+    // Editing an empty wall saves a real revision through the adapter.
+    await tester.dragUntilVisible(
+        find.text('Оформить'), find.byType(ListView).first,
+        const Offset(0, -200));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Оформить'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Готово'));
+    await tester.pumpAndSettle();
+    final save = actions.lastWhere((entry) => entry['action'] == 'stickers.save');
+    final payload = save['payload'] as Map;
+    expect(payload['revision'], 3);
+    expect(payload['wall'], isEmpty);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     c.dispose();
