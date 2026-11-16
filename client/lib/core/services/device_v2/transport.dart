@@ -1,0 +1,240 @@
+/// HTTP/Socket.IO транспорт device-v2 для native-клиента (альфа-процесс).
+///
+/// Порт транспортной части client/web/alpha-client.mjs: cookie-сессия Google,
+/// одноразовый challenge + RSA-PSS proof на каждую операцию, Socket.IO только
+/// как wake-up hints (потерянные hints чинятся подписанным fetch при reconnect
+/// и периодическим опросом). Production server.js (v1) не затрагивается.
+library;
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:socket_io_client/socket_io_client.dart' as io;
+
+import '../crypto_service.dart';
+import 'protocol.dart';
+
+class AlphaTransportException implements Exception {
+  final int status;
+  final String code;
+  AlphaTransportException(this.status, this.code);
+  @override
+  String toString() => 'AlphaTransportException($status, $code)';
+}
+
+class AlphaTransport {
+  final String origin;
+  final CryptoService crypto;
+  final HttpClient _client = HttpClient();
+  String? _sessionCookie;
+  io.Socket? _socket;
+  Timer? _pollTimer;
+  Timer? _reconnectTimer;
+  bool _disposed = false;
+  bool _connecting = false;
+
+  /// Вызывается при hint inbox/receipts, reconnect и каждом периоде опроса.
+  /// Владелец (репозиторий) выполняет подписанный fetch/receipts сам.
+  void Function()? onWake;
+
+  AlphaTransport(this.origin, this.crypto) {
+    final uri = Uri.parse(origin);
+    check(
+        uri.scheme == 'https' ||
+            (uri.scheme == 'http' &&
+                ['localhost', '127.0.0.1', '[::1]'].contains(uri.host)),
+        'HTTPS origin required');
+    check(origin == uri.origin, 'Invalid origin');
+  }
+
+  String? get sessionCookie => _sessionCookie;
+
+  /// Для восстановленной сессии или тестового fixture; в production cookie
+  /// выдаётся сервером после проверки Google.
+  set sessionCookie(String? value) => _sessionCookie = value;
+
+  bool get hasSession => _sessionCookie != null;
+
+  Future<dynamic> _send(String method, String path, {Object? body}) async {
+    final request = await _client.openUrl(method, Uri.parse('$origin$path'));
+    request.headers.set('Content-Type', 'application/json');
+    request.headers.set('Origin', origin);
+    if (_sessionCookie != null) request.headers.set('Cookie', _sessionCookie!);
+    if (body != null) request.write(jsonEncode(body));
+    final response = await request.close();
+    for (final cookie in response.cookies) {
+      if (cookie.name == 'shade-alpha' || cookie.name == '__Host-shade-alpha') {
+        _sessionCookie = '${cookie.name}=${cookie.value}';
+      }
+    }
+    final text = await response.transform(utf8.decoder).join();
+    final dynamic decoded = text.isEmpty ? null : jsonDecode(text);
+    if (response.statusCode != 200) {
+      final code = decoded is Map && decoded['error'] is String
+          ? decoded['error'] as String
+          : 'http_${response.statusCode}';
+      throw AlphaTransportException(response.statusCode, code);
+    }
+    return decoded;
+  }
+
+  Future<Map<String, dynamic>> session() async =>
+      await _send('GET', '/api/session') as Map<String, dynamic>;
+
+  /// Вход native через Google ID token (google_sign_in plugin с serverClientId
+  /// alpha-процесса). Сервер проверяет token тем же googleProfile, что и code flow.
+  Future<Map<String, dynamic>> loginWithGoogleIdToken(String idToken) async =>
+      await _send('POST', '/api/v2/session/google', body: {'idToken': idToken})
+          as Map<String, dynamic>;
+
+  Future<void> logout() async {
+    await _send('POST', '/api/logout');
+    _sessionCookie = null;
+    _disconnectSocket();
+  }
+
+  Future<Map<String, dynamic>> register(Map<String, dynamic> genesis,
+          Map<String, dynamic> manifest, List<dynamic> proofs) async =>
+      await _send('POST', '/api/v2/register',
+          body: {'genesis': genesis, 'manifest': manifest, 'proofs': proofs})
+          as Map<String, dynamic>;
+
+  Future<Map<String, dynamic>> legacyEnrollment(
+          Map<String, dynamic> genesis, Map<String, dynamic> manifest) async =>
+      await _send('POST', '/api/v2/legacy-enrollment',
+          body: {'genesis': genesis, 'manifest': manifest}) as Map<String, dynamic>;
+
+  Future<dynamic> operation(String op, Object? body,
+      {required String account,
+      required String id,
+      required String privateKey}) async {
+    final operation = operationDigest(
+        op, op == 'send' ? sha256Hex(messageText(body as Map<String, dynamic>)) : body);
+    final challenge = await _send('POST', '/api/v2/challenge',
+        body: {'account': account, 'id': id, 'operation': operation}) as Map<String, dynamic>;
+    final nonce = challenge['nonce'] as String;
+    final proof = await crypto.signData(requestText(account, id, nonce, operation), privateKey);
+    return await _send('POST', '/api/v2/operation', body: {
+      'op': op,
+      'body': body,
+      'auth': {'account': account, 'id': id, 'nonce': nonce, 'proof': proof}
+    });
+  }
+
+  Future<List<dynamic>> fetch(
+          {required String account, required String id, required String privateKey}) async =>
+      await operation('fetch', null, account: account, id: id, privateKey: privateKey)
+          as List<dynamic>;
+
+  Future<Map<String, dynamic>> send(Map<String, dynamic> message,
+          {required String privateKey}) async =>
+      await operation('send', message,
+          account: message['from'] as String,
+          id: message['deviceId'] as String,
+          privateKey: privateKey) as Map<String, dynamic>;
+
+  Future<Map<String, dynamic>> ack(List<String> refs,
+          {required String account, required String id, required String privateKey}) async =>
+      await operation('ack', refs, account: account, id: id, privateKey: privateKey)
+          as Map<String, dynamic>;
+
+  Future<Map<String, dynamic>> status(List<String> refs,
+          {required String account, required String id, required String privateKey}) async =>
+      await operation('status', refs, account: account, id: id, privateKey: privateKey)
+          as Map<String, dynamic>;
+
+  Future<Map<String, dynamic>> directory(String targetAccount,
+          {required String account, required String id, required String privateKey}) async =>
+      await operation('directory', targetAccount,
+          account: account, id: id, privateKey: privateKey)
+          as Map<String, dynamic>;
+
+  Future<List<dynamic>> users(
+          {required String account, required String id, required String privateKey}) async =>
+      await operation('users', null, account: account, id: id, privateKey: privateKey)
+          as List<dynamic>;
+
+  Future<Map<String, dynamic>> install(Map<String, dynamic> manifest,
+      {List<dynamic> proofs = const [],
+      Map<String, dynamic>? genesis,
+      required String account,
+      required String id,
+      required String privateKey}) async {
+    // Порядок ключей тела фиксирован: digest считается по тому же JSON.
+    final body = <String, dynamic>{
+      'manifest': manifest,
+      'proofs': proofs,
+      if (genesis != null) 'genesis': genesis
+    };
+    return await operation('install', body, account: account, id: id, privateKey: privateKey)
+        as Map<String, dynamic>;
+  }
+
+  /// Socket.IO с одноразовым device-proof; nonce не переиспользуется при
+  /// reconnect — каждое подключение получает свежий proof.
+  Future<void> connectSocket(
+      {required String account,
+      required String id,
+      required String privateKey}) async {
+    if (_disposed || _connecting) return;
+    _connecting = true;
+    try {
+      final operation = operationDigest('socket', null);
+      final challenge = await _send('POST', '/api/v2/challenge',
+          body: {'account': account, 'id': id, 'operation': operation}) as Map<String, dynamic>;
+      final nonce = challenge['nonce'] as String;
+      final proof =
+          await crypto.signData(requestText(account, id, nonce, operation), privateKey);
+      _disconnectSocket();
+      final socket = io.io(
+          origin,
+          io.OptionBuilder()
+              .setTransports(['websocket'])
+              .disableAutoConnect()
+              .disableReconnection()
+              .setAuth({'account': account, 'id': id, 'nonce': nonce, 'proof': proof})
+              .setExtraHeaders({if (_sessionCookie != null) 'Cookie': _sessionCookie!})
+              .build());
+      _socket = socket;
+      socket.on('inbox', (_) => onWake?.call());
+      socket.on('receipts', (_) => onWake?.call());
+      socket.onConnect((_) => onWake?.call());
+      socket.onDisconnect((_) {
+        if (!_disposed) _scheduleReconnect(account, id, privateKey);
+      });
+      socket.onConnectError((_) {
+        if (!_disposed) _scheduleReconnect(account, id, privateKey);
+      });
+      socket.connect();
+    } finally {
+      _connecting = false;
+    }
+  }
+
+  void _scheduleReconnect(String account, String id, String privateKey) {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(const Duration(seconds: 5), () {
+      if (!_disposed) connectSocket(account: account, id: id, privateKey: privateKey);
+    });
+  }
+
+  /// Периодический подписанный fetch чинит потерянные socket hints.
+  void startPolling({Duration interval = const Duration(seconds: 15)}) {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(interval, (_) => onWake?.call());
+  }
+
+  void _disconnectSocket() {
+    _reconnectTimer?.cancel();
+    _socket?.dispose();
+    _socket = null;
+  }
+
+  void dispose() {
+    _disposed = true;
+    _pollTimer?.cancel();
+    _disconnectSocket();
+    _client.close(force: true);
+  }
+}
