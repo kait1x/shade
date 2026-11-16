@@ -300,14 +300,28 @@ export async function saveVault(vault) {
     unb64(vault.ciphertext, 20000).length >= 16, 'Invalid encrypted vault');
   const db = await database();
   try {
-    await new Promise((resolve, reject) => {
+    const putVault = () => new Promise((resolve, reject) => {
       const tx = db.transaction('vaults', 'readwrite');
-      tx.objectStore('vaults').add(vault); // Never overwrite or regenerate an existing identity.
+      // put (not add) on the re-commit pass; the first pass uses add semantics
+      // via the existing-record check below to never overwrite an identity.
+      tx.objectStore('vaults').put(vault);
       if (typeof tx.commit === 'function') tx.commit();
       tx.oncomplete = resolve;
       tx.onabort = () => reject(new Error('Vault already exists or storage is unavailable'));
       tx.onerror = () => {}; // The transaction's abort is the authoritative result.
     });
+    const existing = await new Promise((resolve, reject) => {
+      const tx = db.transaction('vaults', 'readonly');
+      const req = tx.objectStore('vaults').get(vault.id);
+      tx.oncomplete = () => resolve(req.result);
+      tx.onabort = () => reject(new Error('Cannot read encrypted vault'));
+    });
+    check(!existing, 'Vault already exists or storage is unavailable');
+    await putVault();
+    await flushVaultCommit(db, vault.id);
+    // Re-commit the identical vault: losing the LAST transaction must not
+    // lose the identity; the earlier identical commit survives.
+    await putVault();
     await flushVaultCommit(db, vault.id);
   } finally { db.close(); }
 }

@@ -45,6 +45,44 @@ test('state writes are CAS-protected, verified by read-back and reversible', asy
   assert.deepEqual((await readState(session)).value, { messages: [], outbox: [] });
 });
 
+test('deletion journal survives a rolled-back state commit (WebKit loss model)', async () => {
+  const vault = await createVault('journal_test', phrase);
+  const session = await unlockVault(vault, phrase);
+  const m1 = { ref: 'a:primary:11', text: 'keep' };
+  const m2 = { ref: 'a:primary:22', text: 'delete me' };
+  await writeState(session, { messages: [m1, m2], outbox: [] }, 0);
+  await writeState(session, { messages: [m1], outbox: [] }, 1);
+  assert.deepEqual((await readState(session)).value.messages, [m1]);
+  // Simulate the platform losing the final state commit: roll the raw record
+  // back to the pre-delete snapshot. The journal must still hide the message.
+  const db = await new Promise((resolve, reject) => {
+    const req = indexedDB.open('shade-alpha-state');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(Error('open failed'));
+  });
+  const stale = await new Promise((resolve, reject) => {
+    const tx = db.transaction('states', 'readonly');
+    const rq = tx.objectStore('states').get(session.id);
+    tx.oncomplete = () => resolve(rq.result);
+    tx.onabort = () => reject(Error('read failed'));
+  });
+  assert.equal(stale.revision, 2);
+  // Forge a revision-2 record containing the deleted message (worst case:
+  // the delete commit vanished but an older snapshot with the same revision
+  // resurfaces). Journal entries are independent of the state record.
+  const { encryptRecord } = await import('../../client/web/device_crypto.mjs');
+  const forged = await encryptRecord(session, 'state', { messages: [m1, m2], outbox: [] });
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction('states', 'readwrite');
+    tx.objectStore('states').put({ id: session.id, revision: 2, encrypted: forged });
+    tx.oncomplete = resolve;
+    tx.onabort = () => reject(Error('forge failed'));
+  });
+  db.close();
+  const recovered = await readState(session);
+  assert.deepEqual(recovered.value.messages, [m1], 'journal must prevent resurrection');
+});
+
 test('v1 databases upgrade additively to v2 without losing vaults', async () => {
   // Simulate a pre-existing version-1 database with a stored vault record.
   const vault = await createVault('upgrade_test', phrase);
