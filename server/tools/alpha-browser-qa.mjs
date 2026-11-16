@@ -57,7 +57,8 @@ async function fingerprint(page) {
   await page.getByRole('button',{name:'Назад',exact:true}).click(); return value;
 }
 async function pin(page, account, code) {
-  await page.getByRole('button',{name:'Найти собеседника',exact:true}).click();
+  // Both the header toggle and the new empty-state action open the directory.
+  await page.getByRole('button',{name:'Найти собеседника',exact:true}).first().click();
   await page.getByRole('button',{name:new RegExp(account)}).click();
   await page.getByLabel('Отпечаток собеседника').fill(code);
   await page.getByRole('button',{name:'Закрепить проверенный отпечаток'}).click();
