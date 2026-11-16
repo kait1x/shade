@@ -1,11 +1,15 @@
+import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 
 /// Presentation-only projection. The existing JS client owns keys, encrypted
 /// storage, transport, queue and recipient acknowledgements.
 class AlphaController extends ChangeNotifier {
   AlphaController(this.dispatch);
-  final Future<void> Function(String action, Map<String, dynamic> payload)
+  final Future<Object?> Function(String action, Map<String, dynamic> payload)
       dispatch;
+  Uint8List? _avatarBytes;
+  String _avatarDigest = '';
   Map<String, dynamic> data = {};
   String get account => data['account'] as String? ?? '';
   String? get selected => data['selected'] as String?;
@@ -16,6 +20,21 @@ class AlphaController extends ChangeNotifier {
   List<Map<String, dynamic>> get devices => _maps(data['devices']);
   Map<String, dynamic> get notes =>
       Map<String, dynamic>.from(data['notes'] as Map? ?? {});
+  Map<String, dynamic> get profile =>
+      Map<String, dynamic>.from(data['profile'] as Map? ?? {});
+  Future<void> act(String action, [Map<String, dynamic> payload = const {}]) =>
+      dispatch(action, payload);
+  // Avatar bytes travel on demand, keyed by the projected digest, so the
+  // base64 image is not re-sent with every snapshot.
+  Future<Uint8List?> avatarImage(String digest) async {
+    if (digest.isEmpty) return null;
+    if (_avatarDigest == digest && _avatarBytes != null) return _avatarBytes;
+    final result = (await dispatch('profile.avatar', const {})) as Map?;
+    final image = result?['image'] as String?;
+    _avatarDigest = digest;
+    _avatarBytes = image == null ? null : base64Decode(image);
+    return _avatarBytes;
+  }
   Map<String, dynamic> get positions =>
       Map<String, dynamic>.from(data['positions'] as Map? ?? {});
   Map<String, dynamic> get readUntil =>
@@ -29,8 +48,6 @@ class AlphaController extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> act(String action, [Map<String, dynamic> payload = const {}]) =>
-      dispatch(action, payload);
   List<Map<String, dynamic>> conversation(String peer) => messages
       .where((m) => m['from'] == peer || m['to'] == peer)
       .toList()

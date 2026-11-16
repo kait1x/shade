@@ -213,6 +213,64 @@ export class AlphaClient extends EventTarget {
       await this.save(next);
     });
   }
+  // Local-only self profile: display name, avatar and frame live in the
+  // encrypted device state until a device-v2 profile contract exists. The
+  // editor exports a 512x512 JPEG (fresh pixels, no EXIF) exactly like the
+  // v1 server-side normalization would.
+  async saveProfile(data) {
+    return this.exclusive(async () => {
+      const next = structuredClone(this.state);
+      const previous = next.profile || {};
+      let displayName = typeof previous.displayName === 'string' ? previous.displayName : '';
+      let avatarImage = typeof previous.avatarImage === 'string' ? previous.avatarImage : null;
+      let avatarFrame = previous.avatarFrame ?? 'none';
+      if (data.displayName !== undefined) {
+        check(typeof data.displayName === 'string' &&
+          data.displayName.trim().length >= 1 && data.displayName.trim().length <= 64,
+          'Имя должно содержать от 1 до 64 символов');
+        displayName = data.displayName.trim();
+      }
+      if (data.avatar !== undefined) {
+        check(data.avatar === null || (typeof data.avatar === 'string' &&
+          data.avatar.length <= 700000 &&
+          /^[A-Za-z0-9+/]+={0,2}$/.test(data.avatar)),
+          'Не удалось прочитать изображение');
+        avatarImage = data.avatar;
+      }
+      if (data.frame !== undefined) {
+        check(['none', 'minimal', 'silver', 'graphite'].includes(data.frame), 'Некорректная рамка');
+        avatarFrame = data.frame;
+      }
+      next.profile = { displayName, avatarImage, avatarFrame,
+        avatarDigest: avatarImage ? await hash(avatarImage) : '',
+        avatarRevision: (previous.avatarRevision ?? 0) + 1 };
+      await this.save(next);
+    });
+  }
+  // Stickers: the wall belongs to this device's encrypted state. Gifts need a
+  // device-v2 contract (parity matrix C-contract) and stay unavailable here.
+  stickers() {
+    const store = this.state.stickers || { inventory: [], wall: [], revision: 0 };
+    return { inventory: [], wall: store.wall || [], revision: store.revision || 0 };
+  }
+  async saveStickers(revision, wall) {
+    return this.exclusive(async () => {
+      check(Array.isArray(wall) && wall.length <= 32, 'На стене уже 32 наклейки');
+      for (const [z, p] of wall.entries()) {
+        check(typeof p.giftId === 'string' && Number.isFinite(p.xNorm) &&
+          p.xNorm >= 0 && p.xNorm <= 1 && Number.isFinite(p.yNorm) &&
+          p.yNorm >= 0 && p.yNorm <= 1 && Number.isFinite(p.rotation) &&
+          Math.abs(p.rotation) <= Math.PI && Number.isFinite(p.scale) &&
+          p.scale >= .5 && p.scale <= 2 && Number.isSafeInteger(p.zIndex) &&
+          p.zIndex === z, 'Некорректное размещение наклейки');
+      }
+      check(revision === (this.state.stickers?.revision ?? 0), 'Стена уже изменилась');
+      const next = structuredClone(this.state);
+      next.stickers = { inventory: [], wall, revision: (this.state.stickers?.revision ?? 0) + 1 };
+      await this.save(next);
+      return { inventory: [], wall, revision: next.stickers.revision };
+    });
+  }
   // Local-only removal, mirroring Android «Удалить у себя». A queued send is
   // cancelled; a fetched message is ACKed first so the relay queue cannot
   // redeliver it after deletion. Other devices keep their copy.

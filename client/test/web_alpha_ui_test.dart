@@ -38,6 +38,7 @@ void main() {
     Map<String, dynamic>? position;
     final c = AlphaController((action, payload) async {
       if (action == 'position') position = {...payload};
+      return null;
     });
     final data = <String, dynamic>{
       'account': 'alice',
@@ -71,7 +72,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     c.dispose();
     expect(position?['bottom'], false);
-    final restored = AlphaController((_, __) async {});
+    final restored = AlphaController((_, __) async { return null; });
     restored.apply({
       ...data,
       'positions': {'bob': position}
@@ -97,6 +98,7 @@ void main() {
     final actions = <Map<String, dynamic>>[];
     final c = AlphaController((action, payload) async {
       actions.add({'action': action, 'payload': payload});
+      return null;
     });
     final data = <String, dynamic>{
       'account': 'alice',
@@ -177,6 +179,7 @@ void main() {
         throw StateError('Сеть недоступна');
       }
       actions.add({'action': action, 'payload': payload});
+      return null;
     });
     final data = <String, dynamic>{
       'account': 'alice',
@@ -221,6 +224,7 @@ void main() {
     final actions = <Map<String, dynamic>>[];
     final c = AlphaController((action, payload) async {
       actions.add({'action': action, 'payload': payload});
+      return null;
     });
     final data = <String, dynamic>{
       'account': 'alice',
@@ -271,7 +275,7 @@ void main() {
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
     });
-    final c = AlphaController((_, __) async {});
+    final c = AlphaController((_, __) async { return null; });
     final data = <String, dynamic>{
       'account': 'alice',
       'selected': 'bob',
@@ -344,6 +348,7 @@ void main() {
     final actions = <String>[];
     final c = AlphaController((action, payload) async {
       actions.add(action);
+      return null;
     });
     final semantics = tester.ensureSemantics();
     final now = DateTime.now();
@@ -398,6 +403,7 @@ void main() {
     final actions = <String>[];
     final c = AlphaController((action, payload) async {
       actions.add(action);
+      return null;
     });
     c.apply(<String, dynamic>{
       'account': 'alice',
@@ -429,6 +435,7 @@ void main() {
     final actions = <Map<String, dynamic>>[];
     final c = AlphaController((action, payload) async {
       actions.add({'action': action, 'payload': payload});
+      return null;
     });
     final clipboard = <String, String>{};
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
@@ -499,7 +506,9 @@ void main() {
     // Self profile: logout needs an explicit confirmation.
     await tester.tap(find.byTooltip('Профиль'));
     await tester.pumpAndSettle();
-    await tester.ensureVisible(find.text('Выйти из аккаунта'));
+    await tester.dragUntilVisible(
+        find.text('Выйти из аккаунта'), find.byType(ListView).first,
+        const Offset(0, -160));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Выйти из аккаунта'));
     await tester.pumpAndSettle();
@@ -514,6 +523,157 @@ void main() {
     await tester.pumpAndSettle();
     expect(
         actions.where((entry) => entry['action'] == 'logout').length, 1);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
+  testWidgets('Alpha avatar editor saves frame through the profile adapter',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final actions = <Map<String, dynamic>>[];
+    final c = AlphaController((action, payload) async {
+      actions.add({'action': action, 'payload': payload});
+      if (action == 'profile.avatar') return {'image': null};
+      return null;
+    });
+    final data = <String, dynamic>{
+      'account': 'alice',
+      'selected': null,
+      'connected': true,
+      'peers': <Map<String, dynamic>>[],
+      'messages': <Map<String, dynamic>>[],
+      'profile': {
+        'displayName': '',
+        'frame': 'none',
+        'digest': '',
+        'revision': 0
+      },
+    };
+    c.apply(data);
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Профиль'));
+    await tester.pumpAndSettle();
+    expect(find.text('Изменить аватар'), findsOneWidget);
+    expect(find.text('Добавить имя'), findsOneWidget);
+    await tester.tap(find.text('Изменить аватар'));
+    await tester.pumpAndSettle();
+    expect(find.text('Ваш образ в Shade'), findsOneWidget);
+    await tester.tap(find.text('Silver'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Сохранить'));
+    await tester.pumpAndSettle();
+    final save = actions.lastWhere((entry) => entry['action'] == 'profile.save');
+    final payload = save['payload'] as Map;
+    expect(payload['frame'], 'silver');
+    expect(payload.containsKey('avatar'), false);
+    // The editor closes after a successful save.
+    expect(find.text('Ваш образ в Shade'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
+  testWidgets('Alpha profile name dialog round-trips the adapter',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final actions = <Map<String, dynamic>>[];
+    final c = AlphaController((action, payload) async {
+      actions.add({'action': action, 'payload': payload});
+      if (action == 'profile.avatar') return {'image': null};
+      return null;
+    });
+    final data = <String, dynamic>{
+      'account': 'alice',
+      'selected': null,
+      'connected': true,
+      'peers': <Map<String, dynamic>>[],
+      'messages': <Map<String, dynamic>>[],
+    };
+    c.apply(data);
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Профиль'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Добавить имя'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField), 'Алиса');
+    await tester.tap(find.text('Сохранить'));
+    await tester.pumpAndSettle();
+    final save = actions.lastWhere((entry) => entry['action'] == 'profile.save');
+    final payload = save['payload'] as Map;
+    expect(payload['displayName'], 'Алиса');
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
+  testWidgets('Alpha avatar bytes load once per digest', (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    var avatarRequests = 0;
+    final c = AlphaController((action, payload) async {
+      if (action == 'profile.avatar') {
+        avatarRequests++;
+        return {'image': null};
+      }
+      return null;
+    });
+    final data = <String, dynamic>{
+      'account': 'alice',
+      'selected': null,
+      'connected': true,
+      'peers': <Map<String, dynamic>>[],
+      'messages': <Map<String, dynamic>>[],
+      'profile': {
+        'displayName': 'Алиса',
+        'frame': 'minimal',
+        'digest': 'digest-1',
+        'revision': 1
+      },
+    };
+    c.apply(data);
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    expect(avatarRequests, 1);
+    // A projection with the same digest must not refetch the bytes.
+    c.apply({...data, 'selected': 'bob', 'messages': [
+      {
+        'ref': '1',
+        'from': 'bob',
+        'to': 'alice',
+        'text': 'Привет',
+        'createdAt': 1700000000000,
+        'status': 'received',
+        'devices': [],
+      }
+    ]});
+    await tester.pumpAndSettle();
+    expect(avatarRequests, 1);
+    // Changing the digest refetches.
+    c.apply({...data, 'profile': {
+      'displayName': 'Алиса',
+      'frame': 'minimal',
+      'digest': 'digest-2',
+      'revision': 2
+    }});
+    await tester.pumpAndSettle();
+    expect(avatarRequests, 2);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     c.dispose();
@@ -534,6 +694,7 @@ void main() {
       final actions = <String>[];
       final c = AlphaController((action, payload) async {
         actions.add(action);
+        return null;
       });
       final now = DateTime.now().millisecondsSinceEpoch;
       final data = <String, dynamic>{

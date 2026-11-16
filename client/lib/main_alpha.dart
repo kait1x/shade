@@ -40,6 +40,8 @@ Future<void> main() async {
     if (result['ok'] != true) {
       throw StateError(result['error'] as String? ?? 'Операция не выполнена');
     }
+    // Actions may return data (e.g. profile.avatar) alongside the status.
+    return result['data'];
   });
   _receive = ((JSString snapshot) {
     controller.apply(jsonDecode(snapshot.toDart) as Map<String, dynamic>);

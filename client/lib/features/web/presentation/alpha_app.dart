@@ -1,13 +1,16 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shade/core/theme/shade_theme.dart';
+import 'package:shade/core/widgets/avatar_frame.dart';
 import 'package:shade/core/widgets/avatar_view.dart';
 import 'package:shade/core/widgets/shade_logo.dart';
 import 'package:shade/core/widgets/shade_motion.dart';
 import 'package:shade/core/widgets/shade_states.dart';
 import 'package:shade/features/chats/presentation/widgets/message_bubble.dart';
 import 'package:shade/features/chats/presentation/widgets/message_input.dart';
+import 'alpha_avatar_editor.dart';
 import 'alpha_controller.dart';
 
 class ShadeAlphaApp extends StatelessWidget {
@@ -176,7 +179,7 @@ class _ChatsState extends State<_Chats> {
                 IconButton(
                     tooltip: 'Профиль',
                     onPressed: widget.profile,
-                    icon: AvatarView(name: c.account, size: 34)),
+                    icon: AlphaAvatar(controller: c, size: 34)),
                 IconButton(
                     tooltip: 'Найти собеседника',
                     onPressed: () {
@@ -875,6 +878,63 @@ class _Profile extends StatelessWidget {
   final AlphaController controller;
   final VoidCallback close;
 
+  String get displayName => controller.profile['displayName'] as String? ?? '';
+
+  Future<void> _editAvatar(BuildContext context) async {
+    final frame = AvatarFrame.values.firstWhere(
+        (f) => f.name == controller.profile['frame'],
+        orElse: () => AvatarFrame.none);
+    final bytes = await controller.avatarImage(
+        controller.profile['digest'] as String? ?? '');
+    if (!context.mounted) return;
+    await Navigator.of(context).push(MaterialPageRoute<void>(
+        builder: (_) => AlphaAvatarEditor(
+            initialImage: bytes,
+            initialName:
+                displayName.isEmpty ? controller.account : displayName,
+            initialFrame: frame,
+            save: ({required frame, required replaceImage, image}) =>
+                controller.act('profile.save', {
+                  'frame': frame.name,
+                  if (replaceImage)
+                    'avatar': image == null ? null : base64Encode(image),
+                }))));
+  }
+
+  Future<void> _editName(BuildContext context) async {
+    final field = TextEditingController(text: displayName);
+    final updated = await showDialog<String>(
+        context: context,
+        builder: (dialog) => AlertDialog(
+            title: const Text('Отображаемое имя'),
+            content: TextField(
+                controller: field,
+                autofocus: true,
+                maxLength: 64,
+                style: const TextStyle(fontSize: 15, height: 1.5),
+                decoration: const InputDecoration(
+                    hintText: 'Как вас видят собеседники')),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(dialog),
+                  child: const Text('Отмена')),
+              TextButton(
+                  onPressed: () => Navigator.pop(dialog, field.text),
+                  child: const Text('Сохранить')),
+            ]));
+    if (updated == null || !context.mounted) return;
+    if (updated.trim() == displayName) return;
+    try {
+      await controller.act('profile.save', {'displayName': updated});
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content:
+                Text('Не удалось сохранить имя. Проверьте сеть и повторите.')));
+      }
+    }
+  }
+
   Future<void> _confirmLogout(
       BuildContext context, AlphaController controller) async {
     final confirmed = await showDialog<bool>(
@@ -911,10 +971,41 @@ class _Profile extends StatelessWidget {
                     child:
                         ListView(padding: const EdgeInsets.all(24), children: [
                       Center(
-                          child:
-                              AvatarView(name: controller.account, size: 100)),
-                      const SizedBox(height: 20),
-                      Text(controller.account,
+                          child: GestureDetector(
+                              onTap: () => _editAvatar(context),
+                              child: Stack(children: [
+                                AlphaAvatar(
+                                    controller: controller, size: 100),
+                                Positioned(
+                                    right: 0,
+                                    bottom: 0,
+                                    child: Container(
+                                        padding: const EdgeInsets.all(6),
+                                        decoration: BoxDecoration(
+                                            color: ShadeColors.surfaceCard,
+                                            shape: BoxShape.circle,
+                                            border: Border.all(
+                                                color:
+                                                    ShadeColors.greyBorder)),
+                                        child: const Icon(Icons.edit_rounded,
+                                            size: 14,
+                                            color: ShadeColors.textMuted))),
+                                const Positioned.fill(
+                                    child: Material(
+                                        type: MaterialType.transparency)),
+                              ]))),
+                      const SizedBox(height: 8),
+                      Semantics(
+                          button: true,
+                          child: TextButton(
+                              onPressed: () => _editAvatar(context),
+                              child: const Text('Изменить аватар',
+                                  style: TextStyle(fontSize: 13)))),
+                      const SizedBox(height: 12),
+                      Text(
+                          displayName.isEmpty
+                              ? controller.account
+                              : displayName,
                           textAlign: TextAlign.center,
                           style: const TextStyle(
                               fontSize: 28, fontWeight: FontWeight.w700)),
@@ -922,7 +1013,17 @@ class _Profile extends StatelessWidget {
                       Text('@${controller.account}',
                           textAlign: TextAlign.center,
                           style: const TextStyle(color: ShadeColors.textMuted)),
-                      const SizedBox(height: 32),
+                      const SizedBox(height: 8),
+                      Semantics(
+                          button: true,
+                          child: TextButton(
+                              onPressed: () => _editName(context),
+                              child: Text(
+                                  displayName.isEmpty
+                                      ? 'Добавить имя'
+                                      : 'Изменить имя',
+                                  style: const TextStyle(fontSize: 13)))),
+                      const SizedBox(height: 24),
                       const Text('АККАУНТ И БЕЗОПАСНОСТЬ',
                           style: TextStyle(
                               fontSize: 11,
@@ -1144,5 +1245,43 @@ class _PeerProfile extends StatelessWidget {
                             color: ShadeColors.textMuted)),
                   ])))),
     ]);
+  }
+}
+
+/// The signed-in user's avatar: local image bytes keyed by the projected
+/// digest, plus the local frame. Peers have no v2 profile API yet, so their
+/// avatars stay initials by design.
+class AlphaAvatar extends StatefulWidget {
+  const AlphaAvatar(
+      {super.key, required this.controller, required this.size});
+  final AlphaController controller;
+  final double size;
+  @override
+  State<AlphaAvatar> createState() => _AlphaAvatarState();
+}
+
+class _AlphaAvatarState extends State<AlphaAvatar> {
+  Uint8List? bytes;
+  String loadedDigest = '';
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.controller;
+    final frame = AvatarFrame.values.firstWhere(
+        (f) => f.name == c.profile['frame'],
+        orElse: () => AvatarFrame.none);
+    final digest = c.profile['digest'] as String? ?? '';
+    if (digest != loadedDigest) {
+      loadedDigest = digest;
+      bytes = null;
+      if (digest.isNotEmpty) {
+        c.avatarImage(digest).then((value) {
+          if (mounted && loadedDigest == digest) {
+            setState(() => bytes = value);
+          }
+        });
+      }
+    }
+    return AvatarView(
+        name: c.account, image: bytes, frame: frame, size: widget.size);
   }
 }

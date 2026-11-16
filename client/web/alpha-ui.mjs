@@ -125,6 +125,12 @@ function render() {
     messages: client.state.messages.map(({ref,from,to,text,reply,createdAt,status,devices}) =>
       ({ref,from,to,text,reply,createdAt,status,devices})),
     notes: client.state.notes ?? {},
+    profile: {
+      displayName: client.state.profile?.displayName || '',
+      frame: client.state.profile?.avatarFrame || 'none',
+      digest: client.state.profile?.avatarDigest || '',
+      revision: client.state.profile?.avatarRevision || 0,
+    },
     devices: (client.state.own.history.at(-1)?.devices || []).map(({id}) => ({id, current:id === client.session.id})),
     positions: ui.positions, readUntil: ui.readUntil,
   }));
@@ -162,6 +168,14 @@ async function openApp() {
         case 'deleteLocal': await client.deleteLocal(data.ref); break;
         case 'sync': await client.sync(); break;
         case 'note': await client.saveNote(data.account, data.text); break;
+        case 'profile.save': await client.saveProfile(data); break;
+        // The avatar image travels on demand, not in every projection.
+        case 'profile.avatar': return JSON.stringify({ ok: true, data: { image: client.state.profile?.avatarImage || null } });
+        case 'stickers.load': {
+          if (data.owner !== true) throw Error('Стена собеседника появится с device-v2 API');
+          return JSON.stringify({ ok: true, data: client.stickers() });
+        }
+        case 'stickers.save': return JSON.stringify({ ok: true, data: await client.saveStickers(data.revision, data.wall) });
         case 'verify': verifyContact(data.account); break;
         case 'refresh': users = await client.users(); render(); break;
         case 'identity': showDialog('Ваш отпечаток', [node('p', '@' + client.session.account),
