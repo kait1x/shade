@@ -173,7 +173,15 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
         for (const d of dir.devices) io.to(room(m.from, d.id)).emit('receipts');
       }
     } else if (op === 'status') result = await registry.status(body, auth);
-    else if (op === 'retract') {
+    else if (op === 'read') {
+      result = await registry.read(body, auth);
+      const snap = registry.exportSnapshot();
+      for (const ref of body) {
+        const from = snap.delivery[ref]?.from;
+        const dir = from ? snap.accounts[from]?.history.at(-1) : null;
+        if (dir) for (const d of dir.devices) io.to(room(from, d.id)).emit('receipts');
+      }
+    } else if (op === 'retract') {
       result = await registry.retract(body, auth);
       const snap = registry.exportSnapshot();
       for (const ref of body) {

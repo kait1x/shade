@@ -188,6 +188,21 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
       return Object.fromEntries(refs.map(ref => [ref, state.delivery[ref]?.from === auth.account
         ? structuredClone(state.delivery[ref].devices) : []]));
     }),
+    // Read-ACK (contract C5): recipient-device-only, idempotent, projected to
+    // the sender through status. Never reveals whether an unknown ref exists.
+    read: (refs, auth) => serial(async () => {
+      check(Array.isArray(refs) && refs.length <= 200 && refs.every(ref => typeof ref === 'string' &&
+        /^[a-z0-9_]{3,32}:(primary|[a-f0-9]{64}):[a-f0-9]{64}$/.test(ref)), 'Invalid read refs');
+      await authenticate(auth, await operationDigest('read', refs));
+      return transaction(next => {
+        let read = 0;
+        for (const ref of refs) {
+          const device = next.delivery[ref]?.devices?.find(d => d.account === auth.account && d.id === auth.id);
+          if (device && !device.readAt) { device.readAt = clock(); read++; }
+        }
+        return { read };
+      });
+    }),
     // Delete-for-all (contract C3): sender-only, idempotent, purges offline
     // queues and leaves a bounded tombstone for already-delivered copies.
     retract: (refs, auth) => serial(async () => {
