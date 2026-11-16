@@ -202,8 +202,12 @@ export async function sealMessage(text, senderHistory, recipientHistory, session
   await verifyHistory(recipientHistory, trust.recipientRoot, trust.recipientCheckpoint, now, trust.recipientGenesis);
   const sender = senderHistory.at(-1), recipient = recipientHistory.at(-1);
   check(sender.account === session.account && sender.devices.some(d => d.id === session.id));
+  // Self-chat: a single roster/tip; never deduplicate envelopes post-hoc.
+  const self = sender.account === recipient.account;
+  if (self) check(sender.revision === recipient.revision &&
+    await hash(manifestText(sender)) === await hash(manifestText(recipient)), 'Self directory mismatch');
   const envelopes = [];
-  for (const roster of [sender, recipient]) {
+  for (const roster of (self ? [sender] : [sender, recipient])) {
     for (const d of roster.devices) envelopes.push({ account: roster.account, deviceId: d.id, payload: await encryptLegacy(text, d.encryptionKey) });
   }
   envelopes.sort((a, b) => `${a.account}:${a.deviceId}` < `${b.account}:${b.deviceId}` ? -1 : 1);
