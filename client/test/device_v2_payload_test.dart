@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shade/core/services/device_v2/payload.dart';
 import 'package:shade/core/services/device_v2/protocol.dart';
@@ -74,5 +77,49 @@ void main() {
     final decoded = decodePayload(encodePayload('текст', reply));
     expect(decoded['text'], 'текст');
     expect(decoded['reply'], reply);
+  });
+
+  test('media chunks encode/decode/assemble per DEVICE_V2_API contract', () {
+    final bytes = Uint8List.fromList(List.generate(70000, (i) => i % 251));
+    final payloads = splitMediaPayloads(bytes, id: 'media1', mime: 'image/jpeg');
+    expect(payloads.length, 3);
+    final parts = <Map<String, dynamic>>[];
+    for (final payload in payloads) {
+      expect(utf8.encode(payload).length, lessThanOrEqualTo(65536));
+      final decoded = decodePayload(payload);
+      expect(decoded['media'], isNotNull);
+      expect(decoded['text'], '');
+      parts.add(decoded['media'] as Map<String, dynamic>);
+    }
+    // Reassembly is order-independent.
+    final assembled = assembleMedia(parts.reversed.toList());
+    expect(assembled, bytes);
+    // Incomplete or inconsistent sets return null, never partial data.
+    expect(assembleMedia(parts.sublist(0, 2)), isNull);
+    final mixed = [parts[0], {...parts[1], 'id': 'other'}];
+    expect(assembleMedia(mixed), isNull);
+    final duplicated = [parts[0], parts[0], parts[2]];
+    expect(assembleMedia(duplicated), isNull);
+  });
+
+  test('media wire JSON matches the documented shape', () {
+    final payload = encodeMediaPayload(
+        id: 'm1', mime: 'image/jpeg', index: 0, total: 1, chunk: Uint8List.fromList([1, 2, 3]));
+    expect(payload, '{"shade":1,"m":{"id":"m1","mime":"image/jpeg","index":0,"total":1,"chunk":"AQID"}}');
+    // Legacy text/reply decoding is unchanged by the media extension.
+    expect(decodePayload('plain'), {'text': 'plain', 'reply': null});
+    expect(decodePayload('{"shade":1,"t":"hi"}'), {'text': 'hi', 'reply': null});
+    // Malformed media falls back to raw text.
+    const bad = '{"shade":1,"m":{"id":"m1","mime":"image/jpeg","index":5,"total":1,"chunk":"AQID"}}';
+    expect(decodePayload(bad), {'text': bad, 'reply': null});
+  });
+
+  test('oversized media chunks are rejected', () {
+    expect(
+        () => encodeMediaPayload(
+            id: 'm', mime: 'image/jpeg', index: 0, total: 1, chunk: Uint8List(32769)),
+        throwsA(isA<ProtocolException>()));
+    expect(() => splitMediaPayloads(Uint8List(0), id: 'm', mime: 'image/jpeg'),
+        throwsA(isA<ProtocolException>()));
   });
 }
