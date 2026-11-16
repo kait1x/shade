@@ -17,6 +17,7 @@
 <body>
   <main id="root"><p role="status">Загрузка Shade…</p></main>
   <p id="notice" role="status" aria-live="polite"></p>
+  <button id="toast" role="status" aria-live="polite" hidden></button>
   <dialog id="dialog"><form method="dialog"><h2 id="dialog-title"></h2><div id="dialog-body"></div><button value="close">Закрыть</button></form></dialog>
   <noscript>Для работы Shade включите JavaScript.</noscript>
   <script src="/socket.io/socket.io.js" defer></script>

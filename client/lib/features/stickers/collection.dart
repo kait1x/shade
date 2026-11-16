@@ -1,22 +1,29 @@
 import 'dart:async';
-import 'package:shade/core/services/connection_service.dart';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'repository.dart';
 import 'vinyl.dart';
 import 'aluminium.dart';
 
-class StickerCollection extends ConsumerStatefulWidget {
+class StickerCollection extends StatefulWidget {
   final String username;
   final bool owner;
+  // Transport seam: native callers pass the v1 repository and its reconnect
+  // stream; the web alpha injects its own adapter. No platform services are
+  // read here, so the whole widget compiles for Flutter web.
+  final StickerBackend backend;
+  final Stream<bool>? reloadStream;
   const StickerCollection(
-      {super.key, required this.username, required this.owner});
+      {super.key,
+      required this.username,
+      required this.owner,
+      required this.backend,
+      this.reloadStream});
   @override
-  ConsumerState<StickerCollection> createState() => _CollectionState();
+  State<StickerCollection> createState() => _CollectionState();
 }
 
-class _CollectionState extends ConsumerState<StickerCollection> {
+class _CollectionState extends State<StickerCollection> {
   Collection? data;
   List<Placement> wall = [];
   bool book = false, editing = false, busy = false;
@@ -27,8 +34,7 @@ class _CollectionState extends ConsumerState<StickerCollection> {
   @override
   void initState() {
     super.initState();
-    reconnect =
-        ref.read(connectionServiceProvider).connectionChanges.listen((online) {
+    reconnect = widget.reloadStream?.listen((online) {
       if (online && !busy && !editing && mounted) load();
     });
     load();
@@ -46,8 +52,7 @@ class _CollectionState extends ConsumerState<StickerCollection> {
       error = null;
     });
     try {
-      final d =
-          await ref.read(stickerRepository).load(widget.username, widget.owner);
+      final d = await widget.backend.load(widget.username, widget.owner);
       if (mounted) {
         setState(() {
           data = d;
@@ -70,8 +75,7 @@ class _CollectionState extends ConsumerState<StickerCollection> {
       error = null;
     });
     try {
-      final result =
-          await ref.read(stickerRepository).save(data!.revision, wall);
+      final result = await widget.backend.save(data!.revision, wall);
       if (mounted) {
         setState(() {
           data = Collection({
@@ -133,7 +137,8 @@ class _CollectionState extends ConsumerState<StickerCollection> {
                   onPressed: () async {
                     final sent = await showDialog<bool>(
                         context: ctx,
-                        builder: (_) => GiftDialog(widget.username));
+                        builder: (_) => GiftDialog(widget.username,
+                            backend: widget.backend));
                     if (sent == true && mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                           const SnackBar(content: Text('Подарок отправлен')));
@@ -371,14 +376,15 @@ class _CollectionState extends ConsumerState<StickerCollection> {
   }
 }
 
-class GiftDialog extends ConsumerStatefulWidget {
+class GiftDialog extends StatefulWidget {
   final String to;
-  const GiftDialog(this.to, {super.key});
+  final StickerBackend backend;
+  const GiftDialog(this.to, {super.key, required this.backend});
   @override
-  ConsumerState<GiftDialog> createState() => _GiftDialogState();
+  State<GiftDialog> createState() => _GiftDialogState();
 }
 
-class _GiftDialogState extends ConsumerState<GiftDialog> {
+class _GiftDialogState extends State<GiftDialog> {
   String art = 'flowers', note = '', request = '', error = '';
   bool busy = false;
   Future<void> send() async {
@@ -390,7 +396,7 @@ class _GiftDialogState extends ConsumerState<GiftDialog> {
     }
     setState(() => busy = true);
     try {
-      await ref.read(stickerRepository).gift(widget.to, art, note, request);
+      await widget.backend.gift(widget.to, art, note, request);
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
       if (mounted) {

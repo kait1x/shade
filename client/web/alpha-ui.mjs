@@ -8,6 +8,35 @@ const contact = account => client.state && Object.hasOwn(client.state.contacts, 
 let selected = null, users = [], ready = false, actionTail = Promise.resolve(), noticeTimer, loggedIn = false;
 function node(tag, text, className) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (className) n.className = className; return n; }
 function notice(text) { const n = document.querySelector('#notice'); n.textContent = text; n.classList.add('visible'); clearTimeout(noticeTimer); noticeTimer = setTimeout(() => n.classList.remove('visible'), 9000); }
+// Floating arrival toast for messages in chats that are not open, mirroring
+// the Android in-app overlay. Clicking it opens that conversation.
+let toastTimer;
+function showToast(text, open) {
+  const toast = document.querySelector('#toast');
+  toast.textContent = text;
+  toast.onclick = () => { hideToast(); open(); };
+  toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, 4000);
+}
+function hideToast() { clearTimeout(toastTimer); document.querySelector('#toast').hidden = true; }
+const toastShown = new Map();
+function announceIncoming() {
+  if (!client.state || !client.session) return;
+  let latest = null;
+  for (const m of client.state.messages) {
+    if (m.from === client.session.account || m.from === selected) continue;
+    if (m.createdAt <= Math.max(ui.readUntil[m.from] ?? 0, toastShown.get(m.from) ?? 0)) continue;
+    if (!latest || m.createdAt > latest.createdAt) latest = m;
+  }
+  if (!latest) return;
+  toastShown.set(latest.from, latest.createdAt);
+  showToast(`Новое сообщение от @${latest.from}`, () => {
+    hideToast();
+    selected = latest.from; ui.selected = selected; saveUi(); render();
+    if (!contact(selected)) verifyContact(selected);
+  });
+}
 const errors = { google_login_required: 'Сессия Google истекла. Войдите снова; ключи сохранены.',
   operation_rejected: 'Операция отклонена. Проверьте сеть, срок каталога и доступ устройства. Сообщение не отмечено доставленным.',
   account_requires_linking: 'Аккаунт уже существует. Нужна привязка доверенным устройством; новые ключи не назначены.' };
@@ -24,7 +53,24 @@ function showDialog(title, elements) {
   document.querySelector('#dialog-body').replaceChildren(...elements);
   if (!dialog.open) dialog.showModal();
 }
-function installGuide() { showDialog('Установить Shade', [node('p', 'В Safari нажмите «Поделиться» → «На экран Домой» → «Добавить». Открывайте Shade с этой иконки.'), node('p', 'Ключи остаются в этом браузере. Не очищайте данные сайта. Перед установкой сохраните recovery-пакет. Установка PWA не переносит ключи из другого браузера.', 'muted')]); }
+function installGuide() {
+  if (deferredInstall) {
+    const button = node('button', 'Установить', 'primary'); button.type = 'button';
+    button.onclick = async () => {
+      const event = deferredInstall; deferredInstall = null; dialog.close();
+      event.prompt();
+      const { outcome } = await event.userChoice;
+      if (outcome === 'accepted') notice('Shade установлен.');
+    };
+    showDialog('Установить Shade', [node('p', 'Установить приложение Shade на это устройство?'), node('p', 'Ключи остаются в этом браузере. Не очищайте данные сайта. Перед установкой сохраните recovery-пакет. Установка PWA не переносит ключи из другого браузера.', 'muted'), button]);
+    return;
+  }
+  showDialog('Установить Shade', [node('p', 'В Safari нажмите «Поделиться» → «На экран Домой» → «Добавить». Открывайте Shade с этой иконки.'), node('p', 'Ключи остаются в этом браузере. Не очищайте данные сайта. Перед установкой сохраните recovery-пакет. Установка PWA не переносит ключи из другого браузера.', 'muted')]);
+}
+// Chromium offers a real install flow; Safari needs the manual guide above.
+let deferredInstall = null;
+window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); deferredInstall = event; });
+window.addEventListener('appinstalled', () => { deferredInstall = null; notice('Shade установлен.'); });
 function welcome(title, description) {
   const box = node('section', undefined, 'welcome'); box.append(node('h1', 'Shade'), node('p', 'WEB ALPHA 0.1', 'eyebrow'), node('h2', title), node('p', description, 'muted'));
   if (loggedIn) {
@@ -76,10 +122,19 @@ function render() {
   window.shadeReceive(JSON.stringify({
     account: client.session.account, selected, connection, connected: client.connected && navigator.onLine && !client.lastError,
     peers: accounts.map(account => ({ account, pinned: !!contact(account), unverified: (client.unverified || []).includes(account) })),
-    messages: client.state.messages.map(({ref,from,to,text,createdAt,status,devices}) => ({ref,from,to,text,createdAt,status,devices})),
+    messages: client.state.messages.map(({ref,from,to,text,reply,createdAt,status,devices}) =>
+      ({ref,from,to,text,reply,createdAt,status,devices})),
+    notes: client.state.notes ?? {},
+    profile: {
+      displayName: client.state.profile?.displayName || '',
+      frame: client.state.profile?.avatarFrame || 'none',
+      digest: client.state.profile?.avatarDigest || '',
+      revision: client.state.profile?.avatarRevision || 0,
+    },
     devices: (client.state.own.history.at(-1)?.devices || []).map(({id}) => ({id, current:id === client.session.id})),
     positions: ui.positions, readUntil: ui.readUntil,
   }));
+  announceIncoming();
 }
 async function openApp() {
   ready = true;
@@ -109,7 +164,18 @@ async function openApp() {
           if (data.until > previous) { ui.readUntil[data.account] = data.until; saveUi(); render(); } break;
         }
         case 'position': ui.positions[data.account] = {offset:Math.max(0,data.offset),bottom:!!data.bottom}; saveUi(); break;
-        case 'send': await client.send(data.account, data.text); client.sync().catch(e => notice(errors[e.message] || e.message)); break;
+        case 'send': await client.send(data.account, data.text, data.reply || null); client.sync().catch(e => notice(errors[e.message] || e.message)); break;
+        case 'deleteLocal': await client.deleteLocal(data.ref); break;
+        case 'sync': await client.sync(); break;
+        case 'note': await client.saveNote(data.account, data.text); break;
+        case 'profile.save': await client.saveProfile(data); break;
+        // The avatar image travels on demand, not in every projection.
+        case 'profile.avatar': return JSON.stringify({ ok: true, data: { image: client.state.profile?.avatarImage || null } });
+        case 'stickers.load': {
+          if (data.owner !== true) throw Error('Стена собеседника появится с device-v2 API');
+          return JSON.stringify({ ok: true, data: client.stickers() });
+        }
+        case 'stickers.save': return JSON.stringify({ ok: true, data: await client.saveStickers(data.revision, data.wall) });
         case 'verify': verifyContact(data.account); break;
         case 'refresh': users = await client.users(); render(); break;
         case 'identity': showDialog('Ваш отпечаток', [node('p', '@' + client.session.account),
@@ -161,7 +227,7 @@ async function boot() {
     const box = welcome('Личная переписка. На любом устройстве.', 'Google подтверждает ваш аккаунт. Криптографические ключи создаются и остаются в браузере. Для их разблокировки понадобится отдельная фраза.');
     if (status.googleConfigured) { const login = node('a', 'Войти через Google', 'button'); login.href = '/auth/google'; box.append(login); }
     else box.append(node('p', 'Google OAuth ещё не настроен администратором. Переписка требует входа.', 'card'));
-    const install = node('button', 'Установить на iPhone'); install.onclick = installGuide; box.append(install); return;
+    const install = node('button', 'Установить Shade'); install.onclick = installGuide; box.append(install); return;
   }
   loggedIn = !status.offline;
   const vaults = await listVaults();
@@ -192,4 +258,22 @@ async function boot() {
   }); };
 }
 boot().catch(error => { welcome('Shade недоступен', errors[error.message] || error.message); });
-if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/alpha-sw.js', { updateViaCache: 'none' }).catch(() => notice('Offline-запуск недоступен. Проверьте разрешения хранилища.'));
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register('/alpha-sw.js', { updateViaCache: 'none' }).then(reg => {
+    // A waiting worker means a newer offline shell exists. Never switch
+    // automatically: the user explicitly reloads, keys and history untouched.
+    const offerUpdate = () => {
+      if (!navigator.serviceWorker.controller) return;
+      const button = node('button', 'Перезагрузить и обновить', 'primary'); button.type = 'button';
+      button.onclick = () => { reg.waiting?.postMessage('SKIP_WAITING'); location.reload(); };
+      showDialog('Доступно обновление Shade', [node('p', 'Новая версия приложения загружена. Перезагрузка применит её к офлайн-запуску; ключи и история не затрагиваются.'), button]);
+    };
+    if (reg.waiting) offerUpdate();
+    reg.addEventListener('updatefound', () => {
+      const worker = reg.installing;
+      worker?.addEventListener('statechange', () => {
+        if (worker.state === 'installed' && navigator.serviceWorker.controller) offerUpdate();
+      });
+    });
+  }).catch(() => notice('Offline-запуск недоступен. Проверьте разрешения хранилища.'));
+}
