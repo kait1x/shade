@@ -191,6 +191,24 @@ export async function writeState(session, value, revision) {
   } finally { db.close(); }
   return revision + 1;
 }
+// Best-effort durability refresh WITHOUT changing the revision: re-commits the
+// current record and re-warms the deletion journal. Called when the page is
+// hidden/closed (iPhone app switcher, Safari tab close) so a disk flush has the
+// freshest data before a possible kill. No guarantee against abrupt kill inside
+// the platform flush window — see PHYSICAL_DEVICE_TEST_PLAN.md.
+export async function refreshDurability(session, value, revision) {
+  if (!session || !value || !Number.isSafeInteger(revision) || revision < 1) return;
+  const encrypted = await encryptRecord(session, 'state', value);
+  const db = await database();
+  try {
+    const tx = db.transaction('states', 'readwrite');
+    tx.objectStore('states').put({ id: session.id, revision, encrypted });
+    if (typeof tx.commit === 'function') tx.commit();
+    await txDone(tx);
+    await durabilityFlush(db);
+  } finally { db.close(); }
+  writeLocalJournal(session.id, readLocalJournal(session.id), Date.now());
+}
 function ensureDurable(id, record, expectedRevision) {
   setTimeout(async () => {
     try {

@@ -123,6 +123,26 @@ test('synchronous localStorage journal survives total IDB batch loss (WebKit kil
   assert.deepEqual(recovered.value.messages, [m1], 'sync journal must survive IDB loss');
 });
 
+test('refreshDurability re-commits without changing revision (pagehide flush)', async () => {
+  const { refreshDurability } = await import('../../client/web/alpha-storage.mjs');
+  const vault = await createVault('refresh_test', phrase);
+  const session = await unlockVault(vault, phrase);
+  const value = { messages: [{ ref: 'a:primary:11', text: 'keep' }], outbox: [] };
+  const revision = await writeState(session, value, 0);
+  assert.equal(revision, 1);
+  await refreshDurability(session, value, revision);
+  const after = await readState(session);
+  assert.equal(after.revision, 1, 'refresh must not bump the revision');
+  assert.deepEqual(after.value.messages, value.messages);
+  // Journal re-warm uses a varying tick so StorageTracker schedules a sync.
+  const journal = JSON.parse(localStorage.getItem(`shade-alpha-deletions:${session.id}`) || '{"tick":-1}');
+  assert.ok(journal.tick >= 0);
+  // No-op guards: missing session/value/revision never throw.
+  await refreshDurability(null, value, 1);
+  await refreshDurability(session, null, 1);
+  await refreshDurability(session, value, 0);
+});
+
 test('v1 databases upgrade additively to v2 without losing vaults', async () => {
   // Simulate a pre-existing version-1 database with a stored vault record.
   const vault = await createVault('upgrade_test', phrase);

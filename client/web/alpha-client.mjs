@@ -1,6 +1,6 @@
 import * as c from './device_crypto.mjs';
 import { check, hash, sign, requestText, messageText, verifyHistory, genesisText } from './protocol/device-v2.mjs';
-import { readState, writeState } from './alpha-storage.mjs';
+import { readState, writeState, refreshDurability } from './alpha-storage.mjs';
 
 // VAPID applicationServerKey conversion (base64url -> Uint8Array).
 function urlBase64ToUint8Array(value) {
@@ -84,6 +84,15 @@ export class AlphaClient extends EventTarget {
     this.foreground = () => { if (!document.hidden) this.sync().catch(() => {}); };
     this.online = () => { this.socket?.connect(); this.sync().catch(() => {}); };
     this.offline = () => { this.socket?.disconnect(); this.connected = false; this.changed(); };
+    // iPhone reliability: when the page is hidden or closed (app switcher,
+    // Safari tab close), re-commit the current state and re-warm the deletion
+    // journal so the platform flush has the freshest data before a kill.
+    this.persistNow = () => {
+      if (this.session && this.state && !this.stopped) {
+        refreshDurability(this.session, this.state, this.revision).catch(() => {});
+      }
+    };
+    this.hidden = () => { if (document.hidden) this.persistNow(); };
   }
   changed() { this.dispatchEvent(new Event('change')); }
   exclusive(work) {
@@ -643,6 +652,7 @@ export class AlphaClient extends EventTarget {
     this.timer = setInterval(() => this.sync().catch(() => {}), 15000);
     document.addEventListener('visibilitychange', this.foreground); window.addEventListener('online', this.online);
     window.addEventListener('offline', this.offline);
+    document.addEventListener('visibilitychange', this.hidden); window.addEventListener('pagehide', this.persistNow);
     await this.sync();
   }
   // Web Push (contract C6): wake-only notifications, never message content.
@@ -715,5 +725,6 @@ export class AlphaClient extends EventTarget {
     this.stopped = true; this.socket?.disconnect(); clearInterval(this.timer);
     document.removeEventListener('visibilitychange', this.foreground); window.removeEventListener('online', this.online);
     window.removeEventListener('offline', this.offline);
+    document.removeEventListener('visibilitychange', this.hidden); window.removeEventListener('pagehide', this.persistNow);
   }
 }
