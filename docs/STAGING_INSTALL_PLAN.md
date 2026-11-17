@@ -193,3 +193,10 @@ JavaScript origin + redirect URI `https://alpha.shadechat.ru/auth/google/callbac
   staging guard export, дедуп acked.
 - Packaged integration tests 11/11: migration-dryrun (3), rsa-rotation (2),
   rollback-journal (6).
+- **Пре-валидация без установки (17.11.2026 21:51):**
+  `systemd-analyze verify /opt/shade-staging/shade-staging.service` — без
+  ошибок; `caddy validate --config /opt/shade-staging/Caddyfile.staging-block
+  --adapter caddyfile` — **Valid configuration** (отдельный файл, production
+  Caddyfile не затрагивался). Symlink `/opt/shade-staging/current` →
+  `releases/20261117-213644` создан (шаг 1 выполнен). Процесс стабилен:
+  RSS ~100 МБ, ошибок в alpha.log нет.
