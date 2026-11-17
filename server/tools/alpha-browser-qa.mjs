@@ -399,8 +399,17 @@ try {
   // requestId makes an honest retry idempotent on the server.
   let gifted = false;
   for (let attempt = 0; attempt < 3 && !gifted; attempt++) {
-    await a.page.locator('input[data-semantics-role="text-field"][aria-label="Личная записка"]')
-        .fill('За помощь с интеграцией!');
+    // WebKit can miss the profile tap while the presence line re-renders;
+    // when the dialog never came up, re-open it instead of failing the run.
+    const noteField = a.page.locator('input[data-semantics-role="text-field"][aria-label="Личная записка"]');
+    try {
+      await noteField.waitFor({state:'visible',timeout:6000});
+    } catch {
+      await a.page.getByText(/В сети|Личная переписка|печатает…/).first().click().catch(() => {});
+      await a.page.getByRole('button',{name:'Подарить',exact:true}).first().click().catch(() => {});
+      await noteField.waitFor({state:'visible',timeout:10000});
+    }
+    await noteField.fill('За помощь с интеграцией!');
     // The Flutter AlertDialog is not an HTML <dialog>; its own button is the
     // last «Подарить» in semantics order (the profile's stays behind it).
     await a.page.getByRole('button',{name:'Подарить',exact:true}).last().click();
@@ -506,6 +515,49 @@ try {
 
   }
   results.responsive = true; results.selectedChatRestored = true;
+  // PWA shell contract (Android Chrome install + iOS home-screen launch):
+  // the served manifest, real icon bytes and an active offline service worker.
+  // Native beforeinstallprompt cannot be forced honestly in headless engines,
+  // so the in-app install GUIDE path is asserted instead of a fake prompt.
+  const manifestResponse = await a.page.request.get(`${f.origin}/alpha-manifest.json`);
+  assert.equal(manifestResponse.status(),200);
+  assert.match(manifestResponse.headers()['content-type']||'', /application\/(manifest\+json|json)/);
+  const manifest = await manifestResponse.json();
+  assert.equal(manifest.name,'Shade');
+  assert.equal(manifest.display,'standalone');
+  assert.equal(manifest.start_url,'/');
+  assert.equal(manifest.scope,'/');
+  assert.ok(manifest.icons.length >= 3, 'Android install needs 192+512 and maskable icons');
+  for (const icon of manifest.icons.concat([{src:'icons/apple-touch-icon.png'},{src:'favicon.png'}])) {
+    const head = await a.page.request.get(`${f.origin}/${icon.src}`);
+    assert.equal(head.status(),200,`${icon.src} must exist`);
+    assert.match(head.headers()['content-type']||'', /image\/png/, `${icon.src} must be a PNG`);
+  }
+  assert.equal(await a.page.evaluate(() => new URL(document.querySelector('link[rel=manifest]').href, location.href).pathname),'/alpha-manifest.json');
+  await a.page.evaluate(async () => { await Promise.race([navigator.serviceWorker.ready,
+    new Promise((_,reject) => setTimeout(() => reject(Error('Service worker installation timeout')),10000))]); });
+  const shell = await a.page.evaluate(async () => {
+    const controller = navigator.serviceWorker.controller;
+    const keys = await caches.keys();
+    const cacheKey = keys.find(key => key.startsWith('shade-alpha-'));
+    const cache = cacheKey ? await caches.open(cacheKey) : null;
+    return { controller: !!controller, cacheKey,
+      shellPage: !!(cache && await cache.match('/alpha.html')),
+      manifest: !!(cache && await cache.match('/alpha-manifest.json')),
+      flutterUi: !!(cache && await cache.match('/flutter-ui/flutter_bootstrap.js')) };
+  });
+  assert.equal(shell.controller,true,'the service worker must control the page after claim');
+  assert.ok(shell.shellPage && shell.manifest && shell.flutterUi, `offline shell cache incomplete: ${JSON.stringify(shell)}`);
+  results.pwaShell = shell;
+  console.log('PASS PWA shell: manifest, icons, active service worker, offline cache');
+  // In-app install guide (shadeAction 'install'): Chromium shows the native
+  // prompt when eligible; every engine must always reach a usable guide.
+  await a.page.evaluate(() => window.shadeAction('install','{}'));
+  await a.page.locator('dialog[open]').filter({hasText:'Установить Shade'}).waitFor({timeout:10000});
+  await a.page.getByRole('button',{name:'Закрыть',exact:true}).click();
+  await a.page.locator('dialog').waitFor({state:'hidden',timeout:10000});
+  results.installGuide = true;
+  console.log('PASS in-app install guide opens from the profile');
   await a.page.setViewportSize({width:390,height:844});
   await a.page.waitForTimeout(260);
   const longText = 'Длинное сообщение для проверки переноса строк. '.repeat(55) + '\n' + 'безпробелов'.repeat(80);
