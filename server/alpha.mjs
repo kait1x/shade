@@ -118,10 +118,14 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   });
   app.get('/api/health', (_req, res) => res.json({ service: 'shade-web-alpha', protocol: 2, isolated: true }));
   app.get('/api/session', (req, res) => {
+    // The VAPID PUBLIC key is public information the PWA needs to create a
+    // PushSubscription (applicationServerKey). The private key never leaves
+    // the server configuration; null when push is not configured.
+    const vapidPublicKey = pushEnabled ? vapidKeys.publicKey : null;
     const s = sessions.get(req.cookies[sidName]);
-    if (!s || s.expiresAt <= Date.now()) return res.json({ authenticated: false, googleConfigured: provider.configured });
+    if (!s || s.expiresAt <= Date.now()) return res.json({ authenticated: false, googleConfigured: provider.configured, vapidPublicKey });
     const account = registry.accountForGoogle(s.profile.googleSub);
-    res.json({ authenticated: true, googleConfigured: provider.configured, account,
+    res.json({ authenticated: true, googleConfigured: provider.configured, account, vapidPublicKey,
       directory: account ? registry.directory(account) : null });
   });
   app.get('/auth/google', rateLimit({ windowMs: 60000, limit: 15 }), wrap(async (_req, res) => {

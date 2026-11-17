@@ -39,6 +39,15 @@ test('push subscriptions are device-bound, wake-only, SSRF-guarded and pruned on
   const ac = await f.login('synthetic-alice'), bc = await f.login('synthetic-bob');
   await register(f, alice, ac); await register(f, bob, bc);
   try {
+    // Contract C6: the session endpoint exposes the VAPID PUBLIC key for
+    // PushManager.subscribe (applicationServerKey), before and after login.
+    // The private key must never appear in any response.
+    const anon = await f.request('/api/session');
+    assert.equal(anon.result.vapidPublicKey, vapidKeys.publicKey);
+    assert.ok(!JSON.stringify(anon.result).includes(vapidKeys.privateKey));
+    const authed = await f.request('/api/session', undefined, bc);
+    assert.equal(authed.result.vapidPublicKey, vapidKeys.publicKey);
+    assert.ok(!JSON.stringify(authed.result).includes(vapidKeys.privateKey));
     assert.equal((await operation(f, bob, bc, 'push.subscribe', subscription('bob1'))).result.subscribed, true);
     assert.equal((await sendText(f, alice, bob, ac, 'wake up')).accepted, true);
     assert.equal(pushes.length, 1);
@@ -76,6 +85,8 @@ test('push subscriptions are device-bound, wake-only, SSRF-guarded and pruned on
   // Unconfigured server fails closed.
   const f2 = await fixture({ dataDir: await tempDir(), storageSecret: randomBytes(32).toString('hex') });
   try {
+    const session = await f2.request('/api/session');
+    assert.equal(session.result.vapidPublicKey, null);
     const bob2 = await identity('bob_push2');
     const bc2 = await f2.login('synthetic-bob');
     await register(f2, bob2, bc2);
