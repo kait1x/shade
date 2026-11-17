@@ -10,6 +10,7 @@ import 'package:shade/features/devices/presentation/alpha_v2_screen.dart';
 class FakeBackend implements AlphaV2Backend {
   bool session = false;
   bool isEnrolled = false;
+  bool rotation = false;
   String? connectError;
   String? enrollError;
   List<Map<String, dynamic>> contactList = [];
@@ -42,14 +43,24 @@ class FakeBackend implements AlphaV2Backend {
   }
 
   @override
+  Future<void> connectWithLegacyKey(String origin) async {
+    if (connectError != null) throw StateError(connectError!);
+    session = true;
+  }
+
+  @override
   Future<Map<String, dynamic>> enroll(String passphrase) async {
     if (enrollError != null) throw StateError(enrollError!);
     isEnrolled = true;
     return {
       'revision': 1,
-      'recovery': {'version': 2, 'account': 'native_android', 'publicKey': 'synthetic'}
+      'recovery': {'version': 2, 'account': 'native_android', 'publicKey': 'synthetic'},
+      if (rotation) 'rotated': true
     };
   }
+
+  @override
+  bool get rotationPending => rotation;
 
   @override
   Future<List<Map<String, dynamic>>> contacts() async => contactList;
@@ -60,6 +71,8 @@ class FakeBackend implements AlphaV2Backend {
 
   @override
   Future<List<Map<String, dynamic>>> messages(String peer) async => messageList;
+  @override
+  Future<bool> peerUpgradeBlocked(String peer) async => false;
   @override
   Future<void> send(String peer, String text, {Map<String, dynamic>? reply}) async {
     sent.add(text);
@@ -156,6 +169,20 @@ void main() {
 
     await tester.enterText(find.byType(TextField).first, 'https://alpha.test');
     await tester.tap(find.text('Войти через Google'));
+    await tester.pumpAndSettle();
+    expect(backend.session, true);
+    expect(find.text('Регистрация устройства'), findsOneWidget);
+  });
+
+  testWidgets('legacy-key login (без Google) advances to enrollment',
+      (tester) async {
+    final backend = FakeBackend();
+    await tester.pumpWidget(_wrap(backend));
+    await tester.pumpAndSettle();
+    expect(find.text('Войти ключом v1 (без Google)'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField).first, 'https://alpha.test');
+    await tester.tap(find.text('Войти ключом v1 (без Google)'));
     await tester.pumpAndSettle();
     expect(backend.session, true);
     expect(find.text('Регистрация устройства'), findsOneWidget);

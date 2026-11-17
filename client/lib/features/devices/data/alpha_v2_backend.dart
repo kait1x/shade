@@ -29,10 +29,14 @@ abstract class AlphaV2Backend {
   int? get leaseExpiresAt;
   Future<String> requestGoogleIdToken(String origin);
   Future<void> connect(String origin, String idToken);
+  Future<void> connectWithLegacyKey(String origin);
   Future<Map<String, dynamic>> enroll(String recoveryPassphrase);
+  /// Аккаунт требует RSA-rotation (v1 RSA-2048 → v2 RSA-4096) до enrollment.
+  bool get rotationPending;
   Future<List<Map<String, dynamic>>> contacts();
   Future<void> confirmContact(String account, String genesisDigest);
   Future<List<Map<String, dynamic>>> messages(String peer);
+  Future<bool> peerUpgradeBlocked(String peer);
   Future<void> send(String peer, String text, {Map<String, dynamic>? reply});
   Future<String> sendMedia(String peer, List<int> bytes, {String mime});
   Future<void> deleteLocal(String ref);
@@ -61,8 +65,12 @@ class RealAlphaV2Backend implements AlphaV2Backend {
   String? _loginNonce;
   String? _root;
   String? _privateKey;
+  bool _rotationPending = false;
 
   RealAlphaV2Backend({required this.crypto, required this.database});
+
+  @override
+  bool get rotationPending => _rotationPending;
 
   @override
   void Function(String account, int until)? onTyping;
@@ -127,11 +135,15 @@ class RealAlphaV2Backend implements AlphaV2Backend {
     await repo.load();
     _repo = repo;
     if (repo.enrolled) {
+      // После rotation якорь — новый ключ из зашифрованного хранилища,
+      // а не v1-ключ из secure storage.
+      _privateKey = repo.privateKey;
+      _root = repo.root;
       repo.attachWake();
       transport.startPolling();
       try {
         await transport.connectSocket(
-            account: account, id: 'primary', privateKey: privateKey);
+            account: account, id: 'primary', privateKey: repo.privateKey);
       } catch (_) {
         // Потерянный socket чинится периодическим подписанным fetch.
       }
@@ -234,11 +246,87 @@ class RealAlphaV2Backend implements AlphaV2Backend {
   }
 
   @override
+  Future<void> connectWithLegacyKey(String origin) async {
+    final profile = await database.getCurrentUserProfile();
+    final publicKey = await crypto.getPublicKey();
+    final privateKey = await crypto.getPrivateKey();
+    if (profile == null || publicKey == null || privateKey == null) {
+      throw StateError('Сначала создайте профиль Shade на этом устройстве.');
+    }
+    final account = (profile['nickname'] as String).toLowerCase().trim();
+    final transport = AlphaTransport(origin, crypto);
+    var rotationPending = false;
+    try {
+      try {
+        final nonce = await transport.legacyChallenge(account);
+        final operation = operationDigest('legacy-session', null);
+        final proof = await crypto.signData(
+            requestText(account, 'primary', nonce, operation), privateKey);
+        final session = await transport.legacySession(account, nonce, proof);
+        if (session['account'] != account) {
+          throw StateError('Сервер вернул другой аккаунт; вход отклонён.');
+        }
+      } catch (_) {
+        // v1 RSA-2048: аккаунт подготовлен как rotation_required — legacy-
+        // сессия невозможна до смены ключа. Проверяем rotation-статус и
+        // продолжаем БЕЗ сессии (enrollment выполнит rotation и откроет её).
+        await transport.rotationChallenge(account);
+        rotationPending = true;
+      }
+    } catch (_) {
+      transport.dispose();
+      rethrow;
+    }
+    _account = account;
+    _root = await publicSpki(publicKey);
+    _privateKey = privateKey;
+    _rotationPending = rotationPending;
+    _transport = transport;
+    _attachSignals();
+    _repo = V2ChatRepository(
+        transport: transport,
+        crypto: crypto,
+        store: V2Store(database),
+        account: account,
+        root: _root!,
+        privateKey: privateKey);
+    await _repo!.load();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('alpha_v2_origin', origin);
+    await prefs.setString('alpha_v2_account', account);
+    if (!rotationPending) {
+      await _secure.write(key: 'alpha_v2_cookie', value: transport.sessionCookie);
+    }
+  }
+
+  @override
   Future<Map<String, dynamic>> enroll(String recoveryPassphrase) async {
-    final result =
-        await _requireRepo.enrollLegacy(recoveryPassphrase: recoveryPassphrase);
+    final repo = _requireRepo;
+    Map<String, dynamic> result;
+    if (_rotationPending) {
+      result =
+          await repo.enrollWithRotation(recoveryPassphrase: recoveryPassphrase);
+      // После успешной rotation открываем сессию НОВЫМ ключом.
+      final transport = _transport!;
+      final nonce = await transport.legacyChallenge(_account!);
+      final operation = operationDigest('legacy-session', null);
+      final proof = await crypto.signData(
+          requestText(_account!, 'primary', nonce, operation), repo.privateKey);
+      final session =
+          await transport.legacySession(_account!, nonce, proof);
+      if (session['account'] != _account) {
+        throw StateError('Сервер вернул другой аккаунт; вход отклонён.');
+      }
+      _privateKey = repo.privateKey;
+      _root = repo.root;
+      _rotationPending = false;
+      await _secure.write(
+          key: 'alpha_v2_cookie', value: transport.sessionCookie);
+    } else {
+      result = await repo.enrollLegacy(recoveryPassphrase: recoveryPassphrase);
+    }
     final transport = _transport!;
-    _requireRepo.attachWake();
+    repo.attachWake();
     transport.startPolling();
     await transport.connectSocket(
         account: _account!, id: 'primary', privateKey: _privateKey!);
@@ -258,6 +346,10 @@ class RealAlphaV2Backend implements AlphaV2Backend {
       _requireRepo.getMessages(peer);
 
   @override
+  Future<bool> peerUpgradeBlocked(String peer) =>
+      _requireRepo.isPeerUpgradeBlocked(peer);
+
+  @override
   Future<void> send(String peer, String text, {Map<String, dynamic>? reply}) async {
     await _requireRepo.sendMessage(peer, text, reply: reply);
   }
@@ -266,7 +358,11 @@ class RealAlphaV2Backend implements AlphaV2Backend {
   Future<void> deleteLocal(String ref) => _requireRepo.deleteLocal(ref);
 
   @override
-  Future<int> sync() => _requireRepo.syncInbox();
+  Future<int> sync() async {
+    final fresh = await _requireRepo.syncInbox();
+    final legacy = await _requireRepo.syncLegacyInbox();
+    return fresh + legacy;
+  }
 
   @override
   Future<List<Map<String, dynamic>>> delivery(String ref) async {

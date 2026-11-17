@@ -38,6 +38,7 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
   List<Map<String, dynamic>> _contacts = [];
   String? _peer;
   List<Map<String, dynamic>> _messages = [];
+  bool _peerBlocked = false;
   final Map<String, List<Map<String, dynamic>>> _delivery = {};
   Timer? _chatTimer;
   Map<String, dynamic>? _replyTo;
@@ -149,6 +150,21 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
     await _run(() async {
       final idToken = await _backend.requestGoogleIdToken(origin);
       await _backend.connect(origin, idToken);
+      if (!mounted) return;
+      setState(() =>
+          _stage = _backend.enrolled ? _Stage.home : _Stage.enroll);
+      if (_stage == _Stage.home) await _loadContacts();
+    });
+  }
+
+  Future<void> _connectWithKey() async {
+    final origin = _origin.text.trim();
+    if (origin.isEmpty || origin == 'https://') {
+      setState(() => _error = 'Укажите origin alpha-сервера (https).');
+      return;
+    }
+    await _run(() async {
+      await _backend.connectWithLegacyKey(origin);
       if (!mounted) return;
       setState(() =>
           _stage = _backend.enrolled ? _Stage.home : _Stage.enroll);
@@ -268,6 +284,8 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
       }
     }
     if (!mounted) return;
+    final blocked = await _backend.peerUpgradeBlocked(peer);
+    if (!mounted) return;
     final previousRefs = _messages.map((m) => m['ref']).toSet();
     final freshIncoming = messages
         .where((m) =>
@@ -275,6 +293,7 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
         .length;
     setState(() {
       _messages = messages;
+      _peerBlocked = blocked;
       if (!_atBottom) _newWhileAway += freshIncoming;
     });
     // Read-ACK: просмотренные входящие подтверждаются подписанной операцией.
@@ -502,6 +521,15 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
       _field(_origin, 'Origin alpha-сервера', hint: 'https://alpha.example.com'),
       const SizedBox(height: 16),
       _primaryButton('Войти через Google', _connect),
+      const SizedBox(height: 12),
+      _primaryButton('Войти ключом v1 (без Google)', _connectWithKey),
+      const SizedBox(height: 12),
+      const Text(
+          'Если аккаунт v1 не привязан к Google, вход выполняется подписью '
+          'исходного RSA-ключа этого устройства. Приватный ключ не покидает '
+          'устройство; аккаунт должен быть подготовлен оператором миграции.',
+          style: TextStyle(
+              color: ShadeColors.textSecondary, fontSize: 12, height: 1.5)),
     ]);
   }
 
@@ -517,6 +545,24 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
           'Аккаунт @${_backend.account ?? ''} переводится в device-v2 явной подписью исходного RSA-ключа. Ключи, SQLCipher и v1-история не переписываются.',
           style: const TextStyle(
               color: ShadeColors.textSecondary, fontSize: 13, height: 1.5)),
+      if (_backend.rotationPending) ...[
+        const SizedBox(height: 12),
+        Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+                color: ShadeColors.surfaceCard,
+                border: Border.all(color: ShadeColors.greyBorder),
+                borderRadius: BorderRadius.circular(12)),
+            child: const Text(
+                'Требуется смена ключа: v1-ключ RSA-2048 не соответствует требованиям v2 (RSA-4096). '
+                'Будет создан НОВЫЙ ключ RSA-4096; старый ключ останется на устройстве для расшифровки истории и сообщений от v1-собеседников. '
+                'Это подтверждённая смена криптографической идентичности: собеседники смогут проверить аттестацию, подписанную старым ключом. '
+                'Аккаунт, контакты и локальная история сохраняются.',
+                style: TextStyle(
+                    color: ShadeColors.textSecondary,
+                    fontSize: 12.5,
+                    height: 1.5))),
+      ],
       const SizedBox(height: 16),
       const Text(
           'Придумайте отдельную recovery-фразу (24+ символа) и сохраните её вне устройства. Без неё восстановление членства после потери устройства невозможно.',
@@ -525,7 +571,11 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
       const SizedBox(height: 16),
       _field(_passphrase, 'Recovery-фраза', obscure: true),
       const SizedBox(height: 16),
-      _primaryButton('Зарегистрировать устройство', _enroll),
+      _primaryButton(
+          _backend.rotationPending
+              ? 'Сменить ключ и зарегистрировать'
+              : 'Зарегистрировать устройство',
+          _enroll),
     ]);
   }
 
@@ -674,6 +724,18 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
   Widget _buildChat() {
     final replyTo = _replyTo;
     return Column(children: [
+      if (_peerBlocked)
+        Container(
+            width: double.infinity,
+            color: ShadeColors.surfaceCard,
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            child: const Text(
+                'Собеседник ещё не перешёл на Shade v2. Сообщения сохраняются в защищённой очереди и будут отправлены после его перехода.',
+                style: TextStyle(
+                    color: ShadeColors.textSecondary,
+                    fontSize: 12,
+                    height: 1.4))),
       Expanded(
           child: Stack(children: [
         Positioned.fill(

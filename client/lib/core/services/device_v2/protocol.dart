@@ -160,6 +160,35 @@ String manifestText(Map<String, dynamic> m) {
   ]);
 }
 
+/// Канонический текст аттестации RSA-rotation (аналог rotationText в JS).
+/// Старый ключ связывает account, old DER fingerprint, новый SPKI и ТОЧНЫЕ
+/// digest genesis/manifest — аттестацию нельзя переиспользовать с другим
+/// каталогом устройств.
+String rotationText(Map<String, dynamic> a) {
+  _fields(a, [
+    'version', 'account', 'oldRootFingerprint', 'newRoot', 'genesisDigest',
+    'manifestDigest', 'createdAt', 'nonce', 'signature'
+  ]);
+  check(a['version'] == 1 &&
+      a['account'] is String &&
+      accountPattern.hasMatch(a['account'] as String) &&
+      a['oldRootFingerprint'] is String &&
+      hex64Pattern.hasMatch(a['oldRootFingerprint'] as String) &&
+      _isSafeInteger(a['createdAt']) &&
+      a['nonce'] is String &&
+      hex64Pattern.hasMatch(a['nonce'] as String) &&
+      a['genesisDigest'] is String &&
+      hex64Pattern.hasMatch(a['genesisDigest'] as String) &&
+      a['manifestDigest'] is String &&
+      hex64Pattern.hasMatch(a['manifestDigest'] as String));
+  unb64(a['newRoot'] as String, 2048);
+  unb64(a['signature'] as String, 1024);
+  return jsonEncode([
+    'shade-rotation:v1', a['account'], a['oldRootFingerprint'], a['newRoot'],
+    a['genesisDigest'], a['manifestDigest'], a['createdAt'], a['nonce']
+  ]);
+}
+
 String pairingText(String account, Map<String, dynamic> d, String nonce, int expiresAt) {
   check(accountPattern.hasMatch(account) &&
       hex64Pattern.hasMatch(nonce) && _isSafeInteger(expiresAt));

@@ -6,6 +6,7 @@
 /// inbox с replay-дедупликацией и ACK только после атомарного сохранения.
 library;
 
+import 'dart:convert';
 import 'dart:typed_data';
 
 import '../crypto_service.dart';
@@ -21,8 +22,11 @@ class V2ChatRepository {
   final CryptoService crypto;
   final V2Store store;
   final String account;
-  final String root; // SPKI base64 исходного RSA (primary)
-  final String privateKey; // PEM, никогда не покидает устройство
+  String root; // SPKI base64 якоря (primary); после rotation — новый RSA-4096
+  String privateKey; // PEM, никогда не покидает устройство
+  /// Исходный v1-ключ после rotation: расшифровка старой истории и bridged
+  /// v1-ciphertext. Не заменяет якорь и не используется для новых сообщений.
+  String? legacyPrivateKey;
   bool _syncing = false;
 
   V2ChatRepository({
@@ -52,6 +56,13 @@ class V2ChatRepository {
 
   Future<void> load() async {
     _accountCache = await store.loadAccount(account);
+    final acc = _accountCache;
+    if (acc != null) {
+      root = acc['root'] as String;
+      final anchor = acc['anchorKey'] as String?;
+      if (anchor != null && anchor.isNotEmpty) privateKey = anchor;
+      legacyPrivateKey = acc['legacyKey'] as String?;
+    }
   }
 
   bool get enrolled => _accountCache != null;
@@ -61,20 +72,74 @@ class V2ChatRepository {
 
   /// Явная миграция legacy-аккаунта: исходный RSA подписывает genesis и
   /// остаётся primary-якорем; recovery-ключ независим и шифруется фразой.
+  ///
+  /// Crash-safe: genesis/manifest и зашифрованный recovery-пакет пишутся в
+  /// долговечный журнал ДО сетевого вызова. Повтор после любого сбоя:
+  ///  - тот же genesis уже на сервере → сервер возвращает committed tip
+  ///    (resumed), локальное состояние достраивается из журнала;
+  ///  - ответ потерялся → каталог сверяется через /api/session и перенимается
+  ///    без создания второго genesis и без потери recovery-ключа.
+  /// Старое локальное хранилище (SQLCipher v1, ключи, история) не удаляется.
   Future<Map<String, dynamic>> enrollLegacy(
       {required String recoveryPassphrase}) async {
-    final backup =
-        await v2.createRecoveryBackup(account, root, recoveryPassphrase);
-    final genesis =
-        v2.buildLegacyGenesis(account, root, backup['publicKey'] as String);
-    genesis['signature'] =
-        await crypto.signData(genesisText(genesis), privateKey);
-    final manifest = v2.buildLegacyManifest(account, root);
-    manifest['signature'] =
-        await crypto.signData(manifestText(manifest), privateKey);
-    final result = await transport.legacyEnrollment(genesis, manifest);
-    final finalized =
-        await v2.finalizeRecoveryBackup(backup, recoveryPassphrase, genesis);
+    // Идемпотентность: уже enrolled локально — ничего не пересоздаём и не
+    // трогаем сохранённый recovery-пакет.
+    final existing = await store.loadAccount(account);
+    if (existing != null) {
+      return {
+        'revision': (existing['checkpoint'] as Map)['revision'],
+        'recovery': existing['recovery'],
+        'alreadyEnrolled': true
+      };
+    }
+    final journal = await store.loadEnrollmentJournal(account);
+    Map<String, dynamic> genesis, manifest, backup;
+    if (journal != null && journal['root'] == root) {
+      genesis = Map<String, dynamic>.from(journal['genesis'] as Map);
+      manifest = Map<String, dynamic>.from(journal['manifest'] as Map);
+      backup = Map<String, dynamic>.from(journal['recoveryBackup'] as Map);
+    } else {
+      backup =
+          await v2.createRecoveryBackup(account, root, recoveryPassphrase);
+      genesis =
+          v2.buildLegacyGenesis(account, root, backup['publicKey'] as String);
+      genesis['signature'] =
+          await crypto.signData(genesisText(genesis), privateKey);
+      manifest = v2.buildLegacyManifest(account, root);
+      manifest['signature'] =
+          await crypto.signData(manifestText(manifest), privateKey);
+      await store.saveEnrollmentJournal(
+          account: account,
+          root: root,
+          genesis: genesis,
+          manifest: manifest,
+          recoveryBackup: backup);
+    }
+    Map<String, dynamic> result;
+    try {
+      result = await transport.legacyEnrollment(genesis, manifest);
+    } on AlphaTransportException {
+      // Сервер мог уже зафиксировать genesis (сбой клиента после коммита) —
+      // перенимаем проверенный каталог, а не создаём новый genesis.
+      final session = await transport.session();
+      final dir = session['directory'];
+      if (session['account'] != account ||
+          dir is! Map ||
+          (dir['history'] as List?)?.isEmpty != false) {
+        rethrow;
+      }
+      return _adoptDirectory(Map<String, dynamic>.from(dir),
+          genesis, backup, recoveryPassphrase);
+    }
+    if (result['resumed'] == true) {
+      final session = await transport.session();
+      final dir = session['directory'];
+      if (session['account'] == account && dir is Map) {
+        return _adoptDirectory(Map<String, dynamic>.from(dir),
+            genesis, backup, recoveryPassphrase);
+      }
+    }
+    final finalized = await _finalizeBackup(backup, recoveryPassphrase, genesis);
     final checkpoint = {
       'account': account,
       'rootFingerprint': spkiFingerprint(root),
@@ -90,8 +155,224 @@ class V2ChatRepository {
         checkpoint: checkpoint,
         sessionId: 'primary',
         recovery: finalized);
+    await store.deleteEnrollmentJournal(account);
     await load();
     return {'revision': result['revision'], 'recovery': finalized};
+  }
+
+  /// Rotation RSA-2048 → RSA-4096: ОСОЗНАННАЯ смена криптографической
+  /// идентичности с доказательством владения старым ключом. Старый RSA
+  /// подписывает аттестацию, связывающую account, old fingerprint, новый
+  /// SPKI и точные digest genesis/manifest; новый RSA-4096 становится
+  /// primary-якорем v2. Старый приватный ключ остаётся на устройстве для
+  /// расшифровки локальной истории и bridged v1-ciphertext.
+  ///
+  /// Crash-safe: новый якорь, genesis/manifest и recovery-пакет пишутся в
+  /// долговечный журнал ДО сети; повтор после сбоя перенимает серверный
+  /// каталог через сессию НОВЫМ ключом, не создавая второй genesis.
+  Future<Map<String, dynamic>> enrollWithRotation(
+      {required String recoveryPassphrase}) async {
+    final existing = await store.loadAccount(account);
+    if (existing != null) {
+      return {
+        'revision': (existing['checkpoint'] as Map)['revision'],
+        'recovery': existing['recovery'],
+        'alreadyEnrolled': true
+      };
+    }
+    final journal = await store.loadEnrollmentJournal(account);
+    if (journal != null && journal['rotation'] == null) {
+      throw StateError(
+          'Существует журнал обычного перехода v1→v2. Завершите его тем же '
+          'ключом; rotation не перезаписывает чужой журнал.');
+    }
+    Map<String, dynamic> genesis, manifest, backup;
+    String anchorPrivate, newRoot;
+    if (journal != null && journal['anchorKey'] != null) {
+      genesis = Map<String, dynamic>.from(journal['genesis'] as Map);
+      manifest = Map<String, dynamic>.from(journal['manifest'] as Map);
+      backup = Map<String, dynamic>.from(journal['recoveryBackup'] as Map);
+      anchorPrivate = journal['anchorKey'] as String;
+      newRoot = journal['root'] as String;
+    } else {
+      final anchor = await v2.generateAnchorKey();
+      anchorPrivate = anchor['privateKey']!;
+      newRoot = anchor['publicKey']!;
+      backup =
+          await v2.createRecoveryBackup(account, newRoot, recoveryPassphrase);
+      genesis =
+          v2.buildLegacyGenesis(account, newRoot, backup['publicKey'] as String);
+      genesis['signature'] =
+          await crypto.signData(genesisText(genesis), anchorPrivate);
+      manifest = v2.buildLegacyManifest(account, newRoot);
+      manifest['signature'] =
+          await crypto.signData(manifestText(manifest), anchorPrivate);
+      await store.saveEnrollmentJournal(
+          account: account,
+          root: newRoot,
+          genesis: genesis,
+          manifest: manifest,
+          recoveryBackup: backup,
+          anchorKey: anchorPrivate,
+          rotation: {'oldRoot': root, 'pending': true});
+    }
+    // Свежий одноразовый nonce; аттестация подписывается СТАРЫМ ключом.
+    final challenge = await transport.rotationChallenge(account);
+    final nonce = challenge['nonce'] as String;
+    final oldFingerprint = challenge['oldRootFingerprint'] as String;
+    if (oldFingerprint != spkiFingerprint(root)) {
+      throw StateError(
+          'Серверный отпечаток старого ключа не совпадает с локальным; '
+          'переход остановлен, ключи не изменены.');
+    }
+    final attestation = <String, dynamic>{
+      'version': 1,
+      'account': account,
+      'oldRootFingerprint': oldFingerprint,
+      'newRoot': newRoot,
+      'genesisDigest': sha256Hex(genesisText(genesis)),
+      'manifestDigest': sha256Hex(manifestText(manifest)),
+      'createdAt': DateTime.now().millisecondsSinceEpoch,
+      'nonce': nonce,
+      // Placeholder валидной формы: канонический текст не включает подпись.
+      'signature': 'AA=='
+    };
+    attestation['signature'] =
+        await crypto.signData(rotationText(attestation), privateKey);
+    await store.saveEnrollmentJournal(
+        account: account,
+        root: newRoot,
+        genesis: genesis,
+        manifest: manifest,
+        recoveryBackup: backup,
+        anchorKey: anchorPrivate,
+        rotation: {
+          'oldRoot': root,
+          'oldRootFingerprint': oldFingerprint,
+          'attestation': attestation
+        });
+    Map<String, dynamic> result;
+    try {
+      result = await transport.legacyRotation(
+          account, nonce, attestation, genesis, manifest);
+    } on AlphaTransportException {
+      // Сервер мог уже зафиксировать genesis — перенимаем проверенный каталог
+      // через сессию НОВЫМ ключом, а не создаём второй genesis.
+      return _adoptRotated(genesis, backup, recoveryPassphrase,
+          newRoot, anchorPrivate);
+    }
+    if (result['resumed'] == true) {
+      return _adoptRotated(genesis, backup, recoveryPassphrase,
+          newRoot, anchorPrivate);
+    }
+    final finalized = await _finalizeBackup(backup, recoveryPassphrase, genesis);
+    final checkpoint = {
+      'account': account,
+      'rootFingerprint': spkiFingerprint(newRoot),
+      'revision': result['revision'],
+      'digest': result['digest'],
+      'genesisDigest': sha256Hex(genesisText(genesis))
+    };
+    await store.saveAccount(
+        account: account,
+        root: newRoot,
+        genesis: genesis,
+        history: [manifest],
+        checkpoint: checkpoint,
+        sessionId: 'primary',
+        recovery: finalized,
+        anchorKey: anchorPrivate,
+        legacyKey: privateKey);
+    await store.deleteEnrollmentJournal(account);
+    await load();
+    return {
+      'revision': result['revision'],
+      'recovery': finalized,
+      'rotated': true
+    };
+  }
+
+  Future<Map<String, dynamic>> _adoptRotated(
+      Map<String, dynamic> genesis,
+      Map<String, dynamic> backup,
+      String passphrase,
+      String newRoot,
+      String anchorPrivate) async {
+    final nonce = await transport.legacyChallenge(account);
+    final operation = sha256Hex(jsonEncode(['legacy-session', null]));
+    final proof = await crypto.signData(
+        requestText(account, 'primary', nonce, operation), anchorPrivate);
+    await transport.legacySession(account, nonce, proof);
+    final session = await transport.session();
+    final dir = session['directory'];
+    if (session['account'] != account ||
+        dir is! Map ||
+        (dir['history'] as List?)?.isEmpty != false) {
+      throw StateError(
+          'Rotation не подтверждена сервером; локальное состояние не изменено.');
+    }
+    return _adoptDirectory(Map<String, dynamic>.from(dir), genesis, backup,
+        passphrase,
+        anchorRoot: newRoot, anchorKey: anchorPrivate, legacyKey: privateKey);
+  }
+
+  Future<Map<String, dynamic>> _finalizeBackup(Map<String, dynamic> backup,
+      String passphrase, Map<String, dynamic> genesis) async {
+    try {
+      return await v2.finalizeRecoveryBackup(backup, passphrase, genesis);
+    } catch (_) {
+      throw StateError(
+          'Recovery-фраза не совпадает с пакетом, сохранённым при первой '
+          'попытке перехода. Введите ту же фразу; ключи не пересоздаются.');
+    }
+  }
+
+  /// Перенимает уже зафиксированный на сервере каталог после сбоя клиента.
+  /// Genesis сверяется с исходным RSA-якорем; история проверяется полностью.
+  Future<Map<String, dynamic>> _adoptDirectory(
+      Map<String, dynamic> dir,
+      Map<String, dynamic> journalGenesis,
+      Map<String, dynamic> backup,
+      String passphrase,
+      {String? anchorRoot, String? anchorKey, String? legacyKey}) async {
+    final effectiveRoot = anchorRoot ?? root;
+    final serverGenesis = Map<String, dynamic>.from(dir['genesis'] as Map);
+    final history = (dir['history'] as List).cast<Map<String, dynamic>>();
+    await v2.verifier.verifyGenesis(serverGenesis, effectiveRoot);
+    await v2.verifier.verifyHistory(history, effectiveRoot, null, genesis: serverGenesis);
+    final tip = history.last;
+    final sameGenesis = sha256Hex(genesisText(serverGenesis)) ==
+        sha256Hex(genesisText(journalGenesis));
+    // Если genesis отличается от журнального (enrollment выполнен раньше без
+    // журнала), recovery-пакет журнала к нему не подходит — честно сообщаем.
+    final finalized = sameGenesis
+        ? await _finalizeBackup(backup, passphrase, serverGenesis)
+        : null;
+    final checkpoint = {
+      'account': account,
+      'rootFingerprint': spkiFingerprint(effectiveRoot),
+      'revision': tip['revision'],
+      'digest': sha256Hex(manifestText(tip)),
+      'genesisDigest': sha256Hex(genesisText(serverGenesis))
+    };
+    await store.saveAccount(
+        account: account,
+        root: effectiveRoot,
+        genesis: serverGenesis,
+        history: history,
+        checkpoint: checkpoint,
+        sessionId: 'primary',
+        recovery: finalized,
+        anchorKey: anchorKey,
+        legacyKey: legacyKey);
+    await store.deleteEnrollmentJournal(account);
+    await load();
+    return {
+      'revision': tip['revision'],
+      'recovery': finalized,
+      'adopted': true,
+      if (!sameGenesis) 'recoveryLost': true
+    };
   }
 
   /// Продление lease каталога тем же устройством (без смены ключей).
@@ -371,6 +652,54 @@ class V2ChatRepository {
     }
   }
 
+  /// One-way мост v1: забирает недошедшие offline-сообщения v1 для уже
+  /// переведённого аккаунта. Ciphertext {k,d} расшифровывается тем же исходным
+  /// RSA (primary); сервер никогда не видит plaintext. Дедупликация по
+  /// v1-идентичности (from:id); ACK только после долговечного сохранения.
+  Future<int> syncLegacyInbox() async {
+    if (!enrolled) return 0;
+    final envelopes = await transport.legacyInbox(
+        account: account, id: 'primary', privateKey: privateKey);
+    var count = 0;
+    final refs = <String>[];
+    final serverRefs = <String>[];
+    for (final raw in envelopes) {
+      final e = Map<String, dynamic>.from(raw as Map);
+      final id = e['id'] as String;
+      final from = e['from'] as String;
+      final ref = 'v1:$from:$id';
+      // ACK по полному ref `from:id`: голый id мог совпасть у двух
+      // отправителей и удалить чужое сообщение из моста.
+      serverRefs.add('$from:$id');
+      refs.add(ref);
+      final inserted = await store.insertReceived(
+          ref: ref,
+          peer: from,
+          messageId: id,
+          createdAt: (e['timestamp'] as num).toInt(),
+          payload:
+              Map<String, dynamic>.from(jsonDecode(e['data'] as String) as Map));
+      if (inserted) count++;
+    }
+    if (serverRefs.isNotEmpty) {
+      // ACK только после durable локального сохранения (two-phase):
+      // серверный тумбстоун переживает crash и дренирует v1-очередь.
+      await transport.legacyAck(serverRefs,
+          account: account, id: 'primary', privateKey: privateKey);
+      await store.markAcked(refs);
+    }
+    return count;
+  }
+
+  /// Честное ограничение v2→v1: собеседник ещё не перешёл на v2. Сервер
+  /// отклоняет send с `peer_upgrade_required`; ciphertext остаётся в
+  /// подписанном outbox и будет отправлен после перехода собеседника.
+  Future<bool> isPeerUpgradeBlocked(String peer) async {
+    final rows = await store.outboxAll();
+    return rows.any((r) =>
+        r['peer'] == peer && r['lastError'] == 'peer_upgrade_required');
+  }
+
   Future<List<Map<String, dynamic>>> refreshDelivery(List<String> refs) async {
     if (refs.isEmpty) return [];
     final status = await transport.status(refs,
@@ -396,11 +725,34 @@ class V2ChatRepository {
     final rows = await store.messagesByPeer(peer);
     final decoded = <Map<String, dynamic>>[];
     for (final row in rows) {
-      decoded.add({
-        ...row,
-        ...decodePayload(
-            await crypto.decryptData(row['payload'] as String, privateKey))
-      });
+      // Bridged v1-ciphertext зашифрован СТАРЫМ ключом: после rotation он
+      // хранится отдельно и никогда не покидает устройство.
+      final decryptionKey = (row['ref'] as String).startsWith('v1:')
+          ? (legacyPrivateKey ?? privateKey)
+          : privateKey;
+      final plain =
+          await crypto.decryptData(row['payload'] as String, decryptionKey);
+      final decodedRow = {...row, ...decodePayload(plain)};
+      // Legacy v1 форматы из моста: "IMG:<base64>" и reply-JSON {"t","r"}.
+      if ((row['ref'] as String).startsWith('v1:')) {
+        final text = decodedRow['text'] as String? ?? '';
+        if (text.startsWith('IMG:')) {
+          decodedRow['text'] = '';
+          decodedRow['isImage'] = true;
+          decodedRow['imageData'] = base64Decode(text.substring(4));
+        } else {
+          try {
+            final parsed = jsonDecode(text);
+            if (parsed is Map && parsed['t'] is String) {
+              decodedRow['text'] = parsed['t'];
+              if (parsed['r'] is Map) {
+                decodedRow['reply'] = parsed['r'];
+              }
+            }
+          } catch (_) {/* обычный текст */}
+        }
+      }
+      decoded.add(decodedRow);
     }
     final mediaParts = <String, List<Map<String, dynamic>>>{};
     final result = <Map<String, dynamic>>[];
@@ -452,6 +804,7 @@ class V2ChatRepository {
   void attachWake() {
     transport.onWake = () {
       syncInbox()
+          .then((_) => syncLegacyInbox())
           .then((_) => flushOutbox())
           .then((_) => syncRetractions(since: _retractionCursor))
           .then((cursor) { _retractionCursor = cursor; })

@@ -83,6 +83,18 @@ class AlphaTransport {
   Future<Map<String, dynamic>> session() async =>
       await _send('GET', '/api/session') as Map<String, dynamic>;
 
+  /// Вход владением исходного RSA v1 (для nickname-only аккаунтов при
+  /// миграции): одноразовый nonce + подпись requestText исходным ключом.
+  Future<String> legacyChallenge(String account) async =>
+      (await _send('POST', '/api/v2/session/legacy-challenge',
+          body: {'account': account}) as Map<String, dynamic>)['nonce'] as String;
+
+  Future<Map<String, dynamic>> legacySession(
+          String account, String nonce, String proof) async =>
+      await _send('POST', '/api/v2/session/legacy',
+          body: {'account': account, 'nonce': nonce, 'proof': proof})
+          as Map<String, dynamic>;
+
   /// Одноразовый nonce для входа через Google ID token (защита от replay):
   /// клиент передаёт его в google_sign_in initialize(nonce:), сервер сверяет
   /// claim nonce в токене и потребляет nonce безвозвратно.
@@ -113,6 +125,27 @@ class AlphaTransport {
           Map<String, dynamic> genesis, Map<String, dynamic> manifest) async =>
       await _send('POST', '/api/v2/legacy-enrollment',
           body: {'genesis': genesis, 'manifest': manifest}) as Map<String, dynamic>;
+
+  /// RSA-rotation (v1 RSA-2048 → v2 RSA-4096): одноразовый nonce и fingerprint
+  /// старого корня. Сервер отдаёт их только для prepared rotation_required.
+  Future<Map<String, dynamic>> rotationChallenge(String account) async =>
+      await _send('POST', '/api/v2/session/rotation-challenge',
+          body: {'account': account}) as Map<String, dynamic>;
+
+  /// Enrollment новой идентичности с аттестацией, подписанной СТАРЫМ ключом.
+  Future<Map<String, dynamic>> legacyRotation(
+          String account,
+          String nonce,
+          Map<String, dynamic> attestation,
+          Map<String, dynamic> genesis,
+          Map<String, dynamic> manifest) async =>
+      await _send('POST', '/api/v2/legacy-rotation', body: {
+        'account': account,
+        'nonce': nonce,
+        'attestation': attestation,
+        'genesis': genesis,
+        'manifest': manifest
+      }) as Map<String, dynamic>;
 
   Future<dynamic> operation(String op, Object? body,
       {required String account,
@@ -170,6 +203,19 @@ class AlphaTransport {
           required String privateKey}) async =>
       (await operation('retractions', {'since': since},
           account: account, id: id, privateKey: privateKey))['retractions'] as List<dynamic>;
+
+  /// One-way мост v1: недошедшие offline-сообщения v1 для переведённого
+  /// аккаунта. Ciphertext {k,d} зашифрован исходным RSA (primary) — сервер
+  /// его не расшифровывает. ACK идемпотентен по v1 message ID.
+  Future<List<dynamic>> legacyInbox(
+          {required String account, required String id, required String privateKey}) async =>
+      await operation('legacy.inbox', null,
+          account: account, id: id, privateKey: privateKey) as List<dynamic>;
+
+  Future<Map<String, dynamic>> legacyAck(List<String> ids,
+          {required String account, required String id, required String privateKey}) async =>
+      await operation('legacy.ack', ids,
+          account: account, id: id, privateKey: privateKey) as Map<String, dynamic>;
 
   Future<Map<String, dynamic>> directory(String targetAccount,
           {required String account, required String id, required String privateKey}) async =>

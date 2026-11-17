@@ -319,6 +319,17 @@ class DeviceV2Crypto {
     };
   }
 
+  /// Новый независимый RSA-4096 якорь для rotation. Secure storage v1-ключа
+  /// НЕ трогается: старый ключ остаётся для v1-режима и расшифровки истории.
+  /// Приватная часть никогда не покидает устройство.
+  Future<Map<String, String>> generateAnchorKey() async {
+    final pair = await RSA.generate(4096);
+    return {
+      'publicKey': await publicSpki(pair.publicKey),
+      'privateKey': pair.privateKey
+    };
+  }
+
   /// Начальный каталог (revision 1) для legacy-аккаунта.
   Map<String, dynamic> buildLegacyManifest(String account, String rootSpki,
       {int? now}) {

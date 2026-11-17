@@ -161,6 +161,30 @@ export async function verifyGenesis(g, trustedRoot) {
   check(await verify(text, g.signature, trustedRoot), 'Invalid genesis signature');
   return hash(text);
 }
+// Key rotation attestation (v1 RSA-2048 → v2 RSA-4096). The OLD private key
+// signs a binding statement over the NEW root; this is an auditable identity
+// CHANGE, never a claim of preserving the same cryptographic identity. The
+// old key stays on the device for decrypting legacy history/ciphertext.
+export function rotationText(a) {
+  fields(a, ['version', 'account', 'oldRootFingerprint', 'newRoot', 'genesisDigest', 'manifestDigest', 'createdAt', 'nonce', 'signature']);
+  check(a.version === 1 && typeof a.account === 'string' && ACCOUNT.test(a.account) &&
+    /^[a-f0-9]{64}$/.test(a.oldRootFingerprint) && Number.isSafeInteger(a.createdAt) &&
+    /^[a-f0-9]{64}$/.test(a.nonce) && /^[a-f0-9]{64}$/.test(a.genesisDigest) &&
+    /^[a-f0-9]{64}$/.test(a.manifestDigest));
+  unb64(a.newRoot, 2048); unb64(a.signature, 1024);
+  return JSON.stringify(['shade-rotation:v1', a.account, a.oldRootFingerprint, a.newRoot,
+    a.genesisDigest, a.manifestDigest, a.createdAt, a.nonce]);
+}
+// Possession proof verification against the OLD v1 root. v1 accepted RSA-2048;
+// 2048..4096 with e=65537 is accepted HERE ONLY (never for v2 device keys).
+export async function verifyRotation(a, oldRootSpki) {
+  const text = rotationText(a);
+  const key = await crypto.subtle.importKey('spki', unb64(oldRootSpki, 2048),
+    { name: 'RSA-PSS', hash: 'SHA-256' }, false, ['verify']);
+  check(key.algorithm.modulusLength >= 2048 && key.algorithm.modulusLength <= 4096 &&
+    b64(key.algorithm.publicExponent) === 'AQAB', 'Unsupported legacy RSA key');
+  return crypto.subtle.verify({ name: 'RSA-PSS', saltLength: 32 }, key, unb64(a.signature, 1024), signatureBytes(text));
+}
 export function pairingText(account, d, nonce, expiresAt) {
   check(typeof account === 'string' && ACCOUNT.test(account) && typeof nonce === 'string' &&
     /^[a-f0-9]{64}$/.test(nonce) && Number.isSafeInteger(expiresAt));

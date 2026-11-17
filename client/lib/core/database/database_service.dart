@@ -32,7 +32,7 @@ bool get _isMobile => Platform.isAndroid || Platform.isIOS;
 /// Desktop production storage is unsupported; tests inject their own factory.
 class DatabaseService {
   static const String _dbName = 'shade.db';
-  static const int _dbVersion = 9;
+  static const int _dbVersion = 11;
   static const String _dbKeyStorageKey = 'sqlcipher_db_key';
 
   final FlutterSecureStorage _secureStorage;
@@ -66,6 +66,8 @@ class DatabaseService {
               if (version >= 7) await service._createSchemaV7(db);
               if (version >= 8) await service._createSchemaV8(db);
               if (version >= 9) await service._createSchemaV9(db);
+            if (version >= 10) await service._createSchemaV10(db);
+            if (version >= 11) await service._createSchemaV11(db);
             },
             onUpgrade: service._onUpgrade));
     return service;
@@ -186,6 +188,8 @@ class DatabaseService {
     await _createSchemaV7(db);
     await _createSchemaV8(db);
     await _createSchemaV9(db);
+    await _createSchemaV10(db);
+    await _createSchemaV11(db);
   }
 
   Future<void> _createSchemaV1(Database db) async {
@@ -303,6 +307,33 @@ class DatabaseService {
     if (oldVersion < 7 && newVersion >= 7) await _createSchemaV7(db);
     if (oldVersion < 8 && newVersion >= 8) await _createSchemaV8(db);
     if (oldVersion < 9 && newVersion >= 9) await _createSchemaV9(db);
+    if (oldVersion < 10 && newVersion >= 10) await _createSchemaV10(db);
+    if (oldVersion < 11 && newVersion >= 11) await _createSchemaV11(db);
+  }
+
+  /// Аддитивная v11: RSA-rotation (v1 RSA-2048 → v2 RSA-4096).
+  /// anchor_key — новый приватный якорь (SQLCipher at-rest), legacy_key —
+  /// исходный v1-ключ для расшифровки старой истории/bridged-ciphertext.
+  /// rotation в журнале — аттестация старого ключа (без приватных ключей).
+  /// Существующие v1-таблицы, ключи и история не переписываются.
+  Future<void> _createSchemaV11(Database db) async {
+    final accountCols = await db.rawQuery('PRAGMA table_info(v2_accounts)');
+    if (!accountCols.any((c) => c['name'] == 'anchor_key')) {
+      await db.execute('ALTER TABLE v2_accounts ADD COLUMN anchor_key TEXT');
+    }
+    if (!accountCols.any((c) => c['name'] == 'legacy_key')) {
+      await db.execute('ALTER TABLE v2_accounts ADD COLUMN legacy_key TEXT');
+    }
+    final journalCols =
+        await db.rawQuery('PRAGMA table_info(v2_enrollment_journal)');
+    if (!journalCols.any((c) => c['name'] == 'rotation')) {
+      await db.execute(
+          'ALTER TABLE v2_enrollment_journal ADD COLUMN rotation TEXT');
+    }
+    if (!journalCols.any((c) => c['name'] == 'anchor_key')) {
+      await db.execute(
+          'ALTER TABLE v2_enrollment_journal ADD COLUMN anchor_key TEXT');
+    }
   }
 
   /// Аддитивные таблицы device-v2 (Android ↔ Web E2EE). Существующие v1
@@ -364,6 +395,26 @@ class DatabaseService {
     ''');
     await db.execute(
         'CREATE INDEX idx_v2_messages_peer ON v2_messages(peer, created_at)');
+  }
+
+  /// Аддитивная таблица v10: долговечный журнал legacy-enrollment.
+  /// Genesis/manifest и зашифрованный recovery-пакет сохраняются ДО сетевого
+  /// вызова, поэтому сбой/убийство процесса после коммита на сервере не
+  /// теряет recovery-ключ и не создаёт второй genesis. Приватные ключи не
+  /// хранятся здесь: recovery-пакет зашифрован фразой пользователя.
+  Future<void> _createSchemaV10(Database db) async {
+    await db.execute('''
+      CREATE TABLE v2_enrollment_journal (
+        account         TEXT PRIMARY KEY,
+        root            TEXT NOT NULL,
+        genesis         TEXT NOT NULL,
+        manifest        TEXT NOT NULL,
+        recovery_backup TEXT NOT NULL,
+        phase           TEXT NOT NULL DEFAULT 'prepared',
+        created_at      INTEGER NOT NULL,
+        updated_at      INTEGER NOT NULL
+      )
+    ''');
   }
 
   Future<void> _createSchemaV8(Database db) => db.execute(

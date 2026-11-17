@@ -25,6 +25,8 @@ class V2Store {
     required Map<String, dynamic> checkpoint,
     required String sessionId,
     Map<String, dynamic>? recovery,
+    String? anchorKey,
+    String? legacyKey,
   }) async {
     await (await _db).insert(
         'v2_accounts',
@@ -36,6 +38,9 @@ class V2Store {
           'checkpoint': jsonEncode(checkpoint),
           'recovery': recovery == null ? null : jsonEncode(recovery),
           'session_id': sessionId,
+          // Колонки появились в schema v11: на более старых схемах не пишем.
+          if (anchorKey != null) 'anchor_key': anchorKey,
+          if (legacyKey != null) 'legacy_key': legacyKey,
           'created_at': DateTime.now().millisecondsSinceEpoch
         },
         conflictAlgorithm: ConflictAlgorithm.replace);
@@ -55,7 +60,9 @@ class V2Store {
       'recovery': row['recovery'] == null
           ? null
           : jsonDecode(row['recovery'] as String),
-      'sessionId': row['session_id']
+      'sessionId': row['session_id'],
+      'anchorKey': row['anchor_key'],
+      'legacyKey': row['legacy_key']
     };
   }
 
@@ -280,4 +287,60 @@ class V2Store {
         }
     ];
   }
+
+  // ── Журнал legacy-enrollment (v10): crash-safe миграция ──────────────
+
+  Future<void> saveEnrollmentJournal({
+    required String account,
+    required String root,
+    required Map<String, dynamic> genesis,
+    required Map<String, dynamic> manifest,
+    required Map<String, dynamic> recoveryBackup,
+    String phase = 'prepared',
+    Map<String, dynamic>? rotation,
+    String? anchorKey,
+  }) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await (await _db).insert(
+        'v2_enrollment_journal',
+        {
+          'account': account,
+          'root': root,
+          'genesis': jsonEncode(genesis),
+          'manifest': jsonEncode(manifest),
+          'recovery_backup': jsonEncode(recoveryBackup),
+          'phase': phase,
+          // Колонки появились в schema v11: на более старых схемах не пишем.
+          if (rotation != null) 'rotation': jsonEncode(rotation),
+          // Новый приватный якорь rotation ДО сетевого вызова: crash после
+          // серверного коммита не теряет ключ (SQLCipher at-rest).
+          if (anchorKey != null) 'anchor_key': anchorKey,
+          'created_at': now,
+          'updated_at': now
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<Map<String, dynamic>?> loadEnrollmentJournal(String account) async {
+    final rows = await (await _db).query('v2_enrollment_journal',
+        where: 'account=?', whereArgs: [account], limit: 1);
+    if (rows.isEmpty) return null;
+    final row = rows.first;
+    return {
+      'account': row['account'],
+      'root': row['root'],
+      'genesis': jsonDecode(row['genesis'] as String),
+      'manifest': jsonDecode(row['manifest'] as String),
+      'recoveryBackup': jsonDecode(row['recovery_backup'] as String),
+      'phase': row['phase'],
+      'rotation': row['rotation'] == null
+          ? null
+          : jsonDecode(row['rotation'] as String),
+      'anchorKey': row['anchor_key']
+    };
+  }
+
+  Future<void> deleteEnrollmentJournal(String account) async =>
+      (await _db).delete('v2_enrollment_journal',
+          where: 'account=?', whereArgs: [account]);
 }
