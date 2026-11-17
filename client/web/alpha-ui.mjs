@@ -218,9 +218,13 @@ async function openApp() {
         case 'stickers.gift': return JSON.stringify({ ok: true, data: await client.giftSticker(data.to, data.art, data.note, data.requestId) });
         case 'devices.revoke': await client.revokeDevice(data.id); break;
         case 'push.toggle': {
-          const status = await client.pushStatus();
-          if (status.subscribed) { await client.disablePush(); notice('Уведомления выключены.'); }
-          else { await client.enablePush(); notice('Уведомления включены · только сигнал, без текста сообщений.'); }
+          // Push is optional: failures surface as an honest notice, never as
+          // an unhandled action error (the chat must keep working).
+          try {
+            const status = await client.pushStatus();
+            if (status.subscribed) { await client.disablePush(); notice('Уведомления выключены.'); }
+            else { await client.enablePush(); notice('Уведомления включены · только сигнал, без текста сообщений.'); }
+          } catch (e) { notice(errors[e.message] || e.message); }
           break;
         }
         case 'verify': verifyContact(data.account); break;

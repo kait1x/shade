@@ -84,14 +84,18 @@ flush-окна; UI GLM скрывает сообщение оптимистич�
   0 warnings (info — предсуществующие deprecations + unnecessary_import в
   файлах GLM, не редактировались).
 - Browser QA (реальные HTTPS/WSS, синтетический OAuth, два независимых
-  persistent-профиля, расширенные сценарии ZCODE): **Edge — полный PASS,
-  WebKit — полный PASS** (финальные прогоны после journal re-warm):
+  persistent-профиля, расширенные сценарии ZCODE + push): **Edge — полный
+  PASS, WebKit — полный PASS** (финальные прогоны):
   registration, fingerprints, pinned contacts, bidirectional E2EE+WSS,
   reload identity/history, offline outbox+reconnect, reply round-trip,
   local delete durability, typing hint, read-ACK projection, media chunk
   round-trip, favorites self-chat, profile name v2, sticker gift + inventory,
-  unlinked-device identity protection, responsive 320–1440, scroll
-  restoration, reduced keyboard viewport, pageErrors=[].
+  **push client flow: Edge — реальная подписка `subscribed` (PushManager +
+  регистрация на сервере), WebKit — честный отказ «Push не поддерживается»
+  (headless WebKit без PushManager; чат работает)**, unlinked-device identity
+  protection, responsive 320–1440, scroll restoration (точное восстановление
+  offset контроллера + ±8px допуск округления движка), reduced keyboard
+  viewport, pageErrors=[].
   Результаты: `server/build/alpha-browser/{edge,webkit}-results.json`.
 - QA-инструмент: pre-check Flutter-сборки, условия durability (журнал клиента
   с завершённым re-warm + дренаж очереди сервера), прозрачный retry пустой
@@ -100,18 +104,23 @@ flush-окна; UI GLM скрывает сообщение оптимистич�
 
 ## 6. Ограничения и следующие шаги
 
-1. Web Push: серверный контракт закрыт — `GET /api/session` публикует
-   `vapidPublicKey` (3425309), приватный ключ не раскрывается (тест).
-   Клиентская PushSubscription в PWA: по матрице GLM flow готов, но в коммите
-   89df70c код `PushManager.subscribe` не обнаружен — остаётся зоной GLM;
-   Android использует FCM v1 (не затронут).
+1. Web Push: серверный контракт (`vapidPublicKey` в `/api/session`) и
+   **клиентский flow реализованы** (9f0a839): PushManager.subscribe из
+   пользовательского жеста, регистрация подписи через `push.subscribe`,
+   wake-only SW-обработчики (не читают payload), отписка при logout/revoke,
+   iOS standalone-gating (iOS 16.4+), честный UX отказов. Чат не зависит от
+   push. Реальная доставка на физическом iPhone не проверялась (S6).
 2. Физические устройства: не тестировались; обязательный шлюз —
    PHYSICAL_DEVICE_TEST_PLAN.md (A1–A12, S1–S5, G1–G4).
 3. Рекомендации GLM: порядок оптимистичного скрытия при удалении (после
    save); Web Push-подписка; проверка delete-durability на физическом Safari.
 4. Production-миграция v1→v2 (`assertLegacyAllowed`/`upgrade_required`) —
    отдельное разрешение владельца, backup/restore dry-run.
-5. Nonce для ID token-входа и push egress-защита — до публичного release.
+5. Nonce для native ID token-входа **реализован** (b274514): одноразовый
+   серверный nonce (`GET /api/v2/session/nonce`), обязательная сверка claim
+   `nonce` в токене, потребление при неудаче; Dart `initialize(nonce:)`.
+   Replay-негативы в тестах. Push egress-защита: allowlist хостов настраивается
+   (`ALPHA_PUSH_ALLOWED_HOSTS`), DNS-rebinding — остаточный риск до release.
 6. Реальный Google OAuth не сертифицирован синтетическим QA.
 7. Остаточные риски WebKit (честно, без подмены результатов):
    - асинхронный flush IDB/localStorage (StorageTracker): потеря последнего
@@ -134,4 +143,32 @@ flush-окна; UI GLM скрывает сообщение оптимистич�
 - 2583bec QA: read-метки, IDB-версия, удаление искусственной задержки
 - 5ec217c QA pre-check Flutter-сборки
 - 0964631 документы: API hardening + physical device gate
+
+## 8. iPhone PWA Release Candidate (этапы 1–6)
+
+- **Этап 1**: manifest `name: Shade`, иконки 192/512/maskable + apple-touch-icon,
+  display standalone, theme/background #000000; SW с версионированным
+  content-hash кэшем (`cache-files.js`), updateViaCache none, явный
+  SKIP_WAITING по кнопке обновления; offline network-first с cache fallback;
+  safe-area env() + VisualViewport; viewport-fit=cover. Production build:
+  `flutter build web --release --csp --no-web-resources-cdn --target
+  lib/main_alpha.dart` (37 ассетов). 404/pageErrors=[] в QA.
+- **Этап 2**: Web Push клиент (см. §6.1) + SW push/notificationclick +
+  node-тесты обработчиков (3/3) + QA-сценарий честного исхода подписки.
+- **Этап 3**: цепочка Google → enrollment → ключи → обмен проверена
+  синтетическим OAuth (браузерный code flow с PKCE/state/nonce) и native
+  ID-token flow с одноразовым nonce (см. §6.5). Реальные credentials —
+  точная инструкция в `docs/IPHONE_PWA_STAGING.md` §3 (действия владельца).
+- **Этап 4**: pagehide/visibilitychange durability-refresh (e4a9f6b) +
+  журнал удалений с re-warm + double re-commit vault; конкретная процедура
+  физических тестов S1-key/S1-msg/S2-delete/S3-background/S4-network/
+  S5-history/S6-push/S7-revoke в `docs/PHYSICAL_DEVICE_TEST_PLAN.md`.
+  Остаточный риск WebKit flush-окна честно сохранён (§6.7); полная
+  durability при abrupt kill НЕ гарантируется и проверяется владельцем.
+- **Этап 5**: staging-подготовка без deployment: `deploy/alpha/.env.example`
+  (VAPID, allowlist), Caddyfile.example (отдельный hostname),
+  shade-alpha.service.example (изоляция), `docs/IPHONE_PWA_STAGING.md`
+  (DNS/HTTPS/OAuth/установка/варианты без домена: Tailscale/Cloudflare Tunnel).
+  Production v1 не затронут; публичный deployment — только с разрешения.
+- **Этап 6**: полные прогоны — см. §5 (обновлено после финальных изменений).
 - (финальные коммиты durability/QA — см. git log)

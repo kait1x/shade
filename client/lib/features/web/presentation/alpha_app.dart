@@ -1152,13 +1152,6 @@ class _Profile extends StatelessWidget {
                             subtitle:
                                 const Text('Сохранить зашифрованную копию'),
                             onTap: () => controller.act('backup')),
-                        const Divider(height: 1, indent: 56),
-                        ListTile(
-                            leading: const Icon(Icons.notifications_outlined),
-                            title: const Text('Уведомления'),
-                            subtitle: const Text(
-                                'Push-сигнал без текста · iOS: установленное приложение'),
-                            onTap: () => controller.act('push.toggle')),
                       ])),
                       const SizedBox(height: 24),
                       const Text('ПОДАРКИ · ВИНИЛОВАЯ СТЕНА',
@@ -1218,6 +1211,15 @@ class _Profile extends StatelessWidget {
                                                       d['id'] as String))))
                                   .toList())),
                       const SizedBox(height: 20),
+                      Card(
+                          child: ListTile(
+                              leading:
+                                  const Icon(Icons.notifications_outlined),
+                              title: const Text('Уведомления'),
+                              subtitle: const Text(
+                                  'Push-сигнал без текста · iOS: установленное приложение'),
+                              onTap: () => controller.act('push.toggle'))),
+                      const SizedBox(height: 12),
                       OutlinedButton.icon(
                           onPressed: () => controller.act('install'),
                           icon: const Icon(Icons.ios_share_rounded),
