@@ -17,7 +17,9 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/shade-alpha/data
+# Data dir + guard/bridge exports + rolling checkpoints must be writable.
+# Keep all alpha-owned paths under /var/lib/shade-alpha.
+ReadWritePaths=/var/lib/shade-alpha
 
 [Install]
 WantedBy=multi-user.target

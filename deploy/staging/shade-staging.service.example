@@ -1,0 +1,28 @@
+# Shade v2 STAGING service (изолирован от production).
+# Установка (root): cp в /etc/systemd/system/shade-staging.service,
+# systemctl daemon-reload. Включение — только с разрешения владельца.
+# Production shade.service и shade-alpha (если есть) НЕ затрагиваются.
+[Unit]
+Description=Shade v2 isolated staging (device protocol)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shade-staging
+Group=shade-staging
+WorkingDirectory=/opt/shade-staging/current/server
+EnvironmentFile=/etc/shade-staging/staging.env
+ExecStart=/usr/bin/node alpha.mjs
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Данные + guard/bridge-ack exports + checkpoints — всё под /var/lib/shade-staging.
+ReadWritePaths=/var/lib/shade-staging
+
+[Install]
+WantedBy=multi-user.target
