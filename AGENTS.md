@@ -44,7 +44,7 @@ Main project directory:
 
 
 
-`C:\\Users\\Kait1x\\Documents\\Codex\\2026-11-14\\new-chat\\outputs\\shade`
+`C:\\Users\\Kait1x\\Documents\\Shade`
 
 
 
@@ -811,4 +811,22 @@ Maximize useful completed work per token while preserving security, functionalit
 
 
 Correctness first. Efficiency second.
+
+
+
+\## 18. DeepSeek Harness Environment
+
+
+
+\- Main model: `iishko/qwen4-max`. Subagent routing: `glm-5.3-flash` for research and simple tasks; `glm-5.3` for testing and review; `kimi-k3.1-pro` for independent analysis of complex decisions. Delegation depth is 1, at most 3 active subagents.
+
+\- Code navigation: prefer Serena MCP symbol tools (`mcp__serena__*`) over whole-file reads; activate the project before using them.
+
+\- Browser testing: Playwright MCP (`mcp__playwright__*`, headless Edge). Test against local or dev targets only, never against the production VPS.
+
+\- Task isolation: use the `create_worktree` tool for isolated checkouts; do not create branches or worktrees in Shade without an explicit request.
+
+\- Secrets: reference credentials through the Harness credentials provider (`${credential:REF}`); never copy them into configs, logs, reports, or Git.
+
+\- New sessions default to `workspace-write` with approval prompts; keep destructive or system-level actions behind explicit user confirmation.
 
