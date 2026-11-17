@@ -447,6 +447,26 @@ try {
   await a.page.getByRole('button',{name:/^Профиль/}).click();
   await a.page.waitForTimeout(260);
   await a.page.screenshot({path:path.join(screenshots,`${engineName}-after-profile.png`)});
+  // Web Push client flow (C6): user-gesture permission + PushManager.subscribe
+  // + device-v2 registration. Headless engines may lack a push service; the
+  // contract is an HONEST outcome (subscribed or a clear refusal), never a
+  // silent fake success, and the chat must keep working either way.
+  await a.context.grantPermissions(['notifications'], { origin: f.origin });
+  await a.page.getByText('Уведомления',{exact:true}).click();
+  await a.page.locator('#notice').filter({ hasText: /.+/ }).waitFor({timeout:30000});
+  const pushNotice = (await a.page.locator('#notice').textContent()) || '';
+  const aliceDeviceId = await a.page.evaluate(async () => (await (await import('/device_crypto.mjs')).listVaults())[0].id);
+  const pushSubs = f.registry.exportSnapshot().pushSubscriptions || {};
+  const serverSubscribed = !!pushSubs[`browser_alice:${aliceDeviceId}`];
+  if (serverSubscribed) {
+    assert.match(pushNotice, /Уведомления включены/);
+    results.pushClientFlow = 'subscribed';
+  } else {
+    assert.ok(pushNotice.length > 0, 'push toggle must surface an honest status');
+    assert.ok(!/Уведомления включены/.test(pushNotice), 'no fake success without a server subscription');
+    results.pushClientFlow = 'honest-failure: ' + pushNotice.slice(0, 160);
+  }
+  console.log('PASS push client flow honest outcome:', results.pushClientFlow);
   await a.page.getByRole('button',{name:'Назад',exact:true}).click();
   await a.page.getByRole('button',{name:/browser_bob/}).click();
   for (const width of [320,390,430,768,1440]) {

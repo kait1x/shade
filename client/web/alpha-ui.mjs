@@ -78,7 +78,7 @@ function welcome(title, description) {
   const box = node('section', undefined, 'welcome'); box.append(node('h1', 'Shade'), node('p', 'WEB ALPHA 0.1', 'eyebrow'), node('h2', title), node('p', description, 'muted'));
   if (loggedIn) {
     const change = node('button', 'Сменить Google-аккаунт'); change.type = 'button';
-    change.onclick = () => action(async () => { client.stop(); await api('/api/logout', {}); location.href = '/auth/google'; }); box.append(change);
+    change.onclick = () => action(async () => { await client.disablePush().catch(() => {}); client.stop(); await api('/api/logout', {}); location.href = '/auth/google'; }); box.append(change);
   }
   root.replaceChildren(box); return box;
 }
@@ -217,6 +217,12 @@ async function openApp() {
         case 'stickers.save': return JSON.stringify({ ok: true, data: await client.saveStickers(data.revision, data.wall) });
         case 'stickers.gift': return JSON.stringify({ ok: true, data: await client.giftSticker(data.to, data.art, data.note, data.requestId) });
         case 'devices.revoke': await client.revokeDevice(data.id); break;
+        case 'push.toggle': {
+          const status = await client.pushStatus();
+          if (status.subscribed) { await client.disablePush(); notice('Уведомления выключены.'); }
+          else { await client.enablePush(); notice('Уведомления включены · только сигнал, без текста сообщений.'); }
+          break;
+        }
         case 'verify': verifyContact(data.account); break;
         case 'refresh': users = await client.users(); render(); break;
         case 'identity': showDialog('Ваш отпечаток', [node('p', '@' + client.session.account),
@@ -224,7 +230,7 @@ async function openApp() {
           node('p', 'Передайте этот отпечаток собеседнику через независимый доверенный канал.', 'muted')]); break;
         case 'backup': downloadBackup(); break;
         case 'install': installGuide(); break;
-        case 'logout': client.stop(); await api('/api/logout', {}); location.reload(); break;
+        case 'logout': await client.disablePush().catch(() => {}); client.stop(); await api('/api/logout', {}); location.reload(); break;
         default: throw Error('Неизвестное действие интерфейса');
       }
       return JSON.stringify({ok:true});
@@ -236,7 +242,7 @@ async function openApp() {
   const script = node('script'); script.src = '/flutter-ui/flutter_bootstrap.js';
   script.onerror = () => notice('Не удалось загрузить Flutter UI. Проверьте сборку и соединение; ключи сохранены.');
   document.head.append(script);
-  try { await client.start(); users = await client.users(); client.loadProfile().catch(() => {}); render(); }
+  try { await client.start(); users = await client.users(); client.loadProfile().catch(() => {}); client.restorePush().catch(() => {}); render(); }
   catch (error) { notice(errors[error.message] || error.message); }
 }
 function verifyContact(account) {

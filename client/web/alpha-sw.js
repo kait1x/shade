@@ -20,3 +20,24 @@ self.addEventListener('fetch', event => {
     catch { return (await caches.open(CACHE)).match(url.pathname); }
   })());
 });
+// Web Push (contract C6): the server payload is wake-only ({type:'wake'}).
+// The SW never reads message content or personal data — the notification is a
+// static signal; the app decrypts only after the user unlocks the vault.
+self.addEventListener('push', event => {
+  event.waitUntil(self.registration.showNotification('Shade', {
+    body: 'Новое сообщение',
+    icon: '/icons/Icon-192.png',
+    badge: '/icons/Icon-192.png',
+    tag: 'shade-wake',
+    renotify: false,
+    data: { url: '/' }
+  }));
+});
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const list = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of list) if ('focus' in client) return client.focus();
+    return self.clients.openWindow('/');
+  })());
+});

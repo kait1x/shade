@@ -2,6 +2,16 @@ import * as c from './device_crypto.mjs';
 import { check, hash, sign, requestText, messageText, verifyHistory, genesisText } from './protocol/device-v2.mjs';
 import { readState, writeState } from './alpha-storage.mjs';
 
+// VAPID applicationServerKey conversion (base64url -> Uint8Array).
+function urlBase64ToUint8Array(value) {
+  const padding = '='.repeat((4 - value.length % 4) % 4);
+  const base64 = (value + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from(raw, ch => ch.charCodeAt(0));
+}
+const pushKeyB64Url = (sub, name) => btoa(String.fromCharCode(...new Uint8Array(sub.getKey(name))))
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
 export const ref = m => `${m.from}:${m.deviceId}:${m.id}`;
 export const digest = (op, body = null) => hash(JSON.stringify([op, body]));
 // Alpha wire payload agreement (opaque to the signed device-v2 envelope):
@@ -634,6 +644,72 @@ export class AlphaClient extends EventTarget {
     document.addEventListener('visibilitychange', this.foreground); window.addEventListener('online', this.online);
     window.addEventListener('offline', this.offline);
     await this.sync();
+  }
+  // Web Push (contract C6): wake-only notifications, never message content.
+  // Chat fully works without push; every failure surfaces honestly.
+  pushSupported() {
+    return typeof navigator !== 'undefined' && 'serviceWorker' in navigator &&
+      typeof window !== 'undefined' && 'PushManager' in window && window.isSecureContext;
+  }
+  pushStandalone() {
+    return navigator.standalone === true ||
+      (typeof window.matchMedia === 'function' && window.matchMedia('(display-mode: standalone)').matches);
+  }
+  async pushStatus() {
+    if (!this.pushSupported()) return { supported: false, subscribed: false };
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    return { supported: true, subscribed: !!sub, permission: Notification.permission,
+      standalone: this.pushStandalone() };
+  }
+  async enablePush() {
+    check(this.pushSupported(), 'Push не поддерживается этим браузером. Чат работает без уведомлений.');
+    if (/iPhone|iPad|iPod/.test(navigator.userAgent) && !this.pushStandalone()) {
+      throw Error('На iPhone push работает только в установленном приложении (iOS 16.4+): Safari → Поделиться → На экран Домой.');
+    }
+    // Must stay within the user gesture: requestPermission before any await.
+    const permission = await Notification.requestPermission();
+    check(permission === 'granted', 'Уведомления запрещены. Чат работает без них; разрешите уведомления в настройках браузера.');
+    const sessionInfo = await api('/api/session');
+    check(sessionInfo.vapidPublicKey, 'Сервер не настроил Web Push (VAPID). Обратитесь к оператору.');
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(sessionInfo.vapidPublicKey) });
+    }
+    await this.operation('push.subscribe', { endpoint: sub.endpoint,
+      keys: { p256dh: pushKeyB64Url(sub, 'p256dh'), auth: pushKeyB64Url(sub, 'auth') } });
+    try { localStorage.setItem(`shade-push:${this.session.account}`, 'on'); } catch { /* optional */ }
+    return { subscribed: true };
+  }
+  async disablePush() {
+    try {
+      if (this.pushSupported()) {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) await sub.unsubscribe();
+      }
+    } catch { /* browser-side cleanup is best-effort */ }
+    try { await this.operation('push.unsubscribe', null); } catch { /* device may be revoked already */ }
+    try { localStorage.removeItem(`shade-push:${this.session.account}`); } catch { /* optional */ }
+    return { subscribed: false };
+  }
+  // Silent re-subscription after unlock when the user previously enabled push
+  // (permission already granted; no gesture needed). Never blocks the chat.
+  async restorePush() {
+    try {
+      if (!this.pushSupported() || Notification.permission !== 'granted') return;
+      if (localStorage.getItem(`shade-push:${this.session.account}`) !== 'on') return;
+      const sessionInfo = await api('/api/session');
+      if (!sessionInfo.vapidPublicKey) return;
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(sessionInfo.vapidPublicKey) });
+      await this.operation('push.subscribe', { endpoint: sub.endpoint,
+        keys: { p256dh: pushKeyB64Url(sub, 'p256dh'), auth: pushKeyB64Url(sub, 'auth') } });
+    } catch { /* push is optional; chat works without it */ }
   }
   stop() {
     this.stopped = true; this.socket?.disconnect(); clearInterval(this.timer);
