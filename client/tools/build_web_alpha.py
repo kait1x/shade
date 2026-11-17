@@ -56,8 +56,8 @@ for p in files:
 # The version digest must cover every cached shell file: a change to e.g.
 # alpha-client.mjs alone would otherwise ship offline without a cache bump.
 for name in ['alpha.html', 'alpha.css', 'alpha-ui.mjs', 'alpha-client.mjs',
-             'alpha-storage.mjs', 'device_crypto.mjs', 'protocol/device-v2.mjs',
-             'alpha-manifest.json', 'alpha-sw.js']:
+             'alpha-storage.mjs', 'device_crypto.mjs', 'pairing.mjs',
+             'protocol/device-v2.mjs', 'alpha-manifest.json', 'alpha-sw.js']:
     digest.update((client / 'web' / name).read_bytes())
 urls = ['/flutter-ui/' + p.relative_to(root).as_posix() for p in files]
 (root / 'cache-files.js').write_text(

@@ -1,6 +1,9 @@
 import * as c from './device_crypto.mjs';
 import { check, hash, sign, requestText, messageText, verifyHistory, genesisText } from './protocol/device-v2.mjs';
 import { readState, writeState, refreshDurability } from './alpha-storage.mjs';
+import { createPairingChallenge, decodeChallenge, buildPairingOffer, encodeOffer, decodeOffer,
+  verifyPairingOffer, buildPairingConfirmation, encodeConfirmation, decodeConfirmation,
+  verifyPairingConfirmation } from './pairing.mjs';
 
 // VAPID applicationServerKey conversion (base64url -> Uint8Array).
 function urlBase64ToUint8Array(value) {
@@ -466,6 +469,108 @@ export class AlphaClient extends EventTarget {
       await this.operation('install', { manifest });
       await this.refreshOwn();
     });
+  }
+  // ── Second-device pairing ──────────────────────────────────────────────
+  // Trusted side: a one-time challenge code shown on this screen. The offer
+  // must echo it, so an offer crafted away from this screen is rejected
+  // (anti-phishing binding). Memory-only; expires in 5 minutes.
+  pairingChallenge() {
+    const challenge = createPairingChallenge();
+    this.pairing = challenge;
+    return { code: challenge.code, expiresAt: challenge.expiresAt };
+  }
+  // Trusted side: verify a pasted offer without mutating anything. Returns
+  // what the confirmation screen shows to the approving user.
+  async reviewPairingOffer(text) {
+    check(this.pairing && this.pairing.expiresAt > Date.now(),
+      'Код подключения истёк. Сгенерируйте новый и создайте запрос заново.');
+    const offer = decodeOffer(text);
+    const device = await verifyPairingOffer(offer, { account: this.session.account, challenge: this.pairing.nonce });
+    return { deviceId: device.id, offer, expiresAt: offer.expiresAt };
+  }
+  // Trusted side: approve = install a manifest signed by THIS device with the
+  // newcomer in the roster. The offer carries the fresh pairing proof the
+  // server re-verifies. Returns the confirmation text for the new device.
+  async approvePairing(text) {
+    return this.exclusive(async () => {
+      check(navigator.onLine, 'Нет сети');
+      const { offer } = await this.reviewPairingOffer(text);
+      await this.refreshOwn();
+      const tip = this.state.own.history.at(-1);
+      check(!tip.devices.some(d => d.id === offer.device.id), 'Это устройство уже подключено');
+      check(tip.devices.length < 8, 'Достигнут лимит 8 устройств');
+      const manifest = await c.approveDevices(this.state.own.genesis, this.state.own.history,
+        [...tip.devices, offer.device], this.session, this.state.own.checkpoint);
+      // Only the fields the registry consumes; the challenge echo stays local.
+      const proofs = [{ id: offer.device.id, nonce: offer.nonce,
+        expiresAt: offer.expiresAt, signature: offer.signature }];
+      await this.operation('install', { manifest, proofs });
+      await this.refreshOwn();
+      this.pairing = null; // One-time: a stolen approval screen cannot be reused.
+      const confirmation = buildPairingConfirmation({ account: this.session.account,
+        genesis: this.state.own.genesis, tip: this.state.own.history.at(-1) });
+      return encodeConfirmation(confirmation);
+    });
+  }
+  // New side: durable local keys BEFORE any approval. No state is written
+  // until completePairing succeeds, so an abandoned attempt leaves nothing
+  // server-side and the same keys can re-offer later.
+  async preparePairingVault(account, passphrase) {
+    return this.exclusive(async () => {
+      check(!(await c.listVaults()).some(v => v.account === account), 'На этом устройстве уже есть ключи аккаунта. Разблокируйте их.');
+      const vault = await c.createVault(account, passphrase);
+      const session = await c.unlockVault(vault, passphrase);
+      await c.saveVault(vault);
+      this.vault = vault; this.session = session; this.state = null; this.revision = 0;
+      this.changed();
+      return vault.id;
+    });
+  }
+  // New side: the signed offer for the trusted device (clipboard transport).
+  async createPairingOffer(code) {
+    check(this.session, 'Сначала создайте ключи устройства');
+    const challenge = decodeChallenge(code);
+    const offer = await buildPairingOffer({ account: this.session.account,
+      device: c.descriptor(this.vault), signing: this.session.signing, challenge });
+    return encodeOffer(offer);
+  }
+  // New side: finish enrollment. The confirmation is only a routing hint —
+  // trust is built from the full server directory verified against the pinned
+  // genesis right after the device session opens.
+  async completePairing(text) {
+    return this.exclusive(async () => {
+      check(this.session, 'Ключи устройства не разблокированы');
+      check(navigator.onLine, 'Нет сети');
+      const confirmation = decodeConfirmation(text);
+      const verified = await verifyPairingConfirmation(confirmation,
+        { account: this.session.account, deviceId: this.session.id });
+      // Sessionless bootstrap is allowed by the relay only for device-session.
+      const operation = await digest('device-session');
+      const { account, id } = this.session;
+      const { nonce } = await api('/api/v2/challenge', { account, id, operation });
+      await api('/api/v2/session/device', { account, id, nonce,
+        proof: await sign(requestText(account, id, nonce, operation), this.session.signing) });
+      // The relay's directory must be exactly the account the user approved.
+      const directory = await this.operation('directory', account);
+      check(await hash(genesisText(directory.genesis)) === verified.genesisDigest,
+        'Каталог сервера не совпадает с подтверждённым аккаунтом');
+      const own = await this.verifyDirectory(directory, null);
+      check(own.history.at(-1).devices.some(d => d.id === this.session.id), 'Устройство отсутствует в каталоге сервера');
+      this.revision = 0;
+      await this.save({ own, contacts: {}, messages: [], outbox: [], pendingAck: [], registered: true });
+      return { account, revision: own.checkpoint.revision };
+    });
+  }
+  // Unlock for both normal and pending-pairing sessions: a vault without a
+  // committed state is a pairing in progress, not a lost identity.
+  async loadForPairing(vault, passphrase) {
+    this.vault = vault;
+    this.session = await c.unlockVault(vault, passphrase);
+    const saved = await readState(this.session);
+    this.revision = saved.revision;
+    this.state = saved.value;
+    this.changed();
+    return { pending: !saved.value };
   }
   async flush() {
     let rejection;

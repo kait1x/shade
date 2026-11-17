@@ -3,7 +3,7 @@
 importScripts('/flutter-ui/cache-files.js');
 const CACHE = 'shade-alpha-flutter-' + self.SHADE_UI_VERSION;
 const FILES = ['/', '/alpha.html', '/alpha.css', '/alpha-ui.mjs', '/alpha-client.mjs', '/alpha-storage.mjs',
-  '/device_crypto.mjs', '/protocol/device-v2.mjs', '/alpha-manifest.json', '/socket.io/socket.io.js',
+  '/device_crypto.mjs', '/pairing.mjs', '/protocol/device-v2.mjs', '/alpha-manifest.json', '/socket.io/socket.io.js',
   '/icons/Icon-192.png', '/icons/Icon-512.png', '/icons/Icon-maskable-512.png', '/icons/apple-touch-icon.png', '/favicon.png', ...self.SHADE_UI_FILES];
 self.addEventListener('install', event => event.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES))));
 // The page offers an explicit reload; never take control without one.

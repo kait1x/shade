@@ -1225,6 +1225,22 @@ class _Profile extends StatelessWidget {
                                                       controller,
                                                       d['id'] as String))))
                                   .toList())),
+                      const SizedBox(height: 12),
+                      Card(
+                          child: ListTile(
+                              leading: const Icon(Icons.add_link_rounded),
+                              title: const Text('Добавить устройство',
+                                  style: TextStyle(fontSize: 15)),
+                              subtitle: const Text(
+                                  'Код подключения → подтверждение запроса',
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      color: ShadeColors.textMuted)),
+                              trailing:
+                                  const Icon(Icons.chevron_right_rounded),
+                              onTap: () => controller.act('devices.pair'))),
                       const SizedBox(height: 20),
                       Card(
                           child: ListTile(

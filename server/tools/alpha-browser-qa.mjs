@@ -638,6 +638,52 @@ try {
   await a.page.setViewportSize({width:390,height:844});
   console.log('PASS long messages, actual scroll restoration and reduced keyboard viewport');
   results.sharedFlutterUI = await a.page.locator('flutter-view').count() === 1;
+  // ── Second-device pairing: challenge → offer → approve → confirmation ──
+  // Real DOM screens with the same synthetic Google identity on a fresh
+  // context: no vault → pairing onboarding → roster grows to 2 → delivery.
+  // The Flutter tile tap itself is covered by web_alpha_pairing_test.dart.
+  const newcomer = await browser('pairing-new');
+  qaPages.push(['pairing-new', newcomer.page]);
+  f.setLoginSub('synthetic-browser-alice');
+  await newcomer.page.goto(f.origin);
+  await newcomer.page.getByText('Войти через Google',{exact:true}).click();
+  await newcomer.page.getByRole('heading',{name:'Нужна привязка устройства'}).waitFor({timeout:60000});
+  await newcomer.page.getByRole('button',{name:'Подключить это устройство'}).click();
+  // Trusted device opens the DOM pairing dialog with a one-time challenge.
+  await a.page.evaluate(() => window.shadeAction('devices.pair','{}'));
+  const challengeCode = await a.page.locator('dialog[open] code').first().textContent();
+  assert.match(challengeCode, /^[0-9A-Z]{6}(-[0-9A-Z]{6}){3}$/);
+  await newcomer.page.getByLabel('Код подключения с доверенного устройства').fill(challengeCode);
+  await newcomer.page.getByLabel('Фраза устройства ·').fill(phrase);
+  await newcomer.page.getByLabel('Повторите фразу устройства').fill(phrase);
+  await newcomer.page.getByRole('button',{name:'Создать ключи и показать запрос'}).click();
+  const offerField = newcomer.page.getByLabel('Запрос подключения',{exact:true});
+  await offerField.waitFor({state:'visible',timeout:120000});
+  const offer = await offerField.inputValue();
+  assert.ok(offer.startsWith('shade-pair-v1:'));
+  // Trusted device: verify the request and approve after fingerprint review.
+  await a.page.getByLabel('Запрос подключения с нового устройства').fill(offer);
+  await a.page.getByRole('button',{name:'Проверить запрос'}).click();
+  await a.page.getByRole('button',{name:'Подтвердить устройство'}).click();
+  const confirmationField = a.page.getByLabel('Подтверждение подключения');
+  await confirmationField.waitFor({state:'visible',timeout:120000});
+  await newcomer.page.getByLabel('Подтверждение подключения').fill(await confirmationField.inputValue());
+  await a.page.getByRole('button',{name:'Закрыть',exact:true}).click();
+  await a.page.locator('dialog').waitFor({state:'hidden',timeout:10000});
+  await newcomer.page.getByRole('button',{name:'Завершить подключение'}).click();
+  await newcomer.page.getByText('Подключено · E2EE',{exact:true}).waitFor({timeout:120000});
+  // Self-chat fanout now reaches every device of the roster, incl. the newcomer.
+  await a.page.getByRole('button',{name:'Назад к чатам',exact:true}).click();
+  await a.page.getByText('Избранное',{exact:false}).first().click();
+  await send(a.page,'Сообщение на второе устройство');
+  await newcomer.page.waitForFunction(() => (window.__shadeClient?.state?.messages || [])
+    .some(m => (m.text || '').includes('Сообщение на второе устройство')), undefined, {timeout:120000, polling:1000});
+  assert.equal(await a.page.evaluate(() =>
+    (window.__shadeClient?.state?.own?.history?.at(-1)?.devices || []).length), 2);
+  assert.equal(await newcomer.page.evaluate(() =>
+    (window.__shadeClient?.state?.own?.history?.at(-1)?.devices || []).length), 2);
+  results.pairing = true;
+  console.log('PASS second-device pairing end-to-end: offer, approval, session, delivery');
   assert.deepEqual(errors,[]); results.pageErrors = errors;
   results.passed = true;
 } catch (error) {
