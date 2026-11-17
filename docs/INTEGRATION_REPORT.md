@@ -78,8 +78,8 @@ flush-окна; UI GLM скрывает сообщение оптимистич�
 
 ## 5. Проверки
 
-- Сервер `npm test`: **62/62 PASS** (v1 регрессии, B1–B9, hardening, storage
-  loss-model 5/5, interop; включая VAPID-expose контракт).
+- Сервер `npm test`: **66/66 PASS** (v1 регрессии, B1–B9, hardening, storage
+  loss-model 6/6, SW push-обработчики 3/3, nonce-replay, interop).
 - Flutter `flutter test`: **127/127 PASS**; `flutter analyze`: 0 errors,
   0 warnings (info — предсуществующие deprecations + unnecessary_import в
   файлах GLM, не редактировались).
