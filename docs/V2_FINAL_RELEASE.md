@@ -32,7 +32,7 @@ Production-операции (DNS, Caddy, БД, массовая миграция
 | Web/PWA release | BLOCKED (интеграция с ZCODE) | web-alpha сборка 17.11 10:24 устарела; финальная пересборка после интеграции |
 | DNS | VERIFIED (частично) | A @/www/api согласованы на 4 резолверах; app — NXDOMAIN |
 | HTTPS api.shadechat.ru | BLOCKED (серверная причина установлена) | нет site-блока Caddy для SNI; sslip.io TLS 200 OK внешне |
-| Staging на VPS | READY TO DEPLOY (аудит VERIFIED) | `docs/VPS_AUDIT_2026-11-17.md`: сервер здоров, ресурсы/порты свободны, изоляция подтверждена; развёртывание — по разрешению владельца |
+| Staging на VPS | DEPLOYED (loopback, user process) / VERIFIED smoke | пакет commit `02569bb` (ветка `v2-staging-release`), MANIFEST 134/134, npm ci 246, live smoke 11/11 + packaged tests 11/11 на VPS; systemd+HTTPS — `docs/STAGING_INSTALL_PLAN.md`, ожидают разрешения |
 | Production deployment | NOT DEPLOYED | этапы D–G только с разрешения владельца |
 | Физический iPhone / реальный A31 release | NOT TESTED | физического тестирования не было |
 
