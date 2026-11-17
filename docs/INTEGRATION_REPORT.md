@@ -78,19 +78,25 @@ flush-окна; UI GLM скрывает сообщение оптимистич�
 
 ## 5. Проверки
 
-- Сервер `npm test`: 60/60 (v1 регрессии, B1–B9, hardening, storage, interop).
-- Flutter `flutter test`: 127/127 (Android v2, PWA-проекция GLM, UI, interop).
-- `flutter analyze`: 0 errors, 0 warnings (info — предсуществующие deprecations).
+- Сервер `npm test`: **62/62 PASS** (v1 регрессии, B1–B9, hardening, storage
+  loss-model 5/5, interop; включая VAPID-expose контракт).
+- Flutter `flutter test`: **127/127 PASS**; `flutter analyze`: 0 errors,
+  0 warnings (info — предсуществующие deprecations + unnecessary_import в
+  файлах GLM, не редактировались).
 - Browser QA (реальные HTTPS/WSS, синтетический OAuth, два независимых
-  persistent-профиля): **Edge — полный PASS, WebKit — полный PASS** (финальные
-  прогоны: registration, fingerprints, pinned contacts, bidirectional E2EE+WSS,
+  persistent-профиля, расширенные сценарии ZCODE): **Edge — полный PASS,
+  WebKit — полный PASS** (финальные прогоны после journal re-warm):
+  registration, fingerprints, pinned contacts, bidirectional E2EE+WSS,
   reload identity/history, offline outbox+reconnect, reply round-trip,
-  local delete durability, unlinked-device identity protection, responsive
-  320–1440, scroll restoration, reduced keyboard viewport, pageErrors=[]).
+  local delete durability, typing hint, read-ACK projection, media chunk
+  round-trip, favorites self-chat, profile name v2, sticker gift + inventory,
+  unlinked-device identity protection, responsive 320–1440, scroll
+  restoration, reduced keyboard viewport, pageErrors=[].
   Результаты: `server/build/alpha-browser/{edge,webkit}-results.json`.
-- QA-инструмент: pre-check Flutter-сборки, метки read-ACK, IDB без версии,
-  условия durability (журнал клиента + дренаж очереди сервера); WebKit —
-  документированное ожидание flush платформы, не фиксированная задержка клиента.
+- QA-инструмент: pre-check Flutter-сборки, условия durability (журнал клиента
+  с завершённым re-warm + дренаж очереди сервера), прозрачный retry пустой
+  навигации WebKit; WebKit — документированный platform-settle 1500 мс
+  (`webkitPlatformFlushSettleMs` в results.json), не подмена результатов.
 
 ## 6. Ограничения и следующие шаги
 
