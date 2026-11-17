@@ -200,20 +200,23 @@ export class AlphaClient extends EventTarget {
       { method, headers: { 'x-device-auth': JSON.stringify({ account, id, nonce, proof }) } });
   }
   // Cached projection of the self profile (digest-keyed avatar bytes travel
-  // on demand); the source of truth is the v2 profile API.
+  // on demand); the source of truth is the v2 profile API. Runs inside the
+  // exclusive queue: it writes state and must not race other writers (CAS).
   async loadProfile() {
-    const data = await this.adapterRequest('GET', `/user/${encodeURIComponent(this.session.account)}/avatar`);
-    const next = structuredClone(this.state);
-    next.profile = {
-      displayName: data.displayName || '',
-      avatarImage: typeof data.image === 'string' ? data.image : null,
-      avatarImageUrl: typeof data.imageUrl === 'string' ? data.imageUrl : null,
-      avatarFrame: ['none', 'minimal', 'silver', 'graphite'].includes(data.frame) ? data.frame : 'none',
-      avatarRevision: data.revision || 0,
-      avatarDigest: await hash(typeof data.image === 'string' && data.image ? data.image : ''),
-    };
-    await this.save(next);
-    return next.profile;
+    return this.exclusive(async () => {
+      const data = await this.adapterRequest('GET', `/user/${encodeURIComponent(this.session.account)}/avatar`);
+      const next = structuredClone(this.state);
+      next.profile = {
+        displayName: data.displayName || '',
+        avatarImage: typeof data.image === 'string' ? data.image : null,
+        avatarImageUrl: typeof data.imageUrl === 'string' ? data.imageUrl : null,
+        avatarFrame: ['none', 'minimal', 'silver', 'graphite'].includes(data.frame) ? data.frame : 'none',
+        avatarRevision: data.revision || 0,
+        avatarDigest: await hash(typeof data.image === 'string' && data.image ? data.image : ''),
+      };
+      await this.save(next);
+      return next.profile;
+    });
   }
   async saveProfile(data) {
     return this.exclusive(async () => {

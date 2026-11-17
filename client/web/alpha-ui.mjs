@@ -4,6 +4,9 @@ import { hash, genesisText } from './protocol/device-v2.mjs';
 
 const root = document.querySelector('#root'), dialog = document.querySelector('#dialog');
 const client = new AlphaClient();
+// QA introspection: the page context can always reach whatever its own scripts
+// hold; this only names the instance. CryptoKey material stays non-extractable.
+window.__shadeClient = client;
 const contact = account => client.state && Object.hasOwn(client.state.contacts, account) ? client.state.contacts[account] : null;
 let selected = null, users = [], ready = false, actionTail = Promise.resolve(), noticeTimer, loggedIn = false;
 function node(tag, text, className) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (className) n.className = className; return n; }
@@ -119,6 +122,9 @@ function render() {
   const connection = !navigator.onLine ? 'Нет сети · история сохранена' : client.lastError ?
     (errors[client.lastError] || 'Ошибка синхронизации · повтор через 15 секунд') :
     client.connected ? 'Подключено · E2EE' : 'Переподключение…';
+  window.__lastProjection = { messages: (client.state.messages || []).length,
+    firstMessage: client.state.messages?.[0] || null,
+    selected, contacts: Object.keys(client.state.contacts || {}) };
   // Peer display names and avatar digests arrive through the v2 profile API;
   // metadata is fetched in the background once per account and cached.
   const meta = account => {
