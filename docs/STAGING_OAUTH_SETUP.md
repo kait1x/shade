@@ -96,7 +96,28 @@ curl -s https://alpha.shadechat.ru/api/session | grep googleConfigured
 7. Staging-деплой с откатом (новый release-каталог + admin-скрипт переключения,
    backup/rollback как раньше). Production не трогать.
 
-## 4. Сценарий закрытого теста (после настройки)
+## 4. Деплой OAuth-релиза (подготовлен, переключает владелец)
+
+Релиз `20261118-005500` (commit `59b7546`, ветка `v2-pwa-integration`):
+- Загружен в `/opt/shade-staging/releases/20261118-005500/`, MANIFEST 123
+  файла (checksum-формат + `MANIFEST.meta`), без секретов.
+- Проверки кода: server **87/87 PASS** (включая 5 новых OAuth-тестов:
+  cross-jar state-fallback, same-jar, негативы/replay, allowlist, expiry);
+  browser QA **Edge PASS + WebKit PASS, 0 ошибок страницы** — полный
+  16-сценарный прогон, где Google-вход идёт через новый путь
+  callback → fragment-handoff → обмен в jar приложения.
+- Переключение (root SSH, после заполнения env из §2 шаг 3):
+  ```bash
+  bash /opt/shade-staging/admin-update-oauth.sh
+  ```
+  Скрипт проверит релиз, переключит symlink, перезапустит shade-staging,
+  покажет health + `googleConfigured` + контроль production, напечатает откат.
+- Откат: `ln -sfn <старый release> /opt/shade-staging/current && systemctl restart shade-staging`.
+- Данные staging не меняются форматом; E2EE/ключи/аккаунты не затрагиваются.
+- После переключения: владелец и подруга проходят сценарий §5 на реальных
+  устройствах (физический iPhone headless-QA не доказывает — честно).
+
+## 5. Сценарий закрытого теста (после настройки)
 
 1. Подруга: iPhone → Safari → https://alpha.shadechat.ru → «Установить Shade»
    (Поделиться → На экран Домой) → запуск с иконки (standalone).
