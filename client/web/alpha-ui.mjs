@@ -324,7 +324,16 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
     const offerUpdate = () => {
       if (!navigator.serviceWorker.controller) return;
       const button = node('button', 'Перезагрузить и обновить', 'primary'); button.type = 'button';
-      button.onclick = () => { reg.waiting?.postMessage('SKIP_WAITING'); location.reload(); };
+      button.onclick = () => {
+        // Reload only after the new worker actually takes control — an
+        // immediate reload races skipWaiting and can leave the tab loading.
+        let refreshing = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          if (!refreshing) { refreshing = true; location.reload(); }
+        });
+        if (reg.waiting) reg.waiting.postMessage('SKIP_WAITING');
+        else location.reload();
+      };
       showDialog('Доступно обновление Shade', [node('p', 'Новая версия приложения загружена. Перезагрузка применит её к офлайн-запуску; ключи и история не затрагиваются.'), button]);
     };
     if (reg.waiting) offerUpdate();
