@@ -74,11 +74,12 @@ python client/tools/build_web_alpha.py    # Flutter UI → client/build/web-alph
 python client/tools/assemble_pwa_release.py  # единый каталог → client/build/pwa-release
 ```
 
-`pwa-release` = DOM-shell (`client/web`) + Flutter UI (`/flutter-ui/`) + release-
-manifest.json (количество файлов, размеры, SHA-256). Сервер должен раздавать
-содержимое каталога как web root и `/socket.io/socket.io.js` (это делает alpha-
-сервер); SW-allowlist покрывает ровно эти файлы. Текущая сборка: 74 файла,
-50.6 МБ, SHA-256 `58cec463…56bb89`.
+`pwa-release` = DOM-shell (`client/web`) + Flutter UI (`/flutter-ui/`, без
+web-исходников, которые flutter build копирует в output) + release-manifest.json
+(количество файлов, размеры, SHA-256). Сервер должен раздавать содержимое
+каталога как web root и `/socket.io/socket.io.js` (это делает alpha-сервер);
+SW-allowlist покрывает ровно эти файлы. Текущая сборка: 57 файлов, 50.4 МБ,
+SHA-256 `c5424fb4…476883`.
 
 ## 4. Пошаговая проверка на Samsung Galaxy A25 через Chrome
 

@@ -40,6 +40,18 @@ for name in shell_files:
     shutil.copy2(source, root / name)
 shutil.copytree(web / 'icons', root / 'icons')
 shutil.copytree(flutter_ui, root / 'flutter-ui')
+# flutter build web copies the web/ source directory into the build output;
+# the dist already ships those shell files at the root, so the /flutter-ui/
+# copies are dead weight that the SW allowlist never fetches. Keep only the
+# Flutter-generated outputs (main.dart.js, assets, canvaskit, fonts,
+# flutter_bootstrap.js, cache-files.js, ...).
+web_source_names = {p.name for p in web.iterdir()}
+for p in list((root / 'flutter-ui').iterdir()):
+    if p.name in web_source_names:
+        if p.is_dir():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
 
 # Report the artifacts a human (or CI) can verify exist before deployment.
 files = sorted(p for p in root.rglob('*') if p.is_file())
