@@ -1,6 +1,10 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
-import { rateLimit } from 'express-rate-limit';
+import { rateLimit as expressRateLimit } from 'express-rate-limit';
+// ZCODE finding: relay budget exhaustion must be distinguishable from an
+// outage by clients — always a JSON body, never the default text/html.
+const rateLimit = opts => expressRateLimit({ ...opts,
+  handler: (_req, res) => res.status(429).json({ error: 'rate_limited' }) });
 import http from 'node:http';
 import https from 'node:https';
 import fs from 'node:fs/promises';
