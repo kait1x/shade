@@ -173,6 +173,10 @@ class _CollectionState extends State<StickerCollection> {
             else
               LayoutBuilder(builder: (ctx, b) {
                 final w = b.maxWidth, h = w * .69, side = w * .23;
+                // The saved wall can reference a gift the inventory list does
+                // not contain (partial load, server-side cleanup); skip such
+                // placements instead of crashing the whole collection.
+                final giftsById = {for (final g in gifts) g.id: g};
                 return Container(
                     height: h,
                     decoration: BoxDecoration(
@@ -187,6 +191,7 @@ class _CollectionState extends State<StickerCollection> {
                     child: Stack(children: [
                       const Positioned.fill(child: ReferenceLid()),
                       for (final p in wall)
+                        if (giftsById[p.id] != null)
                         Positioned(
                             key: ValueKey(p.id),
                             left: p.x * (w - side),
@@ -203,8 +208,8 @@ class _CollectionState extends State<StickerCollection> {
                                           if (editing) {
                                             setState(() => selected = p.id);
                                           } else {
-                                            inspect(gifts.firstWhere(
-                                                (g) => g.id == p.id));
+                                            final g = giftsById[p.id];
+                                            if (g != null) inspect(g);
                                           }
                                         },
                                         onScaleStart: editing && !busy
@@ -246,9 +251,8 @@ class _CollectionState extends State<StickerCollection> {
                                                             color: Colors.amber,
                                                             width: 2)
                                                         : null),
-                                            child: stamp(gifts
-                                                .firstWhere((g) => g.id == p.id)
-                                                .art))))))
+                                            child: stamp(
+                                                giftsById[p.id]!.art))))))
                     ]));
               }),
             if (widget.owner && !book)
@@ -434,7 +438,9 @@ class _GiftDialogState extends State<GiftDialog> {
                   note = v;
                   request = '';
                 }),
-            if (error.isNotEmpty) Text(error)
+            if (error.isNotEmpty)
+              Text(error,
+                  style: const TextStyle(color: Colors.redAccent))
           ])),
           actions: [
             TextButton(

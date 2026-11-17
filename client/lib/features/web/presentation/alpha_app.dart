@@ -444,6 +444,21 @@ class _ConversationState extends State<_Conversation>
   int unseen = 0;
   Map<String, dynamic>? replyTo;
   late final String? activeAccount;
+  // Decoded media bytes per message ref. Every item build used to re-run
+  // base64Decode, producing a fresh Uint8List whose identity makes Flutter's
+  // image cache miss and re-decode the 900px bitmap on each projection
+  // update — visible jank while scrolling photo histories on mid-range
+  // phones. Bounded FIFO (insertion order): the raw bytes are ~75% of the
+  // base64 already held in encrypted state.
+  static const _mediaCacheLimit = 24;
+  final Map<String, Uint8List> _mediaCache = <String, Uint8List>{};
+  Uint8List _mediaBytes(String ref, Map media) =>
+      _mediaCache.putIfAbsent(ref, () {
+        if (_mediaCache.length >= _mediaCacheLimit) {
+          _mediaCache.remove(_mediaCache.keys.first);
+        }
+        return base64Decode(media['data'] as String);
+      });
   @override
   void initState() {
     super.initState();
@@ -786,7 +801,7 @@ class _ConversationState extends State<_Conversation>
                             final media = m['media'] as Map?;
                             final mediaBytes = media == null
                                 ? null
-                                : base64Decode(media['data'] as String);
+                                : _mediaBytes(m['ref'] as String, media);
                             bool grouped(int originalIndex) =>
                                 originalIndex >= 0 &&
                                 originalIndex < items.length &&

@@ -69,7 +69,14 @@ export async function api(route, body, options = {}) {
       ...(hasBody ? { body: JSON.stringify(body) } : {}),
       signal: controller.signal });
     let result;
-    try { result = await response.json(); } catch { throw Error('Сервер недоступен. Попробуйте позже.'); }
+    try { result = await response.json(); }
+    catch {
+      // Non-JSON failure bodies (e.g. the relay's text/html 429) must not
+      // masquerade as an outage: name the real condition when it is known.
+      throw Error(response.status === 429
+        ? 'Слишком много запросов. Подождите около минуты и повторите.'
+        : 'Сервер недоступен. Попробуйте позже.');
+    }
     if (!response.ok) {
       const error = Error(result.error || 'Ошибка сервера'); error.status = response.status; throw error;
     }

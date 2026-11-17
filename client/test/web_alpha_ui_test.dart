@@ -6,6 +6,12 @@ import 'package:shade/features/web/presentation/alpha_app.dart';
 import 'package:shade/features/web/presentation/alpha_controller.dart';
 
 void main() {
+  // PopScope<T> runtime types are invariant in Dart, so find.byType(PopScope)
+  // misses the PopScope<Object> that MaterialApp routes infer; the predicate
+  // form matches every generic instantiation.
+  PopScope popScope(WidgetTester tester) => tester
+      .widget<PopScope>(find.byWidgetPredicate((w) => w is PopScope));
+
   test('Delivery is derived from real per-device ACK, never server acceptance',
       () {
     final message = <String, dynamic>{
@@ -828,4 +834,166 @@ void main() {
       c.dispose();
     });
   }
+
+  testWidgets('Alpha mobile: single pane navigation and system back to list',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final actions = <String>[];
+    final c = AlphaController((action, payload) async {
+      actions.add(action);
+      return null;
+    });
+    final data = <String, dynamic>{
+      'account': 'alice',
+      'selected': null,
+      'connected': true,
+      'peers': [
+        {'account': 'bob', 'pinned': true}
+      ],
+      'messages': [
+        {
+          'ref': '1',
+          'from': 'bob',
+          'to': 'alice',
+          'text': 'Мобильная навигация',
+          'createdAt': 1700000000000,
+          'status': 'received',
+          'devices': [],
+        },
+      ],
+    };
+    c.apply(data);
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    // Narrow viewport shows the list only; the home screen allows a system pop.
+    expect(find.text('Сообщения'), findsOneWidget);
+    expect(find.byKey(const Key('message-field')), findsNothing);
+    expect(popScope(tester).canPop, isTrue);
+    // Opening a chat hides the list (single pane) and blocks the system pop,
+    // so the Android back gesture returns to the list instead of leaving.
+    c.apply({...data, 'selected': 'bob'});
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('message-field')), findsOneWidget);
+    expect(find.text('Сообщения'), findsNothing);
+    expect(popScope(tester).canPop, isFalse);
+    final navigator = tester.state<NavigatorState>(find.byType(Navigator));
+    await navigator.maybePop();
+    await tester.pumpAndSettle();
+    expect(actions, contains('back'));
+    // The JS projection acknowledges 'back' with selected: null.
+    c.apply(data);
+    await tester.pumpAndSettle();
+    expect(find.text('Сообщения'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
+  testWidgets('Alpha wide layout keeps list and conversation side by side',
+      (tester) async {
+    tester.view.physicalSize = const Size(1200, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final actions = <String>[];
+    final c = AlphaController((action, payload) async {
+      actions.add(action);
+      return null;
+    });
+    final data = <String, dynamic>{
+      'account': 'alice',
+      'selected': null,
+      'connected': true,
+      'peers': [
+        {'account': 'bob', 'pinned': true}
+      ],
+      'messages': [
+        {
+          'ref': '1',
+          'from': 'bob',
+          'to': 'alice',
+          'text': 'Двухпанельный макет',
+          'createdAt': 1700000000000,
+          'status': 'received',
+          'devices': [],
+        },
+      ],
+    };
+    c.apply(data);
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    expect(find.text('Сообщения'), findsOneWidget);
+    expect(find.textContaining('Выберите диалог слева'), findsOneWidget);
+    c.apply({...data, 'selected': 'bob'});
+    await tester.pumpAndSettle();
+    // Both panes stay mounted: the list header and the composer coexist.
+    expect(find.text('Сообщения'), findsOneWidget);
+    expect(find.byKey(const Key('message-field')), findsOneWidget);
+    // The profile replaces only the right pane.
+    await tester.tap(find.byTooltip('Профиль'));
+    await tester.pumpAndSettle();
+    expect(find.text('Ключ шифрования'), findsOneWidget);
+    expect(find.text('Сообщения'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
+  testWidgets('Alpha composer adapts maxLines to the keyboard viewport',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final c = AlphaController((_, __) async { return null; });
+    final data = <String, dynamic>{
+      'account': 'alice',
+      'selected': 'bob',
+      'connected': true,
+      'peers': [
+        {'account': 'bob', 'pinned': true}
+      ],
+      'messages': [
+        {
+          'ref': '1',
+          'from': 'bob',
+          'to': 'alice',
+          'text': 'Композер',
+          'createdAt': 1700000000000,
+          'status': 'received',
+          'devices': [],
+        },
+      ],
+    };
+    c.apply(data);
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    int maxLines() => tester
+        .widget<TextField>(find.byKey(const Key('message-field')))
+        .maxLines!;
+    expect(maxLines(), 5);
+    // A raised keyboard is injected through MediaQuery directly: the test
+    // binding moves the render surface for tester.view.viewInsets but keeps
+    // MediaQuery.viewInsetsOf at zero, and the real browser delivers the
+    // inset through MediaQuery.
+    await tester.pumpWidget(MediaQuery(
+        data: const MediaQueryData(viewInsets: EdgeInsets.only(bottom: 340)),
+        child: ShadeAlphaApp(controller: c)));
+    await tester.pumpAndSettle();
+    expect(maxLines(), 3);
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    expect(maxLines(), 5);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
 }
