@@ -3,8 +3,9 @@
 Дата: 17.11.2026 · ветка `zcode-pwa-release` (от `integration-android-pwa` e986759) · worktree `C:\Users\Kait1x\Documents\Shade-PWA`
 
 Документ фиксирует: (1) что проверено автоматически для мобильной PWA,
-(2) как собрать и поднять тестовую сборку, (3) пошаговую проверку на Samsung
-Galaxy A25 через Chrome, (4) что автоматика доказать не может.
+(2) как собрать и поднять тестовую сборку, (3) изолированный USB-preview для
+Galaxy A31/A25 через Chrome, (4) производительность, (5) что автоматика
+доказать не может.
 
 Staging-развёртывание (DNS/HTTPS/OAuth, Tailscale/Cloudflare) — см.
 `docs/IPHONE_PWA_STAGING.md`. Матрица паритета — `docs/PWA_PARITY_MATRIX.md`.
@@ -74,14 +75,74 @@ python client/tools/build_web_alpha.py    # Flutter UI → client/build/web-alph
 python client/tools/assemble_pwa_release.py  # единый каталог → client/build/pwa-release
 ```
 
-`pwa-release` = DOM-shell (`client/web`) + Flutter UI (`/flutter-ui/`, без
-web-исходников, которые flutter build копирует в output) + release-manifest.json
-(количество файлов, размеры, SHA-256). Сервер должен раздавать содержимое
-каталога как web root и `/socket.io/socket.io.js` (это делает alpha-сервер);
-SW-allowlist покрывает ровно эти файлы. Текущая сборка: 57 файлов, 50.4 МБ,
-SHA-256 `c5424fb4…476883`.
+`build_web_alpha.py` после сборки удаляет движковые артефакты, недостижимые
+для этого билда (см. buildConfig в flutter_bootstrap.js): skwasm/skwasm_heavy/
+wimp (нужен dart2wasm-entry, которого нет), webparagraph/ (требует флаг
+preferWebParagraph) и `.js.symbols` (только для DevTools). `pwa-release` =
+DOM-shell (`client/web`) + Flutter UI (`/flutter-ui/`, без web-исходников,
+которые flutter build копирует в output) + release-manifest.json (количество
+файлов, размеры, SHA-256). Сервер должен раздавать содержимое каталога как web
+root и `/socket.io/socket.io.js` (это делает alpha-сервер); SW-allowlist
+покрывает ровно эти файлы. Текущая сборка: 43 файла, 26.5 МБ (было 50.4 МБ),
+SHA-256 `0ccca5c6…96dc9`; offline-прекеш сократён с 50.5 до ~23 МБ.
 
-## 4. Пошаговая проверка на Samsung Galaxy A25 через Chrome
+## 3а. Preview на физическом Samsung Galaxy A31 без staging (USB)
+
+`server/tools/run-alpha-preview.mjs` поднимает **изолированный** экземпляр
+alpha-сервера: одноразовая БД (`server/build/alpha-preview/data`), synthetic
+OAuth (никаких реальных Google-аккаунтов и production-данных), включённые
+VAPID-ключи (persist между перезапусками превью).
+
+```bash
+node server/tools/run-alpha-preview.mjs --fresh   # или без --fresh между перезапусками
+```
+
+Телефон подключается по USB (На телефоне: «Для разработчиков» → «Отладка по
+USB»; при подключении подтвердите отпечаток RSA-ключа). Скрипт сам выполняет
+`adb reverse tcp:3101 tcp:3101` — после этого на телефоне в Chrome открывается
+**http://localhost:3101**: localhost является secure context, поэтому SW,
+WebCrypto и Web Push работают без HTTPS-сертификатов и домена. Проверено, что
+`/api/session` отдаёт VAPID-ключ, манифест и `/flutter-ui/*` отвечают 200.
+Для сценария «после перезапуска» запускайте без `--fresh`; `--fresh` стирает
+данные превью. Без кабеля — варианты Tailscale/Cloudflare из
+`docs/IPHONE_PWA_STAGING.md` (раздел 6).
+
+
+
+## 3б. Производительность (относительный стенд, НЕ физический A31)
+
+Замерщик: `server/tools/alpha-perf-check.mjs` — изолированный fixture, headless
+Chromium (Edge channel), **CPU throttle ×4**, мобильная геометрия 390×844.
+Это относительные цифры одного стенда для сравнения сборок, не показатели
+Galaxy A31; прогон структуры: cold shell → регистрация → SW-прекеш →
+warm start ×2 → сев истории (44–106 сообщений + фото, pacing под лимит релея)
+→ прокрутка 8 с → профиль → виниловая стена → soak (12 циклов sync).
+
+| Метрика | До оптимизаций | После |
+|---|---|---|
+| Дистрибутив | 57 файлов / 50.4 МБ | **43 файла / 26.5 МБ** |
+| SW offline-прекеш | 52 файла / 50.5 МБ | **38 файлов / 26.6 МБ** |
+| Первый заход (страница) | 0.13 МБ / 12 запросов | 0.13 МБ / 12 запросов |
+| Warm start → интерфейс, throttle ×4 | 1.45–2.13 с | **1.28–1.59 с** |
+| Warm start → интерфейс, без throttle | 0.63–0.80 с | 0.72–0.90 с |
+| Прокрутка истории (кадры за 8 с) | 487–864 | 778–815 (без зависаний) |
+| Открытие профиля, ×4 | 0.8–1.9 с | 1.0–1.1 с |
+| Виниловая стена (settle) | 1.28–1.52 с | 1.37–1.40 с |
+| Soak heap (12 sync-циклов) | н/д | **66.9 → 27.3 МБ (падает, утечки нет)** |
+
+Разброс прогонов ±20% (headless rAF capped композитором). Структурные
+оптимизации: удалены недостижимые движковые варианты (~24 МБ прекеша),
+стикер-тайлы декодируются в размер отрисовки (было 1254px на тайл ≤110px),
+медиа-байты мемоизированы по ref (было re-decode на каждый rebuild → промахи
+кэша изображений), 429 релея теперь честное сообщение клиента.
+
+**Находка для сервера (зона Qwen):** при исчерпании бюджета релей отвечает
+429 с `text/html` «Too many requests» — клиент не может отличить лимит от
+аварии (теперь различает по статусу). Желательно: JSON-тело 429
+`{"error":"rate_limited"}`.
+
+## 4. Пошаговая проверка на Samsung Galaxy A25 / A31 через Chrome
+
 
 Требования: staging HTTPS-адрес из `docs/IPHONE_PWA_STAGING.md` (раздел 2/6),
 два устройства/аккаунта для сверки отпечатков. Galaxy A25: Android 14+, Chrome
