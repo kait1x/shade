@@ -13,7 +13,7 @@ import * as c from '../client/web/device_crypto.mjs';
 
 const MODE = process.argv[2];
 const DATA = '/var/lib/shade-staging';
-const BASE = 'http://127.0.0.1:3101';
+const BASE = process.argv[3] || 'https://alpha.shadechat.ru';
 const V1DIR = path.join(DATA, 'v1-synthetic');
 const ENVF = path.join(DATA, 'staging.env');
 const PHRASE = 'synthetic staging smoke recovery phrase only';
@@ -107,7 +107,8 @@ if (MODE === 'prepare') {
   const proof = signText(requestText('smoke_alice', 'primary', ch.json.nonce, operation), fx.alicePrivate);
   const sess = await req('/api/v2/session/legacy', { account: 'smoke_alice', nonce: ch.json.nonce, proof });
   if (sess.status !== 200) throw Error('legacy session failed: ' + JSON.stringify(sess.json));
-  const cookie = (sess.headers.getSetCookie?.() || []).find(s => s.startsWith('shade-alpha='))?.split(';')[0];
+  const cookie = (sess.headers.getSetCookie?.() || []).find(s =>
+    s.startsWith('__Host-shade-alpha=') || s.startsWith('shade-alpha='))?.split(';')[0];
   if (!cookie) throw Error('no session cookie');
   console.log('PASS legacy-key session (synthetic account)');
   const rootSpki = legacyRoot(createPublicKey(fx.alicePrivate).export({ type: 'spki', format: 'pem' }));
