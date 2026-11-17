@@ -34,7 +34,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   clientId = '', clientSecret = '', oauthProvider, verifyGoogle, legacyUsers = new Map(), tls,
   vapidKeys = null, pushSender = null, pushAllowedHosts = null,
   legacySource = null, guardFile = null, bridgeAckFile = null, checkpointDir = null, checkpointKeep = 20,
-  allowedOrigins = [] } = {}) {
+  allowedOrigins = [], oauthAllowlist = [], handoffTtlMs = 60000 } = {}) {
   check(dataDir && publicOrigin, 'Explicit alpha dataDir and publicOrigin required');
   const origin = new URL(publicOrigin);
   check(origin.origin === publicOrigin && (origin.protocol === 'https:' ||
@@ -48,9 +48,15 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     check(u.origin === extra && u.protocol === 'https:' && extra !== publicOrigin, 'Invalid extra origin');
   }
   const originAllowed = value => value === publicOrigin || allowedOrigins.includes(value);
+  // Optional closed-test allowlist (emails or Google subs). Empty = open to
+  // any verified Google account (Google consent-screen Test users still apply).
+  check(Array.isArray(oauthAllowlist), 'Invalid oauthAllowlist');
+  const allowlist = new Set(oauthAllowlist.map(v => String(v).trim().toLowerCase()).filter(Boolean));
+  const allowlistOk = profile => allowlist.size === 0 ||
+    allowlist.has(String(profile.email || '').toLowerCase()) || allowlist.has(profile.googleSub);
   check(path.resolve(dataDir) !== path.join(here, 'data'), 'Production directory forbidden');
   const store = await alphaStore(dataDir, storageSecret, { checkpointDir, checkpointKeep });
-  const sessions = new Map(), flows = new Map();
+  const sessions = new Map(), flows = new Map(), handoffs = new Map();
   const oauth = new OAuth2Client(clientId, clientSecret, `${publicOrigin}/auth/google/callback`);
   const verifier = createAuthProof({ audience: clientId, verifyGoogle });
   // Web Push (C6): wake-only notifications, no E2EE content or message refs.
@@ -209,16 +215,52 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     res.redirect(provider.start({ state, nonce, codeChallenge: createHash('sha256').update(verifier).digest('base64url') }));
   }));
   app.get('/auth/google/callback', wrap(async (req, res) => {
-    const id = req.cookies[flowName], flow = flows.get(id);
-    flows.delete(id); res.clearCookie(flowName, cookieOptions);
+    // iOS standalone PWA and Safari/in-app browser have SEPARATE cookie jars:
+    // the flow cookie may be absent when the callback lands in another jar.
+    // Fall back to the single-use random state (server-side flow store keeps
+    // PKCE/nonce binding; state is unguessable and consumed on first use).
+    const cookieFlowId = req.cookies[flowName];
+    let flowId = cookieFlowId && flows.has(cookieFlowId) ? cookieFlowId : null;
+    if (!flowId && typeof req.query.state === 'string') {
+      for (const [id, flow] of flows) if (flow.state === req.query.state) { flowId = id; break; }
+    }
+    const flow = flowId ? flows.get(flowId) : null;
+    if (flowId) flows.delete(flowId);
+    if (cookieFlowId) res.clearCookie(flowName, cookieOptions);
     check(flow && flow.expiresAt > Date.now() && req.query.state === flow.state &&
       typeof req.query.code === 'string' && !req.query.error, 'Invalid OAuth callback');
     const profile = await provider.finish(req.query.code, flow);
     check(typeof profile?.googleSub === 'string' && profile.googleSub.length > 0, 'Verified Google identity required');
+    check(allowlistOk(profile), 'Google account is not in the tester allowlist');
     const old = req.cookies[sidName]; if (old) sessions.delete(old);
     const sid = token(); sessions.set(sid, { profile, expiresAt: Date.now() + SESSION_MS });
     res.cookie(sidName, sid, { ...cookieOptions, maxAge: SESSION_MS });
-    res.redirect('/');
+    // One-time handoff for the PWA jar: if the callback ran in another jar
+    // (iOS in-app browser), the session cookie above is invisible to the
+    // standalone app. The fragment code is exchanged by the app itself via
+    // POST /api/v2/session/handoff. Fragments are never sent to servers/logs.
+    const handoff = token();
+    check(handoffs.size < 1000, 'Handoff capacity reached');
+    handoffs.set(handoff, { profile, expiresAt: Date.now() + handoffTtlMs });
+    res.redirect('/#shade_login=' + handoff);
+  }));
+  // One-time session handoff (iOS standalone PWA cookie-jar bridge). The code
+  // arrives in a URL fragment, is single-use, short-lived and profile-bound;
+  // the session cookie is set in the jar that makes THIS request (the PWA).
+  app.post('/api/v2/session/handoff', rateLimit({ windowMs: 60000, limit: 30 }), wrap(async (req, res) => {
+    check(originAllowed(req.headers.origin), 'Origin required');
+    const { code } = req.body || {};
+    check(typeof code === 'string' && /^[a-f0-9]{64}$/.test(code), 'Invalid handoff code');
+    const entry = handoffs.get(code);
+    handoffs.delete(code); // single-use, consumed even on failure
+    const now = Date.now();
+    for (const [key, value] of handoffs) if (value.expiresAt <= now) handoffs.delete(key);
+    check(entry && entry.expiresAt > now, 'Handoff code invalid or expired');
+    const old = req.cookies[sidName]; if (old) sessions.delete(old);
+    const sid = token(); sessions.set(sid, { profile: entry.profile, expiresAt: now + SESSION_MS });
+    res.cookie(sidName, sid, { ...cookieOptions, maxAge: SESSION_MS });
+    const account = registry.accountForGoogle(entry.profile.googleSub);
+    res.json({ authenticated: true, account, directory: account ? registry.directory(account) : null });
   }));
   // Native (Android) Google sign-in: the google_sign_in plugin obtains an ID
   // token for the same OAuth client; verification is identical to the browser
@@ -247,6 +289,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     loginNonces.delete(nonce); // Single-use: consumed even when verification fails.
     check(issued && issued.expiresAt > Date.now(), 'Google login nonce invalid or expired');
     const profile = await verifier.googleProfile(idToken, nonce);
+    check(allowlistOk(profile), 'Google account is not in the tester allowlist');
     const old = req.cookies[sidName]; if (old) sessions.delete(old);
     const sid = token(); sessions.set(sid, { profile, expiresAt: Date.now() + SESSION_MS });
     res.cookie(sidName, sid, { ...cookieOptions, maxAge: SESSION_MS });
@@ -650,6 +693,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     guardFile: process.env.ALPHA_V2_GUARD_FILE || null,
     allowedOrigins: process.env.ALPHA_ALLOWED_ORIGINS
       ? process.env.ALPHA_ALLOWED_ORIGINS.split(',').map(o => o.trim()).filter(Boolean) : [],
+    oauthAllowlist: process.env.ALPHA_OAUTH_ALLOWLIST
+      ? process.env.ALPHA_OAUTH_ALLOWLIST.split(',').map(v => v.trim()).filter(Boolean) : [],
     bridgeAckFile: process.env.ALPHA_V2_BRIDGE_ACK_FILE || null,
     // Durable rolling checkpoints for lossless rollback (opt-in).
     checkpointDir: process.env.ALPHA_CHECKPOINT_DIR || null,

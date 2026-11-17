@@ -274,6 +274,16 @@ window.addEventListener('pageshow', event => { if (event.persisted && ready) cli
 
 async function boot() {
   if (!window.isSecureContext || !crypto.subtle) throw Error('Для криптографии требуется HTTPS или localhost.');
+  // iOS standalone PWA: the OAuth callback may have run in a different cookie
+  // jar (in-app browser). The one-time fragment code establishes the session
+  // in THIS jar. The fragment is cleared immediately and never sent anywhere.
+  const fragment = new URLSearchParams(location.hash.slice(1));
+  const handoff = fragment.get('shade_login');
+  if (handoff) {
+    history.replaceState(null, '', location.pathname + location.search);
+    try { await api('/api/v2/session/handoff', { code: handoff }); }
+    catch (error) { notice('Не удалось завершить вход: ' + error.message); }
+  }
   let status;
   try { status = await api('/api/session'); }
   catch (error) {
