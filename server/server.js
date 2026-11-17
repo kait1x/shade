@@ -558,10 +558,49 @@ const offlineBuffer = messagingSnapshot.has('queues')
 const directMessaging = require('./direct-messaging').createDirectMessaging({
   io, users, onlineUsers, offlineBuffer, receipts: directReceipts,
   encrypt: _encryptMetadata, decrypt: _decryptMetadata, push: sendFcmPush,
+  blocked: v2Migrated,
+  bridged: v2Migrated,
   persist: () => saveMap('messaging.json', new Map([
     ['queues', [...offlineBuffer]], ['receipts', [...directReceipts]],
   ])),
 });
+// ── Optional v2 bridge-ack ingestion (opt-in via SHADE_V2_BRIDGE_ACK_FILE) ──
+// The v2 process exports per-account ACK tombstones (additive file owned by
+// v2; this server only reads it). Confirmed bridged ciphertext is pruned from
+// the v1 queue and receipts advance to delivered/read, so v1 senders keep
+// seeing honest status while the recipient lives on v2. Absent file = no-op.
+const V2_BRIDGE_ACK_FILE = process.env.SHADE_V2_BRIDGE_ACK_FILE || '';
+let v2BridgeAckMtime = 0;
+const V2_BRIDGE_REF = /^[a-z0-9_]{3,32}:[a-zA-Z0-9_-]{16,80}$/;
+function readBridgeAcks() {
+  if (!V2_BRIDGE_ACK_FILE) return [];
+  try {
+    const stat = fs.statSync(V2_BRIDGE_ACK_FILE);
+    if (stat.mtimeMs === v2BridgeAckMtime) return [];
+    const parsed = JSON.parse(fs.readFileSync(V2_BRIDGE_ACK_FILE, 'utf8'));
+    v2BridgeAckMtime = stat.mtimeMs;
+    if (!parsed || parsed.version !== 1 || !parsed.accounts || typeof parsed.accounts !== 'object') return [];
+    const entries = [];
+    for (const [account, value] of Object.entries(parsed.accounts)) {
+      if (!v2Migrated(account)) continue; // only enrolled accounts are bridged
+      const acked = Array.isArray(value?.acked) ? value.acked.filter(r => typeof r === 'string' && V2_BRIDGE_REF.test(r)).slice(0, 1000) : [];
+      const read = Array.isArray(value?.read) ? value.read.filter(r => typeof r === 'string' && V2_BRIDGE_REF.test(r)).slice(0, 1000) : [];
+      if (acked.length) entries.push({ account, acked, read });
+    }
+    return entries;
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.error('[v2-bridge] ack file unreadable, keeping last known state:', e.code || 'parse error');
+    return [];
+  }
+}
+if (V2_BRIDGE_ACK_FILE) {
+  const timer = setInterval(() => {
+    const entries = readBridgeAcks();
+    if (entries.length) directMessaging.bridgeAck(entries).catch(e =>
+      console.error('[v2-bridge] ack ingestion failed:', e.message));
+  }, 2000);
+  timer.unref();
+}
 // MED-03: Offline message TTL 7 days
 const OFFLINE_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const sessions = new Map();
@@ -810,6 +849,41 @@ function revokeUserSessions(username) {
   for (const watcher of watchers.get(username) || []) io.to(watcher).emit('statusUpdate', { username, online: false, lastSeen: timestamp });
 }
 
+// ── Optional v2 migration guard (opt-in via SHADE_V2_GUARD_FILE) ──────────
+// Accounts enrolled into device protocol v2 must no longer authenticate or
+// SEND on v1 (upgrade_required). Incoming v1 messages TO enrolled accounts
+// are still accepted and bridged (see SHADE_V2_BRIDGE_ACK_FILE below): the
+// ciphertext is encrypted to the same immutable root RSA. The guard file is
+// an ADDITIVE export owned by the v2 process; this server only reads it.
+// Absent file = unchanged v1 behavior. mtime-cached; on read/parse errors the
+// last known set is kept.
+const V2_GUARD_FILE = process.env.SHADE_V2_GUARD_FILE || '';
+let v2GuardAccounts = new Set();
+let v2GuardMtime = 0;
+let v2GuardCheckedAt = 0;
+function refreshV2Guard() {
+  if (!V2_GUARD_FILE) return;
+  const now = Date.now();
+  if (now - v2GuardCheckedAt < 1000) return;
+  v2GuardCheckedAt = now;
+  try {
+    const stat = fs.statSync(V2_GUARD_FILE);
+    if (stat.mtimeMs === v2GuardMtime) return;
+    const parsed = JSON.parse(fs.readFileSync(V2_GUARD_FILE, 'utf8'));
+    if (parsed && parsed.version === 1 && parsed.accounts && typeof parsed.accounts === 'object') {
+      v2GuardAccounts = new Set(Object.keys(parsed.accounts));
+      v2GuardMtime = stat.mtimeMs;
+    }
+  } catch (e) {
+    if (e.code === 'ENOENT') { v2GuardAccounts = new Set(); v2GuardMtime = 0; return; }
+    console.error('[v2-guard] guard file unreadable, keeping last known state:', e.code || 'parse error');
+  }
+}
+function v2Migrated(username) {
+  refreshV2Guard();
+  return v2GuardAccounts.has(username);
+}
+
 // ── Middleware ──────────────────────────────────────────────
 function requireUserAuth(req, res, next) {
   const sessionToken = req.headers['x-session-token'];
@@ -819,6 +893,9 @@ function requireUserAuth(req, res, next) {
   }
   if (!validateSessionToken(username, sessionToken)) {
     return res.status(403).json({ error: 'Invalid or expired session' });
+  }
+  if (v2Migrated(username)) {
+    return res.status(403).json({ error: 'upgrade_required' });
   }
   req.auth = Object.freeze({ username });
   next();
@@ -1333,6 +1410,10 @@ app.post('/register', async (req, res) => {
         }
       }
       if (existing) {
+        if (v2Migrated(username_norm)) {
+          release();
+          return res.status(403).json({ error: 'upgrade_required' });
+        }
         if (googleProfile && existing.googleSub && existing.googleSub !== googleProfile.googleSub) {
           release();
           return res.status(403).json({ error: 'Google account does not match this profile' });
@@ -1429,6 +1510,9 @@ app.post('/refresh', async (req, res) => {
     // HIGH-07: Handle family reuse detection
     if (data.error && data.error === 'TOKEN_FAMILY_REUSE_DETECTED') {
       return res.status(403).json({ error: data.message, code: 'TOKEN_FAMILY_REUSE_DETECTED' });
+    }
+    if (v2Migrated(data.username)) {
+      return res.status(403).json({ error: 'upgrade_required' });
     }
     // Token rotation: delete old and generate new with family tracking
     const newSessionToken = generateSessionToken(data.username);
@@ -1734,6 +1818,11 @@ io.on('connection', (socket) => {
     if (!gracePeriodReconnect && (!expected || token !== expected)) {
       console.warn('[ws] auth failed');
       socket.emit('authError', { error: 'Invalid session token' });
+      setTimeout(() => socket.disconnect(true), 1000);
+      return;
+    }
+    if (v2Migrated(username)) {
+      socket.emit('authError', { error: 'upgrade_required' });
       setTimeout(() => socket.disconnect(true), 1000);
       return;
     }

@@ -96,7 +96,8 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     authorize: (auth, operation) => serial(() => authenticate(auth, operation)),
     directory: account => {
       const record = recordOf(state, account); check(record, 'Unknown account');
-      return { root: record.root, genesis: structuredClone(record.genesis), history: structuredClone(record.history) };
+      return { root: record.root, genesis: structuredClone(record.genesis), history: structuredClone(record.history),
+        rotation: record.rotation ? structuredClone(record.rotation) : null };
     },
     // The first device can be any platform. Google verifies account ownership;
     // genesis + the complete roster are signed by that device, not the relay.

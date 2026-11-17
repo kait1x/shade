@@ -83,9 +83,18 @@ test('native Google ID-token session, legacy enrollment and bidirectional E2EE o
     const enrolled = await f.request('/api/v2/legacy-enrollment', { genesis, manifest }, nc);
     assert.equal(enrolled.response.status, 200);
     assert.equal(enrolled.result.revision, 1);
-    // Повторная enrollment запрещена: история уже существует.
+    // Идемпотентный resume: тот же genesis после сбоя клиента возвращает
+    // уже зафиксированный tip (revision/digest), а не конфликт и не новую запись.
     const again = await f.request('/api/v2/legacy-enrollment', { genesis, manifest }, nc);
-    assert.equal(again.response.status, 400);
+    assert.equal(again.response.status, 200);
+    assert.equal(again.result.resumed, true);
+    assert.equal(again.result.revision, 1);
+    assert.equal(again.result.digest, await hash(manifestText(manifest)));
+    // Другой genesis для уже enrolled аккаунта по-прежнему запрещён.
+    const otherGenesis = { ...genesis, nonce: randomBytes(32).toString('hex'), signature: '' };
+    otherGenesis.signature = signText(genesisText(otherGenesis), native.privateKey);
+    const conflict = await f.request('/api/v2/legacy-enrollment', { genesis: otherGenesis, manifest }, nc);
+    assert.equal(conflict.response.status, 400);
 
     const nativeOp = async (op, body = null) => {
       const operation = await hash(JSON.stringify([op, op === 'send' ? await hash(messageText(body)) : body]));

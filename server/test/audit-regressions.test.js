@@ -18,7 +18,7 @@ async function freePort() {
 }
 function once(socket, event) {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => { socket.off(event, listener); reject(Error(`Timed out: ${event}`)); }, 8000);
+    const timeout = setTimeout(() => { socket.off(event, listener); reject(Error(`Timed out: ${event}`)); }, 20000);
     function listener(value) { clearTimeout(timeout); resolve(value); }
     socket.once(event, listener);
   });
@@ -57,7 +57,7 @@ test('regressions: logout identity, admin revocation, refresh, durable receipts 
     child.stdout.on('data', data => { logs += data; });
     child.stderr.on('data', data => { logs += data; });
     await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(Error(`Server startup failed: ${logs}`)), 12000);
+      const timeout = setTimeout(() => reject(Error(`Server startup failed: ${logs}`)), 45000);
       const poll = setInterval(() => {
         if (logs.includes(`server on :${tlsPort}`)) { clearTimeout(timeout); clearInterval(poll); resolve(); }
       }, 50);

@@ -11,7 +11,7 @@ import { operationDigest } from './registry.mjs';
 const require = createRequire(import.meta.url);
 const { installStickers } = require('../stickers.js');
 
-export function createV2Stickers({ registry, io }) {
+export function createV2Stickers({ registry, io, sessionAccount }) {
   const router = express.Router();
   // Live view of enrolled v2 accounts; avatarOwner binds to the immutable root.
   const users = {
@@ -32,12 +32,17 @@ export function createV2Stickers({ registry, io }) {
   };
   const auth = (req, res, next) => {
     (async () => {
-      // Defense in depth: the proof account must match the Google session.
-      const sessionAccount = registry.accountForGoogle(req.alphaSession.profile.googleSub);
+      // Defense in depth: the proof account must match the session account
+      // (Google, legacy-key or device session).
+      const sessionAccountName = sessionAccount
+        ? sessionAccount(req.alphaSession)
+        : (req.alphaSession.profile
+          ? registry.accountForGoogle(req.alphaSession.profile.googleSub)
+          : req.alphaSession.account);
       const raw = req.headers['x-device-auth'];
       check(typeof raw === 'string' && raw.length <= 2000, 'Device proof required');
       const auth = JSON.parse(raw);
-      check(auth && auth.account === sessionAccount, 'Wrong Google account');
+      check(auth && auth.account === sessionAccountName, 'Wrong session account');
       // GET/HEAD carry no body; express.json defaults it to {} — normalize so
       // the client digest (body: null) matches byte-for-byte.
       const body = (req.method === 'GET' || req.method === 'HEAD') ? null : (req.body ?? null);

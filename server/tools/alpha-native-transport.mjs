@@ -5,8 +5,10 @@
 import readline from 'node:readline';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
 import { fixture, identity, register, operation } from '../test/helpers/alpha-fixture.mjs';
+import { buildV1Fixture, writeV1Queue } from '../test/helpers/v1-fixture.mjs';
 import { legacyRoot, messageRef } from '../multidevice/registry.mjs';
 import { sealMessage, openMessage } from '../../client/web/device_crypto.mjs';
 
@@ -32,13 +34,67 @@ function decodePayload(payload) {
 }
 
 let f, web, wc, nc, nativeGenesis, nativeManifest, nativeRoot;
+let bridgeV1Dir, bridgeSecret, bridgeQueues, bridgeAckPath;
 const nativeAccount = 'native_android';
 console.log(JSON.stringify({ ready: true }));
 for await (const line of readline.createInterface({ input: process.stdin })) {
   try {
     const request = JSON.parse(line);
     let result;
-    if (request.action === 'init') {
+    if (request.action === 'init-bridge') {
+      // Full v1->v2 bridge E2E: synthetic v1 store in the REAL at-rest format,
+      // operator CLI prepare, alpha with read-only legacySource, Google-linked
+      // legacy account. Dart enrolls and drains the bridged v1 queue.
+      const build = path.resolve('../server/build');
+      await fs.mkdir(build, { recursive: true });
+      bridgeV1Dir = await fs.mkdtemp(path.join(build, 'v1-bridge-'));
+      const targetBase = await fs.mkdtemp(path.join(build, 'alpha-bridge-'));
+      const targetDir = path.join(targetBase, 'store');
+      bridgeSecret = randomBytes(32).toString('hex');
+      const targetSecret = randomBytes(32).toString('hex');
+      bridgeAckPath = path.join(targetBase, 'bridge-ack.json');
+      const id1 = randomBytes(16).toString('hex'), id2 = randomBytes(16).toString('hex');
+      const photoB64 = Buffer.from(Array.from({ length: 64 }, (_, i) => i)).toString('base64');
+      await buildV1Fixture(bridgeV1Dir, { secret: bridgeSecret, users: [
+        { account: nativeAccount, googleSub: 'synthetic-native', publicKey: request.publicKey },
+        { account: 'v1_peer' },
+      ], messages: [
+        { to: nativeAccount, from: 'v1_peer', id: id1, text: 'v1 текст до миграции' },
+        { to: nativeAccount, from: 'v1_peer', id: id2, text: `IMG:${photoB64}` },
+      ] });
+      bridgeQueues = new Map([[nativeAccount, [
+        { id: id1, from: 'v1_peer', timestamp: Date.now(), data: null },
+      ]]]);
+      execFileSync(process.execPath,
+        ['tools/migrate-v1-to-v2.mjs', 'prepare', '--source', bridgeV1Dir, '--target', targetDir, '--all'],
+        { cwd: path.resolve('../server'), env: { ...process.env, ALPHA_STORAGE_SECRET: targetSecret }, stdio: 'pipe' });
+      nativeRoot = legacyRoot(request.publicKey);
+      const { openV1Source } = await import('../multidevice/v1-source.mjs');
+      const srcCheck = await openV1Source(bridgeV1Dir, { secret: bridgeSecret });
+      const keyMatch = srcCheck.users.get(nativeAccount)?.publicKey === request.publicKey;
+      f = await fixture({ dataDir: targetDir, storageSecret: targetSecret,
+        legacySource: { dataDir: bridgeV1Dir },
+        guardFile: path.join(targetBase, 'guard.json'), bridgeAckFile: bridgeAckPath });
+      web = await identity('native_web');
+      wc = await f.login('synthetic-web');
+      nc = await f.login('synthetic-native');
+      await register(f, web, wc);
+      result = { origin: f.origin, nativeCookie: nc, bridgeAckPath, queuedIds: [id1, id2], keyMatch,
+        web: { root: web.vault.signingKey, genesis: web.genesis, manifest: web.manifest } };
+    } else if (request.action === 'v1-send') {
+      // A v1 sender enqueues AFTER enrollment: the live top-up must deliver it.
+      const id = randomBytes(16).toString('hex');
+      const { v1Seal } = await import('../test/helpers/v1-fixture.mjs');
+      const src = await import('../multidevice/v1-source.mjs').then(m => m.openV1Source(bridgeV1Dir, { secret: bridgeSecret }));
+      // Ciphertext is sealed to the RECIPIENT's (native device) public key.
+      const recipient = src.users.get(nativeAccount);
+      const current = await src.queueFor(nativeAccount);
+      const merged = [...current.map(e => ({ id: e.id, from: e.from, timestamp: e.timestamp, data: e.data })),
+        { id, from: 'v1_peer', timestamp: Date.now(), data: v1Seal(request.text, recipient.publicKey) }];
+      bridgeQueues.set(nativeAccount, merged);
+      await writeV1Queue(bridgeV1Dir, bridgeSecret, bridgeQueues);
+      result = { id };
+    } else if (request.action === 'init') {
       const build = path.resolve('../server/build');
       await fs.mkdir(build, { recursive: true });
       const dataDir = await fs.mkdtemp(path.join(build, 'alpha-transport-'));

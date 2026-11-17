@@ -4,11 +4,15 @@ import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-export async function alphaStore(directory, secret) {
+export async function alphaStore(directory, secret, { checkpointDir = null, checkpointKeep = 20 } = {}) {
   if (!secret || secret.length < 32) throw Error('ALPHA_STORAGE_SECRET must contain at least 32 characters');
   directory = path.resolve(directory);
   const key = createHash('sha256').update(secret).digest();
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  if (checkpointDir) {
+    checkpointDir = path.resolve(checkpointDir);
+    await fs.mkdir(checkpointDir, { recursive: true, mode: 0o700 });
+  }
   // Fail closed for production/legacy directories, including accidental reuse.
   for (const file of ['users.json', 'session_secret', 'server_master_key', 'messages.json']) {
     try { await fs.access(path.join(directory, file)); throw Error('Refusing legacy/production data directory'); }
@@ -42,6 +46,22 @@ export async function alphaStore(directory, secret) {
           try { await dir.sync(); } finally { await dir.close(); }
         }
       } finally { await fs.rm(temporary, { force: true }); }
+      // Durable rolling checkpoints for lossless rollback (best-effort: a
+      // checkpoint failure must never break messaging; the main save already
+      // committed atomically above). Same encrypted bytes, separate directory.
+      if (checkpointDir) {
+        try {
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const name = `checkpoint-${stamp}-${randomBytes(4).toString('hex')}.enc`;
+          const tmp = path.join(checkpointDir, `${name}.tmp`);
+          await fs.writeFile(tmp, encoded, { mode: 0o600, flush: true, flag: 'wx' });
+          await fs.rename(tmp, path.join(checkpointDir, name));
+          const entries = (await fs.readdir(checkpointDir)).filter(f => f.startsWith('checkpoint-') && f.endsWith('.enc')).sort();
+          for (const old of entries.slice(0, Math.max(0, entries.length - checkpointKeep))) {
+            await fs.rm(path.join(checkpointDir, old), { force: true });
+          }
+        } catch (e) { console.error('[alpha-store] checkpoint write failed:', e.code || e.message); }
+      }
     },
     async close() {
       if (closed) return; closed = true;
