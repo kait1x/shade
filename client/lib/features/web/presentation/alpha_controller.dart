@@ -89,7 +89,10 @@ class AlphaController extends ChangeNotifier {
   }
 
   List<Map<String, dynamic>> conversation(String peer) => messages
-      .where((m) => m['from'] == peer || m['to'] == peer)
+      .where((m) => peer == account
+          // Favorites (self-chat): only messages addressed to yourself.
+          ? (m['from'] == peer && m['to'] == peer)
+          : (m['from'] == peer || m['to'] == peer))
       .toList()
     ..sort((a, b) => (a['createdAt'] as num).compareTo(b['createdAt'] as num));
   int unread(String peer) => conversation(peer)
