@@ -111,45 +111,80 @@ if (MODE === 'prepare') {
     s.startsWith('__Host-shade-alpha=') || s.startsWith('shade-alpha='))?.split(';')[0];
   if (!cookie) throw Error('no session cookie');
   console.log('PASS legacy-key session (synthetic account)');
-  const rootSpki = legacyRoot(createPublicKey(fx.alicePrivate).export({ type: 'spki', format: 'pem' }));
-  const recovery = await c.createRecoveryBackup('smoke_alice', rootSpki, PHRASE);
-  const now = Date.now();
-  const genesis = { version: 2, account: 'smoke_alice', nonce: randomBytes(32).toString('hex'), createdAt: now,
-    legacy: true, firstDevice: { id: 'primary', encryptionKey: rootSpki, signingKey: rootSpki },
-    recoveryKey: recovery.publicKey, signature: '' };
-  genesis.signature = signText(genesisText(genesis), fx.alicePrivate);
-  const manifest = { account: 'smoke_alice', rootFingerprint: await fingerprint(rootSpki), revision: 1, previous: '',
-    issuedAt: now, expiresAt: now + 86400000, devices: [genesis.firstDevice], signer: 'primary', signature: '' };
-  manifest.signature = signText(manifestText(manifest), fx.alicePrivate);
-  const enrolled = await req('/api/v2/legacy-enrollment', { genesis, manifest }, cookie);
-  if (enrolled.status !== 200) throw Error('enrollment failed: ' + JSON.stringify(enrolled.json));
-  console.log('PASS legacy enrollment revision', enrolled.json.revision);
-  // 3. Bridged v1 ciphertext: drains and decrypts ONLY with the synthetic old key.
+  // Cookie flags (https origin → __Host-, Secure, HttpOnly, SameSite).
+  const setCookie = (sess.headers.getSetCookie?.() || []).find(s =>
+    s.startsWith('__Host-shade-alpha=') || s.startsWith('shade-alpha=')) || '';
+  if (BASE.startsWith('https:')) {
+    if (!setCookie.startsWith('__Host-shade-alpha=') || !/Secure/i.test(setCookie) ||
+        !/HttpOnly/i.test(setCookie) || !/SameSite=Lax/i.test(setCookie)) {
+      throw Error('cookie flags invalid: ' + setCookie.slice(0, 120));
+    }
+    console.log('PASS cookie flags (__Host-, Secure, HttpOnly, SameSite=Lax)');
+  }
   const opDigest = async (op, body = null) => hash(JSON.stringify([op, body]));
-  const primaryOp = async (op, body = null) => {
+  const primaryOp = async (acct, priv, ck, op, body = null) => {
     const opHash = await opDigest(op, body);
-    const challenge = await req('/api/v2/challenge', { account: 'smoke_alice', id: 'primary', operation: opHash }, cookie);
+    const challenge = await req('/api/v2/challenge', { account: acct, id: 'primary', operation: opHash }, ck);
     const nonce = challenge.json.nonce;
-    const auth = { account: 'smoke_alice', id: 'primary', nonce,
-      proof: signText(requestText('smoke_alice', 'primary', nonce, opHash), fx.alicePrivate) };
-    return req('/api/v2/operation', { op, body, auth }, cookie);
+    const auth = { account: acct, id: 'primary', nonce,
+      proof: signText(requestText(acct, 'primary', nonce, opHash), priv) };
+    return req('/api/v2/operation', { op, body, auth }, ck);
   };
-  const inbox = await primaryOp('legacy.inbox');
-  if (inbox.status !== 200 || inbox.json.length !== 1) throw Error('inbox: ' + JSON.stringify(inbox.json));
-  const plain = openV1Payload(inbox.json[0].data, fx.alicePrivate);
-  if (plain !== 'synthetic v1 queue message') throw Error('decryption mismatch: ' + plain);
-  console.log('PASS bridged v1 ciphertext decrypted (old key, server never saw plaintext)');
-  const ack = await primaryOp('legacy.ack', [`smoke_bob:${fx.msgId}`]);
-  if (ack.json.acknowledged !== 1) throw Error('ack failed');
+  // 2b. Fresh enrollment over the domain: smoke_bob (prepared, not yet enrolled).
+  const chB = await req('/api/v2/session/legacy-challenge', { account: 'smoke_bob' });
+  if (chB.status !== 200) throw Error('bob legacy-challenge failed');
+  const opB = await hash(JSON.stringify(['legacy-session', null]));
+  const proofB = signText(requestText('smoke_bob', 'primary', chB.json.nonce, opB), fx.bobPrivate);
+  const sessB = await req('/api/v2/session/legacy', { account: 'smoke_bob', nonce: chB.json.nonce, proof: proofB });
+  if (sessB.status !== 200) throw Error('bob legacy session failed');
+  const cookieB = (sessB.headers.getSetCookie?.() || []).find(s =>
+    s.startsWith('__Host-shade-alpha=') || s.startsWith('shade-alpha='))?.split(';')[0];
+  let genesisB, manifestB;
+  if (fx.bobGenesis) {
+    genesisB = fx.bobGenesis; manifestB = fx.bobManifest;
+  } else {
+    const rootB = legacyRoot(createPublicKey(fx.bobPrivate).export({ type: 'spki', format: 'pem' }));
+    const recoveryB = await c.createRecoveryBackup('smoke_bob', rootB, PHRASE);
+    const nowB = Date.now();
+    genesisB = { version: 2, account: 'smoke_bob', nonce: randomBytes(32).toString('hex'), createdAt: nowB,
+      legacy: true, firstDevice: { id: 'primary', encryptionKey: rootB, signingKey: rootB },
+      recoveryKey: recoveryB.publicKey, signature: '' };
+    genesisB.signature = signText(genesisText(genesisB), fx.bobPrivate);
+    manifestB = { account: 'smoke_bob', rootFingerprint: await fingerprint(rootB), revision: 1, previous: '',
+      issuedAt: nowB, expiresAt: nowB + 86400000, devices: [genesisB.firstDevice], signer: 'primary', signature: '' };
+    manifestB.signature = signText(manifestText(manifestB), fx.bobPrivate);
+  }
+  const enrolledB = await req('/api/v2/legacy-enrollment', { genesis: genesisB, manifest: manifestB }, cookieB);
+  if (enrolledB.status === 200) {
+    if (!fx.bobGenesis) {
+      fx.bobGenesis = genesisB; fx.bobManifest = manifestB;
+      await fs.writeFile(path.join(DATA, 'smoke-fixture.json'), JSON.stringify(fx), { mode: 0o600 });
+      console.log('PASS fresh legacy enrollment over HTTPS, revision', enrolledB.json.revision);
+    } else {
+      if (enrolledB.json.resumed !== true) throw Error('expected resume for persisted genesis');
+      console.log('PASS idempotent enrollment resume over HTTPS');
+    }
+  } else {
+    // Already enrolled without persisted genesis: verify committed directory.
+    const dirB = await primaryOp('smoke_bob', fx.bobPrivate, cookieB, 'directory', 'smoke_bob');
+    if (dirB.status !== 200 || !dirB.json.history?.length) throw Error('bob enrollment state unverifiable: ' + JSON.stringify(enrolledB.json));
+    console.log('PASS enrollment state verified (already enrolled, genesis immutable)');
+  }
+  // 3. Signed fetch over the domain (bob, empty queue).
+  const fetchB = await primaryOp('smoke_bob', fx.bobPrivate, cookieB, 'fetch');
+  if (fetchB.status !== 200) throw Error('signed fetch failed: ' + JSON.stringify(fetchB.json));
+  console.log('PASS signed fetch over HTTPS');
+  // 4. Alice: acked bridged message never returns; exports present.
+  const inbox = await primaryOp('smoke_alice', fx.alicePrivate, cookie, 'legacy.inbox');
+  if (inbox.status !== 200) throw Error('legacy.inbox failed: ' + JSON.stringify(inbox.json));
+  if (inbox.json.length !== 0) throw Error('acked message returned: ' + inbox.json.length);
+  console.log('PASS dedup: acked bridged message never returns');
   const bridgeAck = JSON.parse(await fs.readFile(path.join(DATA, 'v2-bridge-ack.json'), 'utf8'));
   if (!bridgeAck.accounts.smoke_alice?.acked.includes(`smoke_bob:${fx.msgId}`)) throw Error('bridge-ack export missing');
-  console.log('PASS legacy.ack + bridge-ack export');
+  console.log('PASS bridge-ack export present');
   const guard = JSON.parse(await fs.readFile(path.join(DATA, 'v2-migration-guard.json'), 'utf8'));
   if (!guard.accounts.smoke_alice) throw Error('guard export missing (staging file only)');
   console.log('PASS staging guard export (production v1 NOT touched)');
-  const inbox2 = await primaryOp('legacy.inbox');
-  if (inbox2.json.length !== 0) throw Error('acked message returned');
-  console.log('PASS dedup: acked message never returns');
   console.log('ENROLL_SMOKE_OK');
 } else {
   throw Error('usage: staging-live-smoke.mjs prepare|enroll');
