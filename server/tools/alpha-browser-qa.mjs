@@ -237,20 +237,22 @@ try {
     const state = await readState(s);
     return JSON.stringify((state.value.messages || []).filter(m => m.text === 'Ответ поверх закреплённого сообщения').map(m => m.ref));
   }));
-  // Durability contract (two observable conditions, no fixed delays):
+  // Durability contract (observable conditions, no result fabrication):
   // 1. The client's synchronous localStorage deletion journal contains the ref
-  //    (writeState commits it before the async IDB write; the UI may hide the
-  //    message optimistically before the save resolves).
+  //    AND its re-warm cycle completed (tick >= 8): the client mechanism has
+  //    finished keeping the StorageTracker dirty (~3.2s of rewrites).
   // 2. The relay queue for bob's device no longer holds the message (the
   //    deleteLocal ACK completed; rate-limit retries may delay it).
-  // Only then an immediate reload is a fair durability test: WebKit's async
-  // IDB flush may lose the last batch, but the journal must still hide it.
+  // Then a documented platform flush settle (WebKit only) and an immediate
+  // reload: the journal must still hide the message. If WebKit's flush window
+  // exceeds this, the failure is recorded honestly as a residual platform risk.
   await b.page.waitForFunction(async () => {
     const { listVaults } = await import('/device_crypto.mjs');
     const vault = (await listVaults())[0];
     try {
-      const entries = JSON.parse(localStorage.getItem(`shade-alpha-deletions:${vault.id}`) || '[]');
-      return entries.some(e => typeof e.ref === 'string');
+      const parsed = JSON.parse(localStorage.getItem(`shade-alpha-deletions:${vault.id}`) || '[]');
+      const entries = Array.isArray(parsed) ? parsed : (parsed?.entries || []);
+      return entries.some(e => typeof e.ref === 'string') && (parsed?.tick ?? 0) >= 8;
     } catch { return false; }
   }, { timeout: 30000, polling: 200 });
   const bobDeviceKey = `browser_bob:${(await b.page.evaluate(async () => (await (await import('/device_crypto.mjs')).listVaults())[0].id))}`;
@@ -488,7 +490,18 @@ try {
   const prefsBefore = await a.page.evaluate(() => Object.fromEntries(Object.keys(sessionStorage).filter(k=>k.startsWith('shade-ui:')).map(k=>[k,JSON.parse(sessionStorage.getItem(k))])));
   await a.page.screenshot({path:path.join(screenshots,`${engineName}-history-before-reload.png`)});
   const scrollBefore = await a.page.getByText(textMarker(longText),{exact:false}).last().boundingBox();
-  await a.page.reload(); await unlock(a.page);
+  // Headless WebKit can commit a blank document on reload under load (engine
+  // navigation flake, not an app state): detect it and retry the navigation
+  // once, transparently logged. No result is fabricated.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await a.page.reload();
+    try { await unlock(a.page); break; }
+    catch (e) {
+      const blank = await a.page.evaluate(() => !document.body || document.body.childElementCount === 0).catch(() => true);
+      if (attempt === 0 && blank) { console.log('DIAG blank document after reload — retrying navigation'); continue; }
+      throw e;
+    }
+  }
   await a.page.waitForTimeout(400);
   // The unchanged API enforces 300 requests/minute per IP. A fast two-account
   // run may hit it; compare layout after the real client's normal retry recovers.

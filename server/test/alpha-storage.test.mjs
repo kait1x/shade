@@ -101,7 +101,7 @@ test('synchronous localStorage journal survives total IDB batch loss (WebKit kil
   await writeState(session, { messages: [m1], outbox: [] }, 1);
   // The durable journal must already contain the removal BEFORE any flush.
   const journal = JSON.parse(localStorage.getItem(`shade-alpha-deletions:${session.id}`));
-  assert.ok(journal.some(e => e.ref === 'a:primary:22'));
+  assert.ok(journal.entries.some(e => e.ref === 'a:primary:22'));
   // Worst case: the entire last IDB batch (state + IDB journal) is lost and an
   // older snapshot resurfaces. The localStorage journal still hides the ref.
   const db = await new Promise((resolve, reject) => {

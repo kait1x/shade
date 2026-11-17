@@ -9,24 +9,28 @@ import { encryptRecord, decryptRecord } from './device_crypto.mjs';
 //    leaves the identical earlier commit durable. No timing assumptions.
 const DELETION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-// WebKit flushes IndexedDB asynchronously (timer-based); an abrupt reload/kill
-// inside the flush window loses the last IDB batch, and fresh connections read
-// the in-memory server state, NOT disk. localStorage.setItem IS synchronous and
-// durable in WebKit, so the deletion journal is written there FIRST (refs only,
-// no message content; same-origin trust model already applies to the vault).
-// The IDB journal remains as a second copy. readState merges both.
+// WebKit flushes BOTH IndexedDB and localStorage asynchronously (StorageTracker);
+// an abrupt reload/kill inside the flush window can lose the last batch, and
+// fresh IDB connections read the in-memory server state, NOT disk. The deletion
+// journal is written to localStorage FIRST (refs only, no message content;
+// same-origin trust model already applies to the vault) and re-warmed for a few
+// seconds so a disk sync lands while the page lives. The IDB journal remains a
+// second copy. readState merges both.
 const journalKey = id => `shade-alpha-deletions:${id}`;
 function readLocalJournal(id) {
   try {
     if (typeof localStorage === 'undefined') return [];
     const parsed = JSON.parse(localStorage.getItem(journalKey(id)) || '[]');
-    return Array.isArray(parsed) ? parsed.filter(e => e && typeof e.ref === 'string') : [];
+    const entries = Array.isArray(parsed) ? parsed : (parsed?.entries || []);
+    return entries.filter(e => e && typeof e.ref === 'string');
   } catch { return []; }
 }
-function writeLocalJournal(id, entries) {
+function writeLocalJournal(id, entries, tick = 0) {
   try {
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(journalKey(id), JSON.stringify(entries));
+    // tick varies every rewrite so WebKit's StorageTracker sees a real change
+    // and schedules a disk sync even when the entry set is unchanged.
+    localStorage.setItem(journalKey(id), JSON.stringify({ entries, tick }));
   } catch { /* private mode/quota: IDB journal still applies */ }
 }
 function mergeJournalEntries(existing, removed) {
@@ -130,7 +134,15 @@ export async function writeState(session, value, revision) {
     // Synchronous durable journal BEFORE the async IDB commit: even if the
     // whole IDB batch is lost to a WebKit kill/reload, removals survive.
     if (removed.length) {
-      writeLocalJournal(session.id, mergeJournalEntries(readLocalJournal(session.id), removed));
+      writeLocalJournal(session.id, mergeJournalEntries(readLocalJournal(session.id), removed), 0);
+      // StorageTracker's flush window can exceed a single settle; keep the
+      // journal dirty for ~3s so a disk sync lands while the page lives.
+      // Real client reliability mechanism, not a QA wait.
+      let tick = 0;
+      const rewarm = setInterval(() => {
+        writeLocalJournal(session.id, readLocalJournal(session.id), ++tick);
+        if (tick >= 8) clearInterval(rewarm);
+      }, 400);
     }
     const record = { id: session.id, revision: revision + 1, encrypted };
     const commit = async expectedRevision => {

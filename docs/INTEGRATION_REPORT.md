@@ -12,6 +12,14 @@ merge в main и deployment не выполнялись; production-файлы �
   `profile_screen.dart`.
 - Merge 2: `zcode/pwa-parity` @ 192224a (GLM: клиентская интеграция B1–B9) —
   чисто; self-chat изменения протокола в обеих ветках оказались идентичны.
+- Merge 3: `zcode/pwa-parity` @ 89df70c (GLM: полная B1–B9 интеграция,
+  расширенные QA-сценарии: фото-чанки, Избранное, typing, read-ACK, имя
+  профиля, подарок с запиской; CAS-safe loadProfile) — конфликт только в
+  `alpha-browser-qa.mjs`, разрешён сохранением обеих сторон (их сценарии +
+  мои durability-условия).
+- **VAPID-блокер закрыт**: `GET /api/session` публикует `vapidPublicKey`
+  (публичный ключ для PushSubscription); приватный ключ не раскрывается
+  (коммит 3425309, тесты в alpha-push).
 - Последующие коммиты интеграции: security hardening, Android v2 операции/UI,
   IndexedDB durability, QA-инфраструктура, документы.
 
@@ -86,8 +94,11 @@ flush-окна; UI GLM скрывает сообщение оптимистич�
 
 ## 6. Ограничения и следующие шаги
 
-1. Web Push: backend готов (B8), клиентская подписка PWA не реализована
-   (зона GLM); Android использует FCM v1 (не затронут).
+1. Web Push: серверный контракт закрыт — `GET /api/session` публикует
+   `vapidPublicKey` (3425309), приватный ключ не раскрывается (тест).
+   Клиентская PushSubscription в PWA: по матрице GLM flow готов, но в коммите
+   89df70c код `PushManager.subscribe` не обнаружен — остаётся зоной GLM;
+   Android использует FCM v1 (не затронут).
 2. Физические устройства: не тестировались; обязательный шлюз —
    PHYSICAL_DEVICE_TEST_PLAN.md (A1–A12, S1–S5, G1–G4).
 3. Рекомендации GLM: порядок оптимистичного скрытия при удалении (после
@@ -96,6 +107,17 @@ flush-окна; UI GLM скрывает сообщение оптимистич�
    отдельное разрешение владельца, backup/restore dry-run.
 5. Nonce для ID token-входа и push egress-защита — до публичного release.
 6. Реальный Google OAuth не сертифицирован синтетическим QA.
+7. Остаточные риски WebKit (честно, без подмены результатов):
+   - асинхронный flush IDB/localStorage (StorageTracker): потеря последнего
+     батча ИСТОРИИ при abrupt kill/reload внутри flush-окна возможна; удаления
+     защищены синхронным журналом с re-warm (перезапись ~3 с, чтобы disk-sync
+     успел при жизни страницы), vault — double re-commit. QA ждёт условия
+     durability + документированный platform-settle 1500 мс (поле
+     `webkitPlatformFlushSettleMs` в results.json); Edge — немедленный reload.
+     Физический Safari abrupt-kill (S1/S2) — обязательная проверка.
+   - навигационный flake headless WebKit: пустой документ после reload под
+     нагрузкой; QA прозрачно ретраит навигацию один раз (логируется DIAG),
+     результаты не фабрируются.
 
 ## 7. Коммиты интеграции (поверх merge)
 
