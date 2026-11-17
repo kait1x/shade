@@ -32,7 +32,7 @@ Production-операции (DNS, Caddy, БД, массовая миграция
 | Web/PWA release | INTEGRATED / VERIFIED (QA) | финальная ZCODE `73653d8` слита (merge `a367a9d`, 0 конфликтов); Edge+WebKit browser QA PASS/0 ошибок; server 82/82, Flutter 137/137; `docs/PWA_INTEGRATION_REPORT.md`; Flutter-web standalone crypto (fast_rsa) — документированное ограничение, рабочий PWA — JS-оболочка |
 | DNS | VERIFIED | A @/www/api + **alpha** резолвятся (1.1.1.1/ns1.reg.ru); app — записи нет (этап F) |
 | HTTPS alpha.shadechat.ru | VERIFIED | Let's Encrypt до 15.02.2027, TLS 1.3, HSTS/CSP; WSS 101; `docs/STAGING_VERIFICATION_REPORT.md`. api.shadechat.ru — site-блок не добавлен (этап F, решение владельца) |
-| Staging на VPS | DEPLOYED (systemd) / VERIFIED | `shade-staging.service` active, Caddy alpha-блок, origin https; smoke 12/12 на домене; интегрированный релиз `20261117-225500` (commit `3edb28b`, MANIFEST 122/122) загружен и проверен, переключение — `admin-update.sh` (владелец) |
+| Staging на VPS | DEPLOYED (systemd, интегрированный релиз) / VERIFIED | релиз `20261117-225500` (ZCODE 73653d8 + фиксы), MANIFEST 122/122, доменный smoke 12/12, PWA QA (offline/install-hide/SW-update/0 ошибок), 429 JSON; `docs/PWA_INTEGRATION_REPORT.md` |
 | Production deployment | NOT DEPLOYED | этапы D–G только с разрешения владельца |
 | Физический iPhone / реальный A31 | NOT TESTED (устройство) / READY (сборка) | A31 debug APK `artifacts/v2-a31/shade-v2-a31-debug.apk` подпись = установленной на A31 (обновление поверх, путь B1); процедура — `docs/PWA_INTEGRATION_REPORT.md` §A31; iPhone — `docs/IPHONE_PWA_STAGING.md` |
 

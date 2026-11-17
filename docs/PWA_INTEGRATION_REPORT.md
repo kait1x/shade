@@ -74,6 +74,44 @@ PWA shell → длинные сообщения + скролл → клавиа�
   — **совпадает с установленным на A31 v1 debug** (apksigner по
   `artifacts/ui-ux-2/installed.apk`) → обновление поверх с сохранением данных.
 
+## Финальная доменная верификация (17.11.2026 23:40, после admin-update.sh)
+
+Владелец переключил staging на интегрированный релиз `20261117-225500`
+(UPDATE_DONE). Результаты:
+
+- **MANIFEST**: предупреждение о 4 строках — это были metadata-заголовки
+  (commit/branch/generated/zcode); вынесены в `MANIFEST.meta`,
+  `MANIFEST.sha256` теперь чистый checksum-формат: **122/122 OK, 0 предупреждений**
+  (`sha256sum -c` на VPS).
+- **Доменный smoke: 12/12 PASS** (health/legacyBridge, CSP, admin-404,
+  socket.io polling, cross-origin-403, legacy-key сессия, cookie flags,
+  idempotent enrollment resume через HTTPS, signed fetch, дедуп,
+  bridge-ack/guard exports).
+- **429 JSON**: burst 35 запросов → 30×200 + 5×429, тело
+  `{"error":"rate_limited"}`, `application/json` ✅.
+- **PWA (Playwright, 390×844, домен)**:
+  - консоль: **0 ошибок**;
+  - SW active + controller, кеш новой версии **38 записей**;
+  - **offline-запуск**: сеть отключена → reload → оболочка рендерится из
+    SW-кеша ✅;
+  - **install-кнопка**: присутствует в обычном режиме, **скрыта в standalone**
+    (эмуляция display-mode) ✅;
+  - **обновление SW**: диалог «Доступно обновление Shade» → действие
+    пользователя → активация, `waiting=false`, старый кеш удалён, без
+    зависания ✅. Применён hardening: reload по `controllerchange` вместо
+    немедленного `location.reload()` (гонка со skipWaiting наблюдалась один
+    раз в модифицированном контексте; после фикса флоу чистый).
+  - **клавиатура/белая линия** (эмуляция 390×500): `--shade-height=500px`
+    (visualViewport-handler работает), html-фон чёрный, **0 белых элементов**,
+    горизонтального overflow нет; `interactive-widget=resizes-content` в
+    viewport. Физический A31 — финальное подтверждение при закрытом тесте.
+- **Production не затронут**: shade/caddy active, v1 health 200 (loopback +
+  sslip.io), shade-staging active.
+
+SW-hardening коммит: `fix(web): SW update reload on controllerchange`;
+обновлённые shell-файлы синхронизированы в staging (статика, без рестарта),
+манифест пересобран и проверен (122/122).
+
 ## Galaxy A31 — закрытое тестирование (процедура)
 
 1. **Android-приложение**: установить `shade-v2-a31-debug.apk` поверх
