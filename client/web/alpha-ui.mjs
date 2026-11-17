@@ -57,7 +57,13 @@ function showDialog(title, elements) {
   document.querySelector('#dialog-body').replaceChildren(...elements);
   if (!dialog.open) dialog.showModal();
 }
+function isStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches ||
+    window.matchMedia('(display-mode: window-controls-overlay)').matches ||
+    navigator.standalone === true;
+}
 function installGuide() {
+  if (isStandalone()) { notice('Shade уже установлен на этом устройстве.'); return; }
   if (deferredInstall) {
     const button = node('button', 'Установить', 'primary'); button.type = 'button';
     button.onclick = async () => {
@@ -279,7 +285,8 @@ async function boot() {
     const box = welcome('Личная переписка. На любом устройстве.', 'Google подтверждает ваш аккаунт. Криптографические ключи создаются и остаются в браузере. Для их разблокировки понадобится отдельная фраза.');
     if (status.googleConfigured) { const login = node('a', 'Войти через Google', 'button'); login.href = '/auth/google'; box.append(login); }
     else box.append(node('p', 'Google OAuth ещё не настроен администратором. Переписка требует входа.', 'card'));
-    const install = node('button', 'Установить Shade'); install.onclick = installGuide; box.append(install); return;
+    if (!isStandalone()) { const install = node('button', 'Установить Shade'); install.onclick = installGuide; box.append(install); }
+    return;
   }
   loggedIn = !status.offline;
   const vaults = await listVaults();
