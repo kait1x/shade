@@ -200,3 +200,11 @@ JavaScript origin + redirect URI `https://alpha.shadechat.ru/auth/google/callbac
   Caddyfile не затрагивался). Symlink `/opt/shade-staging/current` →
   `releases/20261117-213644` создан (шаг 1 выполнен). Процесс стабилен:
   RSS ~100 МБ, ошибок в alpha.log нет.
+- **Backup/rollback drill на VPS (17.11.2026 21:54, `staging-backup-drill.sh`):**
+  checkpoint живого store → status из бэкапа → остановка alpha →
+  `replay-restore` (safety-бэкап создан) → `verify` ok (enrolled 1, prepared 1)
+  → restart → health OK → rollout-monitor baseline (health 3000/3101,
+  migration counts, error rates). Процедура восстановлена end-to-end на
+  синтетических данных. Нюанс монитора: без root/adm journalctl выдаёт
+  permission-notice, который попадает в счётчик «errors» (ложная 1);
+  фактических ошибок shade нет (`journalctl -p err` — No entries).
