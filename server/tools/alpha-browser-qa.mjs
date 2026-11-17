@@ -223,8 +223,17 @@ try {
   await b.page.getByText('Ответ поверх закреплённого сообщения',{exact:false}).last().waitFor();
   assert.equal(await b.page.getByText('Исходящее из offline очереди',{exact:false}).count(),2);
   results.replySnapshotRendered = true; console.log('PASS reply payload round-trip with snapshot render');
+  const deletedRef = await b.page.evaluate(() =>
+    window.__shadeClient.state.messages.find(m => m.text === 'Ответ поверх закреплённого сообщения')?.ref);
   await menuAction(b.page,'Ответ поверх закреплённого сообщения','Удалить у себя');
   await expectCount(b.page, b.page.getByText('Ответ поверх закреплённого сообщения',{exact:false}), 0);
+  // The deletion journal (localStorage first, IDB second) is the client
+  // mechanism that must survive a WebKit StorageTracker flush window; wait
+  // for the ref to be journaled, then give the tracker its window.
+  await b.page.waitForFunction(ref => Object.keys(localStorage)
+    .some(k => ((JSON.parse(localStorage.getItem(k) || '{"entries":[]}').entries) || [])
+      .some(e => e.ref === ref)), deletedRef, {timeout:15000});
+  await b.page.waitForTimeout(2000);
   console.log('DIAG bob localStorage journal before reload:', await b.page.evaluate(async () => {
     const { listVaults } = await import('/device_crypto.mjs');
     const vault = (await listVaults())[0];
