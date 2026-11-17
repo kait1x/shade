@@ -46,7 +46,8 @@ export async function fixture(options) {
   }
   // Native-style login with an injected verifyGoogle (tests only).
   async function loginToken(idToken) {
-    const reply = await request('/api/v2/session/google', { idToken });
+    const nonceReply = await request('/api/v2/session/nonce');
+    const reply = await request('/api/v2/session/google', { idToken, nonce: nonceReply.result.nonce });
     if (reply.response.status !== 200) throw Error(JSON.stringify(reply.result));
     return reply.response.headers.getSetCookie().find(s => s.startsWith(`${options.tls ? '__Host-' : ''}shade-alpha=`)).split(';')[0];
   }

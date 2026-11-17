@@ -27,7 +27,7 @@ abstract class AlphaV2Backend {
   String? get ownGenesisDigest;
   int? get catalogRevision;
   int? get leaseExpiresAt;
-  Future<String> requestGoogleIdToken();
+  Future<String> requestGoogleIdToken(String origin);
   Future<void> connect(String origin, String idToken);
   Future<Map<String, dynamic>> enroll(String recoveryPassphrase);
   Future<List<Map<String, dynamic>>> contacts();
@@ -58,6 +58,7 @@ class RealAlphaV2Backend implements AlphaV2Backend {
   AlphaTransport? _transport;
   V2ChatRepository? _repo;
   String? _account;
+  String? _loginNonce;
   String? _root;
   String? _privateKey;
 
@@ -168,18 +169,28 @@ class RealAlphaV2Backend implements AlphaV2Backend {
   }
 
   @override
-  Future<String> requestGoogleIdToken() async {
+  Future<String> requestGoogleIdToken(String origin) async {
     const clientId = String.fromEnvironment('ALPHA_GOOGLE_CLIENT_ID');
     if (clientId.isEmpty) {
       throw StateError(
           'ALPHA_GOOGLE_CLIENT_ID не настроен для этой сборки (отдельный OAuth-клиент alpha-процесса).');
     }
-    await GoogleSignIn.instance.initialize(serverClientId: clientId);
+    // Single-use server nonce embedded into the ID token (replay protection).
+    final nonceTransport = AlphaTransport(origin, crypto);
+    final String nonce;
+    try {
+      nonce = await nonceTransport.fetchLoginNonce();
+    } finally {
+      nonceTransport.dispose();
+    }
+    await GoogleSignIn.instance
+        .initialize(serverClientId: clientId, nonce: nonce);
     final account = await GoogleSignIn.instance.authenticate();
     final idToken = account.authentication.idToken;
     if (idToken == null) {
       throw StateError('Google не вернул ID token. Проверьте OAuth-настройки.');
     }
+    _loginNonce = nonce;
     return idToken;
   }
 
@@ -191,7 +202,12 @@ class RealAlphaV2Backend implements AlphaV2Backend {
       throw StateError('Сначала создайте профиль Shade на этом устройстве.');
     }
     final transport = AlphaTransport(origin, crypto);
-    final session = await transport.loginWithGoogleIdToken(idToken);
+    final nonce = _loginNonce;
+    if (nonce == null) {
+      transport.dispose();
+      throw StateError('Сначала запросите Google ID token.');
+    }
+    final session = await transport.loginWithGoogleIdToken(idToken, nonce);
     final account = session['account'] as String?;
     if (account == null) {
       transport.dispose();

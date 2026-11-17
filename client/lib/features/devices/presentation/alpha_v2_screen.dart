@@ -147,7 +147,7 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
       return;
     }
     await _run(() async {
-      final idToken = await _backend.requestGoogleIdToken();
+      final idToken = await _backend.requestGoogleIdToken(origin);
       await _backend.connect(origin, idToken);
       if (!mounted) return;
       setState(() =>

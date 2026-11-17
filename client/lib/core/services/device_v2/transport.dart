@@ -83,11 +83,19 @@ class AlphaTransport {
   Future<Map<String, dynamic>> session() async =>
       await _send('GET', '/api/session') as Map<String, dynamic>;
 
+  /// Одноразовый nonce для входа через Google ID token (защита от replay):
+  /// клиент передаёт его в google_sign_in initialize(nonce:), сервер сверяет
+  /// claim nonce в токене и потребляет nonce безвозвратно.
+  Future<String> fetchLoginNonce() async =>
+      (await _send('GET', '/api/v2/session/nonce')
+          as Map<String, dynamic>)['nonce'] as String;
+
   /// Вход native через Google ID token (google_sign_in plugin с serverClientId
   /// alpha-процесса). Сервер проверяет token тем же googleProfile, что и code flow.
-  Future<Map<String, dynamic>> loginWithGoogleIdToken(String idToken) async =>
-      await _send('POST', '/api/v2/session/google', body: {'idToken': idToken})
-          as Map<String, dynamic>;
+  Future<Map<String, dynamic>> loginWithGoogleIdToken(
+          String idToken, String nonce) async =>
+      await _send('POST', '/api/v2/session/google',
+          body: {'idToken': idToken, 'nonce': nonce}) as Map<String, dynamic>;
 
   Future<void> logout() async {
     await _send('POST', '/api/logout');

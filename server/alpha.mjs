@@ -153,15 +153,29 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   // token for the same OAuth client; verification is identical to the browser
   // code flow (audience, signature, verified email). Device proofs are still
   // required for every operation; the cookie alone never authorizes reads.
+  // Single-use login nonces close ID-token replay within the token lifetime.
+  const loginNonces = new Map();
+  app.get('/api/v2/session/nonce', rateLimit({ windowMs: 60000, limit: 30 }), wrap(async (_req, res) => {
+    const now = Date.now();
+    for (const [key, value] of loginNonces) if (value.expiresAt <= now) loginNonces.delete(key);
+    check(loginNonces.size < 1000, 'Login nonce capacity reached');
+    const nonce = token();
+    loginNonces.set(nonce, { expiresAt: now + 300000 });
+    res.json({ nonce });
+  }));
   app.post('/api/v2/session/google', rateLimit({ windowMs: 60000, limit: 15 }), wrap(async (req, res) => {
     // Fail-closed origin: both the PWA (same-origin POST) and the native
     // transport send Origin; a missing/mismatched Origin is rejected.
     check(req.headers.origin === publicOrigin, 'Origin required');
     // Audience (the OAuth client ID) is mandatory for ID-token verification.
     check(Boolean(clientId), 'Google OAuth is not configured');
-    const { idToken } = req.body || {};
+    const { idToken, nonce } = req.body || {};
     check(typeof idToken === 'string' && idToken.length > 0 && idToken.length <= 10000, 'Invalid Google ID token');
-    const profile = await verifier.googleProfile(idToken);
+    check(typeof nonce === 'string' && nonce.length > 0 && nonce.length <= 200, 'Google login nonce required');
+    const issued = loginNonces.get(nonce);
+    loginNonces.delete(nonce); // Single-use: consumed even when verification fails.
+    check(issued && issued.expiresAt > Date.now(), 'Google login nonce invalid or expired');
+    const profile = await verifier.googleProfile(idToken, nonce);
     const old = req.cookies[sidName]; if (old) sessions.delete(old);
     const sid = token(); sessions.set(sid, { profile, expiresAt: Date.now() + SESSION_MS });
     res.cookie(sidName, sid, { ...cookieOptions, maxAge: SESSION_MS });

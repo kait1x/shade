@@ -78,7 +78,8 @@ test('ACK and status are device-scoped; strangers cannot touch other conversatio
 test('native Google login fails closed without a matching Origin', async () => {
   const f = await fixture({ dataDir: await tempDir(), storageSecret: randomBytes(32).toString('hex'),
     clientId: 'test-client', clientSecret: 'test-secret',
-    verifyGoogle: async token => ({ sub: token, email: 'x@test.invalid', email_verified: true }) });
+    verifyGoogle: async (token, _audience, expectedNonce) =>
+      ({ sub: token, email: 'x@test.invalid', email_verified: true, nonce: expectedNonce }) });
   try {
     // Raw fetch without Origin (bypasses the fixture's same-origin header).
     const response = await fetch(f.origin + '/api/v2/session/google', {

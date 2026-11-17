@@ -34,7 +34,7 @@ class FakeBackend implements AlphaV2Backend {
   int? get leaseExpiresAt =>
       isEnrolled ? DateTime.now().millisecondsSinceEpoch + 86400000 : null;
   @override
-  Future<String> requestGoogleIdToken() async => 'synthetic-id-token';
+  Future<String> requestGoogleIdToken(String origin) async => 'synthetic-id-token';
   @override
   Future<void> connect(String origin, String idToken) async {
     if (connectError != null) throw StateError(connectError!);

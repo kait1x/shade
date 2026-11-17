@@ -13,10 +13,11 @@ import { genesisText, manifestText, messageText, requestText, hash,
   fingerprint } from '../../client/web/protocol/device-v2.mjs';
 import { sealMessage, openMessage, createRecoveryBackup } from '../../client/web/device_crypto.mjs';
 
-const verifyGoogle = async (token, audience) => {
+const verifyGoogle = async (token, audience, expectedNonce) => {
   if (audience !== 'test-client') throw Error('Wrong audience');
   if (!token.startsWith('synthetic-')) throw Error('Invalid test token');
-  return { sub: token, email: `${token}@test.invalid`, email_verified: true };
+  // Synthetic stand-in for Google's nonce claim embedding.
+  return { sub: token, email: `${token}@test.invalid`, email_verified: true, nonce: expectedNonce };
 };
 const signText = (text, privateKey) => nodeSign('sha256',
   Buffer.from(Buffer.from(text, 'utf8').toString('base64')),
@@ -144,16 +145,25 @@ test('native Google ID-token session, legacy enrollment and bidirectional E2EE o
   } finally { await f.close(); }
 });
 
-test('google token session fails closed on bad tokens and unconfigured provider', async () => {
+test('google token session fails closed on bad tokens, nonce replay and unconfigured provider', async () => {
   const f = await fixture({ dataDir: await tempDir(), storageSecret: randomBytes(32).toString('hex'),
     clientId: 'test-client', clientSecret: 'test-secret', verifyGoogle });
   try {
-    assert.equal((await f.request('/api/v2/session/google', { idToken: 'bad-token' })).response.status, 400);
+    const n1 = (await f.request('/api/v2/session/nonce')).result.nonce;
+    assert.equal((await f.request('/api/v2/session/google', { idToken: 'bad-token', nonce: n1 })).response.status, 400);
     assert.equal((await f.request('/api/v2/session/google', {})).response.status, 400);
-    const ok = await f.request('/api/v2/session/google', { idToken: 'synthetic-new-user' });
+    // Missing nonce is rejected even with a valid token (replay protection).
+    assert.equal((await f.request('/api/v2/session/google', { idToken: 'synthetic-new-user' })).response.status, 400);
+    // Unissued nonce is rejected.
+    assert.equal((await f.request('/api/v2/session/google', { idToken: 'synthetic-new-user', nonce: 'f'.repeat(64) })).response.status, 400);
+    const n2 = (await f.request('/api/v2/session/nonce')).result.nonce;
+    const ok = await f.request('/api/v2/session/google', { idToken: 'synthetic-new-user', nonce: n2 });
     assert.equal(ok.response.status, 200);
     assert.equal(ok.result.authenticated, true);
     assert.equal(ok.result.account, null);
+    // Single-use: the same nonce cannot be replayed, even with a fresh token.
+    const replay = await f.request('/api/v2/session/google', { idToken: 'synthetic-new-user', nonce: n2 });
+    assert.equal(replay.response.status, 400);
   } finally { await f.close(); }
   const unconfigured = await fixture({ dataDir: await tempDir(), storageSecret: randomBytes(32).toString('hex') });
   try {
