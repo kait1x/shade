@@ -17,7 +17,7 @@
 # ПРОВЕРКИ (после переключения, провал = АВТОМАТИЧЕСКИЙ откат):
 #   - restart/is-active shade-staging; health loopback:3101 и домена;
 #   - googleConfigured:true (именно true, не наличие поля);
-#   - фактическая SW-версия 86d0be959f25921a080a в cache-files.js;
+#   - фактическая SW-версия 0d7d7e9a778d5d847a5d в cache-files.js;
 #   - предыдущий релиз остался на диске.
 # PRODUCTION (до и после): is-active shade caddy, health :3000, ExecStart и
 #   EnvironmentFile юнита shade неизменны; деградация = CRITICAL + exit 1
@@ -26,9 +26,9 @@
 #   post-switch проверок; ручной — команда печатается всегда; прежние релизы
 #   не удаляются; данные staging совместимы в обе стороны.
 set -euo pipefail
-NEW=/opt/shade-staging/releases/20261118-215000
+NEW=/opt/shade-staging/releases/20261118-232000
 EXPECTED_COMMIT=__SET_AT_PACK_TIME__
-EXPECTED_SW=86d0be959f25921a080a
+EXPECTED_SW=0d7d7e9a778d5d847a5d
 OLD=$(readlink -f /opt/shade-staging/current)
 export PATH=/opt/node/bin:$PATH
 echo "current: $OLD"
