@@ -71,7 +71,7 @@ Copy-Item (Join-Path $PSScriptRoot 'Caddyfile.staging.example') (Join-Path $Out 
 Copy-Item (Join-Path $PSScriptRoot 'staging.env.example') (Join-Path $Out 'staging.env.example')
 Copy-Item (Join-Path $PSScriptRoot 'staging-deploy.sh') (Join-Path $Out 'staging-deploy.sh')
 Copy-Item (Join-Path $PSScriptRoot 'smoke-staging.sh') (Join-Path $Out 'smoke-staging.sh')
-Copy-Item (Join-Path $PSScriptRoot 'admin-update-v2-glm.sh') (Join-Path $Out 'admin-update-v2-glm.sh')
+Copy-Item (Join-Path $PSScriptRoot 'admin-update-challenge.sh') (Join-Path $Out 'admin-update-challenge.sh')
 Copy-Item (Join-Path $PSScriptRoot 'make-manifest.py') (Join-Path $Out 'make-manifest.py')
 
 @"
@@ -80,12 +80,13 @@ Runtime user: shade-staging (owner request 17.11.2026).
 staging-deploy.sh в этом пакете использует именование shade-alpha (ранняя
 сессия) — ПЕРЕД запуском согласовать именование с владельцем либо выполнить
 ручную установку по deploy/staging/setup-staging.sh + shade-staging.service.
-env: владелец заполняет staging.env.example -> /etc/shade-staging/staging.env
-на сервере (новые секреты, отдельный OAuth-клиент). Никаких секретов в пакете нет.
+env: владелец заполняет staging.env.example -> /var/lib/shade-staging/staging.env
+на сервере (путь задаёт systemd-юнит; новые секреты, отдельный OAuth-клиент).
+Никаких секретов в пакете нет.
 Состав: server/ (исходники, npm ci на сервере), client/web/, client/build/web-alpha/,
 shade-staging.service, Caddyfile.staging-block, staging.env.example, скрипты,
 MANIFEST.sha256 + MANIFEST.meta (commit-bound, генерируются make-manifest.py).
-Переключение: admin-update-v2-glm.sh (root), процедура docs/STAGING_RELEASE_4ba238c.md.
+Переключение: admin-update-challenge.sh (root), процедура docs/STAGING_RELEASE_5783295.md.
 "@ | Set-Content (Join-Path $Out 'README.txt') -Encoding UTF8
 
 # Commit-bound MANIFEST for the release runtime (server/ + client/).
