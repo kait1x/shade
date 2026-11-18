@@ -15,7 +15,9 @@ export async function fixture(options) {
   const instance = await createAlphaServer({ ...options, publicOrigin: origin,
     oauthProvider: { configured: true,
       start: ({ state }) => `${origin}/auth/google/callback?state=${state}&code=${encodeURIComponent(loginSub)}`,
-      finish: async code => { if (!code.startsWith('synthetic-')) throw Error('Invalid test code'); return { googleSub: code }; } } });
+      finish: async code => { if (!code.startsWith('synthetic-')) throw Error('Invalid test code');
+        // Mirrors auth-proof.googleProfile: a verified profile always carries email.
+        return { googleSub: code, email: `${code}@synthetic.invalid` }; } } });
   await new Promise(r => instance.server.listen(port, '127.0.0.1', r));
   async function request(route, body, cookie = '') {
     if (options.tls) return new Promise((resolve, reject) => {

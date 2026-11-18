@@ -5,7 +5,7 @@ import { hash, genesisText } from './protocol/device-v2.mjs';
 const root = document.querySelector('#root'), dialog = document.querySelector('#dialog');
 const client = new AlphaClient();
 const contact = account => client.state && Object.hasOwn(client.state.contacts, account) ? client.state.contacts[account] : null;
-let selected = null, users = [], ready = false, actionTail = Promise.resolve(), noticeTimer, loggedIn = false;
+let selected = null, users = [], ready = false, actionTail = Promise.resolve(), noticeTimer, loggedIn = false, sessionEmail = null;
 function node(tag, text, className) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (className) n.className = className; return n; }
 function notice(text) { const n = document.querySelector('#notice'); n.textContent = text; n.classList.add('visible'); clearTimeout(noticeTimer); noticeTimer = setTimeout(() => n.classList.remove('visible'), 9000); }
 const errors = { google_login_required: 'Сессия Google истекла. Войдите снова; ключи сохранены.',
@@ -74,7 +74,7 @@ function render() {
     (errors[client.lastError] || 'Ошибка синхронизации · повтор через 15 секунд') :
     client.connected ? 'Подключено · E2EE' : 'Переподключение…';
   window.shadeReceive(JSON.stringify({
-    account: client.session.account, selected, connection, connected: client.connected && navigator.onLine && !client.lastError,
+    account: client.session.account, email: sessionEmail, selected, connection, connected: client.connected && navigator.onLine && !client.lastError,
     peers: accounts.map(account => ({ account, pinned: !!contact(account), unverified: (client.unverified || []).includes(account) })),
     messages: client.state.messages.map(({ref,from,to,text,createdAt,status,devices}) => ({ref,from,to,text,createdAt,status,devices})),
     devices: (client.state.own.history.at(-1)?.devices || []).map(({id}) => ({id, current:id === client.session.id})),
@@ -164,6 +164,7 @@ async function boot() {
     const install = node('button', 'Установить на iPhone'); install.onclick = installGuide; box.append(install); return;
   }
   loggedIn = !status.offline;
+  sessionEmail = typeof status.email === 'string' ? status.email : null;
   const vaults = await listVaults();
   const matching = vaults.filter(v => v.account === status.account);
   if (status.account && !matching.length) {

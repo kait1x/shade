@@ -213,12 +213,27 @@ const limiter = rateLimit({
   message: { error: 'Too many requests, please try again later' },
   standardHeaders: true,
   legacyHeaders: false,
+  // The admin panel polls dashboard-stats every 5s; it gets its own soft
+  // per-route budget (panelLimiter) instead of this general API quota.
+  skip: req => req.path === '/dashboard-stats',
 });
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
   message: { error: 'Too many authentication attempts' },
+});
+
+// Owner decision: the panel is loopback-only behind an SSH tunnel, so
+// authenticated GET polling must not self-throttle (5s auto-refresh ≈ 180
+// req/15min per endpoint). Each panel route gets its own soft 240/15min IP
+// budget; the strict anti-brute-force limiter stays on POST /admin/login only.
+const panelLimiter = () => rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 240,
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
 // HIGH-02: Лимиты регистрации - 3 в минуту, 10 в час
@@ -240,7 +255,7 @@ const registerLimiterHour = rateLimit({
 
 app.use('/api/', limiter);
 app.use('/register', registerLimiterMinute, registerLimiterHour);
-app.use('/dashboard', requireAuth, authLimiter);
+app.use('/dashboard', requireAuth, panelLimiter());
 
 // ── In-memory stores ─────────────────────────────────────────
 
@@ -1121,7 +1136,7 @@ function handleLogin(e){
 
 // Endpoint to authenticate admin and set session cookie
 // TODO: TOTP 2FA for admin (LOW-03)
-app.post('/admin/login', (req, res) => {
+app.post('/admin/login', authLimiter, (req, res) => {
   const clientIp = req.ip || req.connection.remoteAddress || 'unknown';
   const now = Date.now();
   
@@ -1218,7 +1233,7 @@ app.get('/api/stats', requireAuth, (req, res) => {
   });
 });
 
-app.get('/api/dashboard-stats', requireAuth, (req, res) => {
+app.get('/api/dashboard-stats', requireAuth, panelLimiter(), (req, res) => {
   res.json({
     totalUsers: users.size,
     online: onlineUsers.size,
@@ -1997,7 +2012,7 @@ app.delete('/admin/user/:username', requireAuth, async (req, res) => {
   }
 });
 
-app.get('/logs', requireAuth, (_req, res) => {
+app.get('/logs', requireAuth, panelLimiter(), (_req, res) => {
   res.json(recentLogs.slice(-50));
 });
 
