@@ -9,7 +9,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createVault, unlockVault, saveVault, loadVault, listVaults,
   createRecoveryBackup, finalizeRecoveryBackup, unlockRecoveryBackup, createGenesis } from '../../client/web/device_crypto.mjs';
-import { generateRecoveryPhrase } from '../../client/web/device_binding.mjs';
+import { generateRecoveryPhrase, createDeviceBinding, unlockDeviceBinding,
+  bindingErrorText } from '../../client/web/device_binding.mjs';
 
 const PRF_SHAPE = /^[A-Za-z0-9_-]{43}$/; // base64url of 32 PRF bytes, as device_binding.mjs derives
 const prfStylePassphrase = () => {
@@ -95,4 +96,95 @@ test('lost passkey: recovery package restores identity on a new device without t
   const { sign, verify } = await import('../../client/web/protocol/device-v2.mjs');
   const probe = 'recovery probe';
   assert.ok(await verify(probe, await sign(probe, recovered.signing), finalized.publicKey));
+});
+
+// ---- WebAuthn mock harness -------------------------------------------------
+// Emulates a PRF-capable platform authenticator strictly enough to pin the
+// wire format: the eval input MUST carry `first` (AuthenticationExtensions
+// PRFValues), a bare BufferSource makes Chromium reject the call with
+// "Required member is undefined" before any authenticator round-trip.
+const CHROMIUM_MISSING_FIRST =
+  "Failed to execute 'get' on 'CredentialsContainer': Failed to read the 'first' property from 'AuthenticationExtensionsPRFValues': Required member is undefined";
+
+function installWebAuthnMock({ mode } = {}) {
+  const calls = { create: [], get: [] };
+  let credentialId = null;
+  const mock = {
+    credentials: {
+      async create(options) {
+        calls.create.push(options);
+        credentialId = crypto.getRandomValues(new Uint8Array(32)).buffer;
+        return { rawId: credentialId };
+      },
+      async get(options) {
+        calls.get.push(options);
+        if (mode === 'browser-typeerror') throw new TypeError(CHROMIUM_MISSING_FIRST);
+        const first = options.publicKey.extensions?.prf?.eval?.first;
+        if (!(first instanceof ArrayBuffer || first instanceof Uint8Array) || first.byteLength === 0) {
+          throw new TypeError(CHROMIUM_MISSING_FIRST);
+        }
+        if (mode === 'empty-results') return { getClientExtensionResults: () => ({ prf: {} }) };
+        if (mode === 'missing-first-result') {
+          return { getClientExtensionResults: () => ({ prf: { results: {} } }) };
+        }
+        const output = await crypto.subtle.digest('SHA-256',
+          new Uint8Array([...new Uint8Array(first), ...new Uint8Array(credentialId)]));
+        return { getClientExtensionResults: () => ({ prf: { results: { first: output } } }) };
+      },
+    },
+  };
+  const previous = { navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator'),
+    location: Object.getOwnPropertyDescriptor(globalThis, 'location') };
+  Object.defineProperty(globalThis, 'navigator', { value: mock, configurable: true });
+  Object.defineProperty(globalThis, 'location', { value: { hostname: 'localhost' }, configurable: true });
+  return {
+    calls,
+    restore() {
+      if (previous.navigator) Object.defineProperty(globalThis, 'navigator', previous.navigator);
+      else delete globalThis.navigator;
+      if (previous.location) Object.defineProperty(globalThis, 'location', previous.location);
+      else delete globalThis.location;
+    },
+  };
+}
+
+test('spec-format PRF eval: setup uses {first: salt} and re-unlock derives the identical passphrase', async () => {
+  const mock = installWebAuthnMock();
+  try {
+    const { binding, passphrase } = await createDeviceBinding('prf_flow_user');
+    assert.equal(binding.method, 'prf');
+    assert.match(passphrase, PRF_SHAPE);
+    // The registration evaluation carried the salt as the `first` member...
+    const setupFirst = mock.calls.get[0].publicKey.extensions.prf.eval.first;
+    assert.ok(setupFirst.byteLength === 16, 'eval.first is the 16-byte salt');
+    assert.equal(Buffer.from(setupFirst).toString('base64'), binding.salt); // b64() keeps standard padding
+    // ...and "closing the app + unlocking again" re-evaluates the SAME bytes.
+    const unlockPassphrase = await unlockDeviceBinding(binding);
+    assert.equal(mock.calls.get.length, 2);
+    const unlockFirst = mock.calls.get[1].publicKey.extensions.prf.eval.first;
+    assert.deepEqual(Buffer.from(unlockFirst), Buffer.from(setupFirst));
+    assert.equal(unlockPassphrase, passphrase); // deterministic re-derivation
+    assert.equal(mock.calls.get[1].publicKey.rpId, 'localhost');
+  } finally { mock.restore(); }
+});
+
+test('regression: Chromium missing-first TypeError maps to honest prf_unavailable, never the raw error', async () => {
+  const mock = installWebAuthnMock({ mode: 'browser-typeerror' });
+  try {
+    await assert.rejects(() => createDeviceBinding('prf_regression'),
+      error => error.message === 'prf_unavailable');
+    const mapped = bindingErrorText({ message: 'prf_unavailable' });
+    assert.ok(mapped && mapped.includes('PRF'));
+    assert.ok(!mapped.includes('Failed to execute'));
+  } finally { mock.restore(); }
+});
+
+test('authenticators without PRF results surface the phrase fallback, not a crash', async () => {
+  for (const mode of ['empty-results', 'missing-first-result']) {
+    const mock = installWebAuthnMock({ mode });
+    try {
+      await assert.rejects(() => createDeviceBinding('prf_no_results'),
+        error => error.message === 'prf_unavailable');
+    } finally { mock.restore(); }
+  }
 });
