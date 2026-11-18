@@ -65,7 +65,8 @@ on_error() {
 }
 trap on_error ERR
 
-[ "$EXPECTED_COMMIT" != '__SET_AT_PACK_TIME__' ] || { echo "script not prepared by package-upload (placeholder commit)" >&2; exit 1; }
+# Fail-closed: an unbaked placeholder is not a 40-hex commit sha.
+if ! [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then echo "script not prepared by package-upload (placeholder commit)" >&2; exit 1; fi
 [ -d "$NEW/server" ] || { echo "new release missing" >&2; exit 1; }
 [ -d "$NEW/server/node_modules" ] || { echo "run npm ci in new release first (shade-staging)" >&2; exit 1; }
 [ -f "$NEW/MANIFEST.sha256" ] || { echo "manifest missing" >&2; exit 1; }
