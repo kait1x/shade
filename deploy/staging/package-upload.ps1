@@ -72,6 +72,11 @@ Copy-Item (Join-Path $PSScriptRoot 'staging.env.example') (Join-Path $Out 'stagi
 Copy-Item (Join-Path $PSScriptRoot 'staging-deploy.sh') (Join-Path $Out 'staging-deploy.sh')
 Copy-Item (Join-Path $PSScriptRoot 'smoke-staging.sh') (Join-Path $Out 'smoke-staging.sh')
 Copy-Item (Join-Path $PSScriptRoot 'admin-update-challenge.sh') (Join-Path $Out 'admin-update-challenge.sh')
+# Bake the exact package commit into the shipped switch script (fail-closed
+# placeholder otherwise); MANIFEST.meta records the same HEAD.
+$head = git -C $root rev-parse HEAD
+$shipped = Join-Path $Out 'admin-update-challenge.sh'
+(Get-Content $shipped -Raw) -replace '__SET_AT_PACK_TIME__', $head | Set-Content $shipped -Encoding UTF8 -NoNewline
 Copy-Item (Join-Path $PSScriptRoot 'make-manifest.py') (Join-Path $Out 'make-manifest.py')
 
 @"

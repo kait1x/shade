@@ -101,12 +101,18 @@ curl -fsS https://alpha.shadechat.ru/flutter-ui/cache-files.js | head -1
 # ожидается SHADE_UI_VERSION = "452edec1ece3d2d41c01"
 ```
 
-Скрипт: fail-closed сверка MANIFEST по checksum, commit-binding, синтаксис,
-наличие env, baseline production v1 ДО переключения; после переключения —
-health loopback:3101 + домен, googleConfigured, SW-версия, контроль production.
-Автооткат (одна попытка) при провале post-switch проверок; ручной откат
-печатается всегда; деградация v1 после переключения → CRITICAL без автоотката
-staging (скрипт не пишет в production).
+Скрипт (fail-closed): до переключения — сверка MANIFEST по checksum, **точное
+совпадение commit в MANIFEST.meta с EXPECTED_COMMIT** (подставляется при
+упаковке = commit упаковки; нереплейснутый плейсхолдер = отказ), синтаксис,
+наличие staging.env без REPLACE_WITH в Google client id/secret, наличие
+каталога предыдущего релиза, baseline production v1 (is-active shade/caddy,
+health :3000, ExecStart/EnvironmentFile юнита shade). После переключения —
+health loopback:3101 + домен, **googleConfigured именно true**, **фактическая
+SW-версия 452edec1ece3d2d41c01** в cache-files.js, сохранность каталога
+предыдущего релиза, неизменность health и ExecStart/EnvironmentFile production.
+Провал post-switch проверок = автоматический откат (одна попытка) с печатью
+результата; деградация/изменение production = CRITICAL + exit 1 без автоотката
+staging. Ручной откат печатается всегда; прежние релизы не удаляются.
 
 ## 8. Откат (всегда доступен)
 
@@ -126,3 +132,32 @@ G1–G3). Отдельно перечислены отсутствующие ф�
 recovery-UI, Android-pairing, QR и др.). APK для A31 от 9a94fb0 не содержит
 web-изменений релиза; native v2-протокол совместим, пересборка для паритета —
 отдельное решение владельца.
+
+## 10. Уточнения для физических тестов (A31 без Google, PRF fallback)
+
+**Galaxy A31, Google-вход может быть недоступен** (нет GMS/Play Services,
+не настроен Android OAuth-клиент или сборка без
+`--dart-define=ALPHA_GOOGLE_CLIENT_ID`). Альтернативный путь без Google:
+legacy-key сессия (`/api/v2/session/legacy-challenge` + `/session/legacy`)
+и явная legacy-enrollment на экране «Устройства (v2)» исходным RSA-ключом
+v1-аккаунта (ключи/SQLCipher/v1-история не заменяются; при RSA-2048 —
+rotation до RSA-4096, crash-safe журнал). Условия: в staging настроена
+read-only копия v1 (`ALPHA_V1_DATA_DIR`), т.е. `/api/health` показывает
+`"legacyBridge":true`, и тестовый аккаунт существует в этой копии. Проверка
+до теста: `curl -s https://alpha.shadechat.ru/api/health`. Если
+`legacyBridge:false` и Google недоступен — Android не сможет авторизоваться
+в этом staging; решение владельца: staging-копия v1 (только staging,
+docs/V2_DEPLOYMENT.md §3) либо Google-способное устройство. Pairing-роль
+Android в любом случае отсутствует (см. список отсутствующих функций).
+
+**PRF fallback — точная семантика.** Fallback существует ТОЛЬКО на этапе
+создания идентичности: при недоступности/ошибке PRF кнопка «Использовать
+фразу устройства» переводит на фразу ≥16 символов (iOS ≤17 и не-PRF-браузеры
+получают фразу автоматически по probe). Для уже PRF-привязанного vault фраза
+устройства машинно-выводимая и пользователю неизвестна: поле фразы при
+разблокировке скрыто, при утрате passkey/отмене биометрии показывается
+честная ошибка, но фразового fallback и recovery-UI пока НЕТ — локальный
+vault останется недоступным до реализации recovery-флоу. Рекомендация для
+закрытого теста: на тестовых устройствах либо выбирать фразовый путь при
+создании, либо тестировать PRF с сохранённым passkey и пониманием риска;
+сценарий «удалил passkey» фиксировать как ожидаемую блокировку, не дефект.
