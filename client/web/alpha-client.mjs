@@ -504,9 +504,12 @@ export class AlphaClient extends EventTarget {
       check(tip.devices.length < 8, 'Достигнут лимит 8 устройств');
       const manifest = await c.approveDevices(this.state.own.genesis, this.state.own.history,
         [...tip.devices, offer.device], this.session, this.state.own.checkpoint);
-      // Only the fields the registry consumes; the challenge echo stays local.
+      // Only the fields the registry consumes. v2 offers carry the challenge
+      // inside the signed proof (pairingTextV2); v1 keeps the legacy shape
+      // during the transition window.
       const proofs = [{ id: offer.device.id, nonce: offer.nonce,
-        expiresAt: offer.expiresAt, signature: offer.signature }];
+        expiresAt: offer.expiresAt, signature: offer.signature,
+        ...(offer.v === 2 ? { challenge: offer.challenge, pairingVersion: 2 } : {}) }];
       await this.operation('install', { manifest, proofs });
       await this.refreshOwn();
       this.pairing = null; // One-time: a stolen approval screen cannot be reused.

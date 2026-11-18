@@ -1,5 +1,5 @@
 import { check, ACCOUNT, DEVICE, b64, unb64, deviceId, publicKey, fingerprint,
-  pairingText, sign, verify, verifyGenesis } from './protocol/device-v2.mjs';
+  pairingText, pairingTextV2, sign, verify, verifyGenesis } from './protocol/device-v2.mjs';
 
 // Second-device pairing payloads. The transport between the two devices is an
 // ordinary clipboard/text channel, so every block is self-contained, versioned
@@ -13,6 +13,10 @@ import { check, ACCOUNT, DEVICE, b64, unb64, deviceId, publicKey, fingerprint,
 //   against the pinned genesis.
 const utf8 = new TextEncoder();
 const OFFER_PREFIX = 'shade-pair-v1:';
+// v2 offers sign the challenge echo (pairingTextV2): substituting the challenge
+// or the device keys invalidates the signature. v1 stays readable during the
+// transition window; the server-side cutoff is a separate owner decision.
+const OFFER_PREFIX_V2 = 'shade-pair-v2:';
 const CONFIRM_PREFIX = 'shade-pair-confirm-v1:';
 // Server accepts a pairing proof with expiresAt in (now, now + 300000].
 // Four minutes leaves a realistic clipboard round trip.
@@ -60,7 +64,7 @@ export function decodeChallenge(text) {
 function offerFields(offer) {
   check(offer && typeof offer === 'object' && !Array.isArray(offer) &&
     Object.keys(offer).sort().join(',') === 'account,challenge,device,expiresAt,nonce,signature,v', 'Неверный формат запроса подключения');
-  check(offer.v === 1 && typeof offer.account === 'string' && ACCOUNT.test(offer.account) &&
+  check((offer.v === 1 || offer.v === 2) && typeof offer.account === 'string' && ACCOUNT.test(offer.account) &&
     typeof offer.challenge === 'string' && /^[a-f0-9]{30}$/.test(offer.challenge) &&
     typeof offer.nonce === 'string' && /^[a-f0-9]{64}$/.test(offer.nonce) &&
     Number.isSafeInteger(offer.expiresAt) && typeof offer.signature === 'string', 'Неверный формат запроса подключения');
@@ -86,18 +90,29 @@ function tipFields(tip) {
 // New device: build the signed offer. The device keys must already exist
 // locally (durable vault); nothing is sent to the relay at this point.
 // `signing` is the unlocked non-extractable signing CryptoKey of this device.
-export async function buildPairingOffer({ account, device, signing, challenge, now = Date.now(), ttlMs = OFFER_TTL_MS }) {
+export async function buildPairingOffer({ account, device, signing, challenge, now = Date.now(), ttlMs = OFFER_TTL_MS, version = 2 }) {
   check(typeof account === 'string' && ACCOUNT.test(account), 'Некорректный аккаунт');
   check(typeof challenge === 'string' && /^[a-f0-9]{30}$/.test(challenge), 'Введите действующий код подключения');
+  check(version === 1 || version === 2, 'Неверная версия запроса подключения');
   const nonce = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
   const expiresAt = now + ttlMs;
   check(expiresAt <= now + 300000, 'Срок запроса подключения превышает допустимый');
-  const offer = { v: 1, account, device, challenge, nonce, expiresAt, signature: '' };
-  offer.signature = await sign(pairingText(account, device, nonce, expiresAt), signing);
+  const offer = { v: version, account, device, challenge, nonce, expiresAt, signature: '' };
+  offer.signature = await sign(version === 2
+    ? pairingTextV2(account, device, nonce, expiresAt, challenge)
+    : pairingText(account, device, nonce, expiresAt), signing);
   return offer;
 }
-export function encodeOffer(offer) { return OFFER_PREFIX + b64url(JSON.stringify(offerFields(offer))); }
-export function decodeOffer(text) { return offerFields(JSON.parse(fromB64url(text, OFFER_PREFIX))); }
+export function encodeOffer(offer) {
+  offerFields(offer);
+  return (offer.v === 2 ? OFFER_PREFIX_V2 : OFFER_PREFIX) + b64url(JSON.stringify(offer));
+}
+export function decodeOffer(text) {
+  const v2 = typeof text === 'string' && text.startsWith(OFFER_PREFIX_V2);
+  const offer = offerFields(JSON.parse(fromB64url(text, v2 ? OFFER_PREFIX_V2 : OFFER_PREFIX)));
+  check((offer.v === 2) === v2, 'Неверный формат кода подключения');
+  return offer;
+}
 // Trusted device: full verification before showing the confirmation screen.
 // Throws on every mismatch so the UI can surface the concrete reason.
 export async function verifyPairingOffer(offer, { account, challenge, now = Date.now() }) {
@@ -110,7 +125,12 @@ export async function verifyPairingOffer(offer, { account, challenge, now = Date
   check(d.id === await deviceId(d.encryptionKey, d.signingKey), 'Идентификатор устройства не совпадает с ключами');
   await publicKey(d.encryptionKey, 'RSA-OAEP', 'encrypt'); // Enforces RSA-4096, e=65537.
   await publicKey(d.signingKey, 'RSA-PSS', 'verify');
-  check(await verify(pairingText(account, d, offer.nonce, offer.expiresAt), offer.signature, d.signingKey),
+  // v2: the challenge is INSIDE the signed text — a mutated echo or swapped
+  // keys fail here, not only in the local echo comparison.
+  const text = offer.v === 2
+    ? pairingTextV2(account, d, offer.nonce, offer.expiresAt, offer.challenge)
+    : pairingText(account, d, offer.nonce, offer.expiresAt);
+  check(await verify(text, offer.signature, d.signingKey),
     'Подпись устройства недействительна');
   return d;
 }

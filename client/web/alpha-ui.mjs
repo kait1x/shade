@@ -449,7 +449,7 @@ function pairDeviceDialog() {
   const code = node('code', challenge.code);
   const field = node('textarea'); field.rows = 6; field.autocomplete = 'off';
   field.setAttribute('aria-label', 'Запрос подключения с нового устройства');
-  field.placeholder = 'Вставьте запрос подключения (shade-pair-v1:…)';
+  field.placeholder = 'Вставьте запрос подключения (shade-pair-v2:…)';
   const review = node('button', 'Проверить запрос', 'primary'); review.type = 'button';
   review.onclick = () => action(async () => {
     const reviewed = await client.reviewPairingOffer(field.value);
@@ -511,12 +511,10 @@ function pairingOfferStage(initialCode = '') {
     await openApp();
   }); };
   confirmForm.prepend(confirmation);
-  // Security review (18.11): the challenge echo is NOT inside the signed
-  // pairingText, so a substituted offer can still carry a valid signature.
-  // The user-verifiable binding is the device fingerprint: show this device's
-  // own fingerprint so it can be compared with the trusted screen BEFORE the
-  // user approves there. Protocol change (signing the challenge) is a separate
-  // agreed task; this is the UI mitigation.
+  // Challenge-binding (pairingTextV2, offer shade-pair-v2:) now signs the
+  // challenge echo, so a substituted offer fails signature verification.
+  // The fingerprint comparison stays as defense-in-depth: the user can still
+  // visually confirm WHICH device is being approved before confirming.
   const fpBox = node('div', undefined, 'phrase-box');
   fpBox.append(node('code', client.session.id));
   onboard({

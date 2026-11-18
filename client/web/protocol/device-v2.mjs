@@ -191,6 +191,19 @@ export function pairingText(account, d, nonce, expiresAt) {
   check(DEVICE.test(d.id) && d.id !== 'primary');
   return JSON.stringify(['shade-pair:v2', account, d.id, d.encryptionKey, d.signingKey, nonce, expiresAt]);
 }
+// Challenge-bound pairing proof text (security review 18.11, High finding):
+// the one-time challenge shown on the trusted device becomes part of the
+// signed data, so substituting the challenge — or the device keys — invalidates
+// the signature. Domain tag 'shade-pair:v3' separates it from the unbound text
+// above, which stays byte-identical for legacy clients and interop golden
+// vectors. Wire offer format version 2 (prefix shade-pair-v2:) carries it.
+export function pairingTextV2(account, d, nonce, expiresAt, challenge) {
+  check(typeof challenge === 'string' && /^[a-f0-9]{30}$/.test(challenge), 'Invalid pairing challenge');
+  check(typeof account === 'string' && ACCOUNT.test(account) && typeof nonce === 'string' &&
+    /^[a-f0-9]{64}$/.test(nonce) && Number.isSafeInteger(expiresAt));
+  check(DEVICE.test(d.id) && d.id !== 'primary');
+  return JSON.stringify(['shade-pair:v3', account, d.id, d.encryptionKey, d.signingKey, nonce, expiresAt, challenge]);
+}
 export function requestText(account, id, nonce, operation) {
   check(typeof account === 'string' && ACCOUNT.test(account) && typeof id === 'string' && DEVICE.test(id) &&
     typeof nonce === 'string' && /^[a-f0-9]{64}$/.test(nonce) && typeof operation === 'string' && /^[a-f0-9]{64}$/.test(operation));

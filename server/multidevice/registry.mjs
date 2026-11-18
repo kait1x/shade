@@ -4,7 +4,7 @@
 // atomic server storage and introduce separate device-scoped transport routes.
 import { createPublicKey, randomBytes } from 'node:crypto';
 import { check, hash, manifestText, deviceId,
-  pairingText, requestText, verify, verifyMessage, messageText, verifyGenesis, verifyHistory } from '../../client/web/protocol/device-v2.mjs';
+  pairingText, pairingTextV2, requestText, verify, verifyMessage, messageText, verifyGenesis, verifyHistory } from '../../client/web/protocol/device-v2.mjs';
 
 export const operationDigest = (operation, body = null) => hash(JSON.stringify([operation, body]));
 export const messageRef = m => `${m.from}:${m.deviceId}:${m.id}`;
@@ -16,7 +16,7 @@ export function legacyRoot(pem) {
   return key.export({ type: 'spki', format: 'der' }).toString('base64');
 }
 
-export async function createDeviceRegistry({ users, persist, snapshot, clock = Date.now, verifyGoogle }) {
+export async function createDeviceRegistry({ users, persist, snapshot, clock = Date.now, verifyGoogle, pairingV1 = true }) {
   check(users instanceof Map && typeof persist === 'function');
   // Additive snapshot: never rewrite users, legacy messages, tokens or keys.
   let state = { format: 2, accounts: {}, queues: {}, receipts: {}, delivery: {}, stickers: {}, retractions: {}, pushSubscriptions: {} };
@@ -294,8 +294,20 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
         const proof = proofs.find(p => p.id === d.id);
         check(proof && proof.expiresAt > clock() && proof.expiresAt <= clock() + 300000, 'Fresh pairing proof required');
         check(d.id === await deviceId(d.encryptionKey, d.signingKey));
-        check(await verify(pairingText(manifest.account, d, proof.nonce, proof.expiresAt),
-          proof.signature, d.signingKey), 'Invalid pairing possession proof');
+        if (proof.pairingVersion === 2) {
+          // Challenge-bound proof: the signature must cover the challenge the
+          // trusted device displayed. A v1 signature here fails (downgrade).
+          check(typeof proof.challenge === 'string' && /^[a-f0-9]{30}$/.test(proof.challenge), 'Invalid pairing challenge');
+          check(await verify(pairingTextV2(manifest.account, d, proof.nonce, proof.expiresAt, proof.challenge),
+            proof.signature, d.signingKey), 'Invalid pairing possession proof');
+        } else {
+          check(proof.pairingVersion === undefined && proof.challenge === undefined, 'Invalid pairing proof version');
+          // Cutoff applies to roster growth (the pairing approval UX). Genesis
+          // enrollment has no trusted-device challenge and keeps v1 proofs.
+          check(pairingV1 || !old, 'Pairing v1 proofs are disabled; update the client');
+          check(await verify(pairingText(manifest.account, d, proof.nonce, proof.expiresAt),
+            proof.signature, d.signingKey), 'Invalid pairing possession proof');
+        }
       }
       for (const d of old?.devices || []) {
         if (!manifest.devices.some(next => next.id === d.id)) record.retired.push(d.id);

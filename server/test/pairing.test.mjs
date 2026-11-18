@@ -28,6 +28,11 @@ async function webProof(v, keys, ttl = 60000) {
   const d = descriptor(v), nonce = randomBytes(32).toString('hex'), expiresAt = Date.now() + ttl;
   return { id: d.id, nonce, expiresAt, signature: await sign(pairingText('bob', d, nonce, expiresAt), keys.signing) };
 }
+// The registry consumes exactly what the approving client sends: v2 offers
+// carry the challenge inside the signed proof (pairingTextV2).
+const proofOf = offer => ({ id: offer.device.id, nonce: offer.nonce,
+  expiresAt: offer.expiresAt, signature: offer.signature,
+  ...(offer.v === 2 ? { challenge: offer.challenge, pairingVersion: 2 } : {}) });
 async function auth(id, keys, operation) {
   const nonce = registry.challenge('bob', id, operation);
   return { account: 'bob', id, nonce, proof: await sign(requestText('bob', id, nonce, operation), keys.signing) };
@@ -111,7 +116,7 @@ test('full pairing flow: approval installs the newcomer, replay is stale, sessio
   const manifest = await approveDevices(gb, [tip], [...tip.devices, offer.device], browser, checkpoint);
   assert.equal(manifest.revision, 2);
   assert.equal(manifest.signer, descriptor(vault).id);
-  const proofs = [{ id: offer.device.id, nonce: offer.nonce, expiresAt: offer.expiresAt, signature: offer.signature }];
+  const proofs = [proofOf(offer)];
   assert.equal((await registry.install(manifest, proofs)).revision, 2);
   // Replay of the same revision must never resurrect or double-install.
   await assert.rejects(registry.install(manifest, proofs), /Stale/);
@@ -147,8 +152,7 @@ test('after pairing both devices receive E2EE messages the newcomer can decrypt'
   const current = await verifyHistory(dir.history, dir.root, null, dir.history.at(-1).issuedAt, dir.genesis);
   const manifest = await approveDevices(dir.genesis, dir.history,
     [...dir.history.at(-1).devices, offer.device], browser, current);
-  await registry.install(manifest, [{ id: offer.device.id, nonce: offer.nonce,
-    expiresAt: offer.expiresAt, signature: offer.signature }]);
+  await registry.install(manifest, [proofOf(offer)]);
   const history = [...dir.history, manifest];
   const trust = { senderRoot: bob.root, recipientRoot: bob.root, senderGenesis: gb, recipientGenesis: gb,
     senderCheckpoint: current, recipientCheckpoint: current };

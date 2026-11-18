@@ -124,6 +124,9 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       }
     }
     registry = await createDeviceRegistry({ users: seedUsers, snapshot: saved, persist: s => store.save(s),
+      // Owner-controlled cutoff for unbound (v1) pairing proofs on roster
+      // growth; genesis enrollment is exempt. Default: transition window open.
+      pairingV1: process.env.ALPHA_PAIRING_V1 !== 'off',
       verifyGoogle: async sid => {
         const session = sessions.get(sid);
         check(session && session.expiresAt > Date.now() && session.profile, 'Google session expired');

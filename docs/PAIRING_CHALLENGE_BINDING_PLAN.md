@@ -86,6 +86,43 @@ device и валидно подписанный offer с аккаунтом же
 
 ## 7. Решение владельца
 
-Требуется явное «согласовано» на изменение pairingText/registry (п. 3.1–3.4)
-и выбор политики cutoff v1. До согласования действует UI-митигация 4ba238c:
-pairing безопасен только при осознанном сравнении отпечатков пользователем.
+Согласовано владельцем 18.11.2026 («план концептуально согласован, реализовывать
+отдельно от staging-релиза, с полным набором негативов и проверкой
+совместимости; пока не деплоить»). Реализовано в ветке
+`pairing-challenge-binding` (см. §8). Staging-релиз `v2-glm-integration`
+(cb376c1) НЕ содержит этих изменений и не деплоится с ними.
+
+## 8. Реализация (ветка pairing-challenge-binding)
+
+Отклонения/уточнения относительно концептуального плана:
+
+1. **Домен-тег подписываемого текста — `shade-pair:v3`** (функция
+   `pairingTextV2`), а не `shade-pair-v2`: тег `shade-pair:v2` уже занят
+   существующим unbound-текстом (`pairingText`, байт-в-байт не изменён).
+   Wire-префикс offer — `shade-pair-v2:` как в плане; поле `v: 2`; префикс и
+   версия обязаны совпадать при decode.
+2. **Proof клиента**: для v2-offer approvePairing отправляет
+   `{id, nonce, expiresAt, signature, challenge, pairingVersion: 2}`; для
+   v1-offer — legacy-форма без этих полей.
+3. **Сервер (registry.update)**: `pairingVersion === 2` → verify над
+   `pairingTextV2` с проверкой формата challenge (30 hex); иначе legacy-форма
+   обязана быть без `pairingVersion`/`challenge` (ambiguous → reject) и
+   проверяется над v1-текстом. Downgrade (заявлен v2, подпись v1) отклоняется.
+4. **Cutoff**: опция `createDeviceRegistry({pairingV1})` (env
+   `ALPHA_PAIRING_V1=off` в alpha.mjs, по умолчанию окно открыто). Cutoff
+   запрещает v1-proof только при росте ростера (pairing approval UX);
+   genesis-enrollment без доверенного устройства сохраняет v1-proof —
+   иначе cutoff сломал бы регистрацию. Отдельного решения владельца о
+   включении cutoff не требуется для деплоя: по умолчанию совместимость.
+5. **UI**: плейсхолдер offer обновлён на v2; сравнение отпечатков сохранено
+   как defense-in-depth.
+6. **Тесты**: server/test/pairing-v2.test.mjs (9 тестов: round-trip v2,
+   мутация challenge без пересчёта подписи, подмена ключей, v1-совместимость,
+   prefix/version mismatch, TTL/weak-RSA, downgrade/ambiguous/malformed proof,
+   cutoff genesis-exempt, полный v2-flow с session/directory/fanout);
+   существующий pairing.test.mjs переведён на v2-proof клиента и остаётся
+   зелёным (v1-webProof используется для genesis). Dart-порт
+   (protocol.dart pairingText) и golden-векторы (generate_v2_vectors.mjs)
+   не изменялись.
+7. **QA**: alpha-browser-qa.mjs ожидает префикс `shade-pair-v2:`; полный
+   pairing-сценарий прогоняется на обоих движках.
