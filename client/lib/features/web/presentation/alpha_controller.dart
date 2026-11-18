@@ -24,6 +24,14 @@ class AlphaController extends ChangeNotifier {
       Map<String, dynamic>.from(data['notes'] as Map? ?? {});
   Map<String, dynamic> get profile =>
       Map<String, dynamic>.from(data['profile'] as Map? ?? {});
+  // Key card presentation data (public material): identicon seed + genesis
+  // digest, projected by alpha-ui.mjs; null until the vault is unlocked.
+  Map<String, dynamic>? get key =>
+      data['key'] == null ? null : Map<String, dynamic>.from(data['key'] as Map);
+  String get platform => data['platform'] as String? ?? 'desktop';
+  // Populates only when the relay starts returning the Google email in
+  // /api/session (server-side gap tracked for Qwen).
+  String? get email => data['email'] as String?;
   Map<String, dynamic> get typing =>
       Map<String, dynamic>.from(data['typing'] as Map? ?? {});
   Map<String, dynamic> get presence =>

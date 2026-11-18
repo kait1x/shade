@@ -424,7 +424,8 @@ try {
   // A transient server hiccup shows an honest SnackBar; the save retries.
   let nameSaved = false;
   for (let attempt = 0; attempt < 3 && !nameSaved; attempt++) {
-    await a.page.getByText('Изменить имя',{exact:true}).click();
+    // The Android-parity action row replaced the 'Изменить имя' text button.
+    await a.page.getByRole('button',{name:'Имя',exact:true}).click();
     await a.page.locator('input[placeholder="Как вас видят собеседники"]:visible').fill('Алиса Тест');
     await a.page.getByText('Сохранить',{exact:true}).click();
     try {

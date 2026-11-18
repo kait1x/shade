@@ -568,7 +568,10 @@ void main() {
     await tester.tap(find.byTooltip('Профиль'));
     await tester.pumpAndSettle();
     expect(find.text('Изменить аватар'), findsOneWidget);
-    expect(find.text('Добавить имя'), findsOneWidget);
+    // The Android-parity action row replaced the 'Добавить имя' text button.
+    expect(find.text('Имя'), findsOneWidget);
+    expect(find.text('Копировать'), findsOneWidget);
+    expect(find.text('Мой ключ'), findsOneWidget);
     await tester.tap(find.text('Изменить аватар'));
     await tester.pumpAndSettle();
     expect(find.text('Ваш образ в Shade'), findsOneWidget);
@@ -613,7 +616,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Профиль'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Добавить имя'));
+    await tester.tap(find.text('Имя'));
     await tester.pumpAndSettle();
     await tester.enterText(find.byType(TextField), 'Алиса');
     await tester.tap(find.text('Сохранить'));
@@ -725,14 +728,19 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byTooltip('Профиль'));
     await tester.pumpAndSettle();
-    // The aluminium wall renders even with an empty inventory, and the load
-    // is owner-scoped through the real adapter action.
+    // The aluminium wall renders even with an empty inventory; the longer
+    // parity profile scrolls the lazy list to it first. The load is
+    // owner-scoped through the real adapter action.
+    await tester.dragUntilVisible(find.byType(ReferenceLid),
+        find.byType(ListView).first, const Offset(0, -300));
+    await tester.pumpAndSettle();
     expect(find.byType(ReferenceLid), findsOneWidget);
     final load = actions.lastWhere((entry) => entry['action'] == 'stickers.load');
     expect((load['payload'] as Map)['owner'], true);
     // The gift entry point must not exist: the v2 contract is missing.
     expect(find.text('Подарить'), findsNothing);
-    expect(find.textContaining('Обмен подарками появится'), findsOneWidget);
+    // The dev hint is gone in the shipped profile.
+    expect(find.textContaining('Обмен подарками появится'), findsNothing);
     // Editing an empty wall saves a real revision through the adapter.
     await tester.dragUntilVisible(
         find.text('Оформить'), find.byType(ListView).first,
@@ -827,6 +835,10 @@ void main() {
       c.apply(data);
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Профиль'));
+      await tester.pumpAndSettle();
+      // The longer parity profile scrolls the lazy list to the key card.
+      await tester.dragUntilVisible(find.text('Ключ шифрования'),
+          find.byType(ListView).first, const Offset(0, -300));
       await tester.pumpAndSettle();
       expect(find.text('Ключ шифрования'), findsOneWidget);
       expect(tester.takeException(), isNull);
@@ -938,6 +950,10 @@ void main() {
     expect(find.byKey(const Key('message-field')), findsOneWidget);
     // The profile replaces only the right pane.
     await tester.tap(find.byTooltip('Профиль'));
+    await tester.pumpAndSettle();
+    // The longer parity profile scrolls the lazy list to the key card.
+    await tester.dragUntilVisible(find.text('Ключ шифрования'),
+        find.byType(ListView).first, const Offset(0, -300));
     await tester.pumpAndSettle();
     expect(find.text('Ключ шифрования'), findsOneWidget);
     expect(find.text('Сообщения'), findsOneWidget);

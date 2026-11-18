@@ -1028,6 +1028,59 @@ class _Profile extends StatelessWidget {
 
   String get displayName => controller.profile['displayName'] as String? ?? '';
 
+  // Identicon seed: sha256 over the SPKI public key, hex-projected by
+  // alpha-ui.mjs (Android key-card parity). Empty until the vault unlocks.
+  List<int> get _identiconBytes {
+    final seed = controller.key?['seed'] as String?;
+    if (seed == null || seed.isEmpty) return const [];
+    final bytes = <int>[];
+    for (var i = 0; i + 1 < seed.length; i += 2) {
+      bytes.add(int.parse(seed.substring(i, i + 2), radix: 16));
+    }
+    return bytes;
+  }
+
+  // Card preview: the first four hex groups of the genesis digest, like the
+  // Android 'Ключ шифрования' row. The full grouped code lives in the dialog.
+  String get _fingerprintPreview {
+    final hex = (controller.key?['digest'] as String? ?? '').toUpperCase();
+    if (hex.length < 16) return 'Отпечаток формируется…';
+    return '${[
+      hex.substring(0, 4),
+      hex.substring(4, 8),
+      hex.substring(8, 12),
+      hex.substring(12, 16)
+    ].join(' ')}…';
+  }
+
+  Widget _profileAction(BuildContext context,
+      {required IconData icon,
+      required String label,
+      required VoidCallback onTap,
+      bool primary = false}) {
+    final ink = primary ? Colors.black : ShadeColors.textPrimary;
+    return Material(
+        color: primary ? ShadeColors.textPrimary : ShadeColors.surfaceCard,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: BorderSide(
+                color: primary ? Colors.transparent : ShadeColors.greyBorder)),
+        child: InkWell(
+            borderRadius: BorderRadius.circular(18),
+            onTap: onTap,
+            child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Icon(icon, size: 21, color: ink),
+                  const SizedBox(height: 9),
+                  Text(label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          color: ink, fontSize: 12, fontWeight: FontWeight.w600)),
+                ]))));
+  }
+
   Future<void> _editAvatar(BuildContext context) async {
     final frame = AvatarFrame.values.firstWhere(
         (f) => f.name == controller.profile['frame'],
@@ -1194,17 +1247,38 @@ class _Profile extends StatelessWidget {
                           textAlign: TextAlign.center,
                           style: const TextStyle(color: ShadeColors.textMuted)),
                       const SizedBox(height: 8),
-                      Semantics(
-                          button: true,
-                          child: TextButton(
-                              onPressed: () => _editName(context),
-                              child: Text(
-                                  displayName.isEmpty
-                                      ? 'Добавить имя'
-                                      : 'Изменить имя',
-                                  style: const TextStyle(fontSize: 13)))),
+                      const SizedBox(height: 16),
+                      Row(children: [
+                        Expanded(
+                            child: _profileAction(context,
+                                icon: Icons.edit_outlined,
+                                label: 'Имя',
+                                primary: true,
+                                onTap: () => _editName(context))),
+                        const SizedBox(width: 10),
+                        Expanded(
+                            child: _profileAction(context,
+                                icon: Icons.copy_outlined,
+                                label: 'Копировать',
+                                onTap: () async {
+                                  await Clipboard.setData(ClipboardData(
+                                      text: '@${controller.account}'));
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                            content: Text(
+                                                'Имя пользователя скопировано')));
+                                  }
+                                })),
+                        const SizedBox(width: 10),
+                        Expanded(
+                            child: _profileAction(context,
+                                icon: Icons.qr_code_2_rounded,
+                                label: 'Мой ключ',
+                                onTap: () => controller.act('identity'))),
+                      ]),
                       const SizedBox(height: 24),
-                      const Text('АККАУНТ И БЕЗОПАСНОСТЬ',
+                      const Text('ИНФОРМАЦИЯ',
                           style: TextStyle(
                               fontSize: 11,
                               letterSpacing: 1.5,
@@ -1213,20 +1287,108 @@ class _Profile extends StatelessWidget {
                       Card(
                           child: Column(children: [
                         ListTile(
-                            leading: const Icon(Icons.key_outlined),
-                            title: const Text('Ключ шифрования'),
-                            subtitle:
-                                const Text('Публичный отпечаток · SHA-256'),
-                            trailing: const Icon(Icons.chevron_right_rounded),
-                            onTap: () => controller.act('identity')),
+                            leading: const Icon(Icons.alternate_email_rounded),
+                            title: Text('@${controller.account}'),
+                            subtitle: const Text('Имя пользователя')),
+                        if (controller.email != null) ...[
+                          const Divider(height: 1, indent: 56),
+                          ListTile(
+                              leading: const Icon(Icons.mail_outline_rounded),
+                              title: Text(controller.email!,
+                                  style: const TextStyle(fontSize: 15)),
+                              subtitle: const Text('Google-аккаунт')),
+                        ],
                         const Divider(height: 1, indent: 56),
-                        ListTile(
+                        const ListTile(
+                            leading: Icon(Icons.phone_iphone_rounded),
+                            title: Text('Это устройство'),
+                            subtitle: Text(
+                                'Приватный ключ не покидает браузер')),
+                      ])),
+                      const SizedBox(height: 24),
+                      const Text('ШИФРОВАНИЕ',
+                          style: TextStyle(
+                              fontSize: 11,
+                              letterSpacing: 1.5,
+                              color: ShadeColors.textMuted)),
+                      const SizedBox(height: 12),
+                      Card(
+                          clipBehavior: Clip.antiAlias,
+                          child: Semantics(
+                              button: true,
+                              child: InkWell(
+                                  onTap: () => controller.act('identity'),
+                                  child: Padding(
+                                      padding: const EdgeInsets.all(16),
+                                      child: Row(children: [
+                                        _KeyIdenticon(
+                                            bytes: _identiconBytes, size: 52),
+                                        const SizedBox(width: 12),
+                                        Expanded(
+                                            child: Column(
+                                                crossAxisAlignment:
+                                                    CrossAxisAlignment.start,
+                                                children: [
+                                                  Row(children: [
+                                                    const Expanded(
+                                                        child: Text(
+                                                            'Ключ шифрования',
+                                                            style: TextStyle(
+                                                                fontSize: 14,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w600))),
+                                                    Container(
+                                                        padding: const EdgeInsets
+                                                            .symmetric(
+                                                            horizontal: 8,
+                                                            vertical: 4),
+                                                        decoration: BoxDecoration(
+                                                            color: ShadeColors
+                                                                .surfaceElevated,
+                                                            borderRadius:
+                                                                BorderRadius
+                                                                    .circular(
+                                                                        20)),
+                                                        child: const Text('Ваш',
+                                                            style: TextStyle(
+                                                                fontSize: 11,
+                                                                fontWeight:
+                                                                    FontWeight
+                                                                        .w600,
+                                                                color: ShadeColors
+                                                                    .textPrimary))),
+                                                  ]),
+                                                  const SizedBox(height: 6),
+                                                  Text(_fingerprintPreview,
+                                                      style: const TextStyle(
+                                                          fontFamily:
+                                                              'monospace',
+                                                          fontSize: 12,
+                                                          letterSpacing: 1.2,
+                                                          color: ShadeColors
+                                                              .textSecondary)),
+                                                  const SizedBox(height: 4),
+                                                  const Text(
+                                                      'Нажмите, чтобы показать код',
+                                                      style: TextStyle(
+                                                          fontSize: 12,
+                                                          color: ShadeColors
+                                                              .textMuted)),
+                                                ])),
+                                        const Icon(
+                                            Icons.chevron_right_rounded,
+                                            color: ShadeColors.textMuted),
+                                      ]))))),
+                      const SizedBox(height: 12),
+                      Card(
+                          child: ListTile(
                             leading: const Icon(Icons.file_download_outlined),
                             title: const Text('Recovery-пакет'),
                             subtitle:
                                 const Text('Сохранить зашифрованную копию'),
-                            onTap: () => controller.act('backup')),
-                      ])),
+                            onTap: () => controller.act('backup'),
+                          )),
                       const SizedBox(height: 24),
                       const Text('ПОДАРКИ · ВИНИЛОВАЯ СТЕНА',
                           style: TextStyle(
@@ -1234,13 +1396,6 @@ class _Profile extends StatelessWidget {
                               letterSpacing: 1.5,
                               color: ShadeColors.textMuted)),
                       const SizedBox(height: 4),
-                      const Text(
-                          'Обмен подарками появится с device-v2 API; '
-                          'оформление локальной стены уже работает.',
-                          style: TextStyle(
-                              fontSize: 12,
-                              height: 1.5,
-                              color: ShadeColors.textMuted)),
                       StickerCollection(
                           username: controller.account,
                           owner: true,
@@ -1259,10 +1414,10 @@ class _Profile extends StatelessWidget {
                                       leading: Icon(d['current'] == true
                                           ? Icons.devices_rounded
                                           : Icons.phonelink_rounded),
-                                      title: Text(
-                                          d['current'] == true
+                                      title: Text(d['name'] as String? ??
+                                          (d['current'] == true
                                               ? 'Этот браузер'
-                                              : 'Устройство',
+                                              : 'Устройство'),
                                           style: const TextStyle(fontSize: 15)),
                                       subtitle: Text(d['id'] as String,
                                           maxLines: 2,
@@ -1306,8 +1461,14 @@ class _Profile extends StatelessWidget {
                               leading:
                                   const Icon(Icons.notifications_outlined),
                               title: const Text('Уведомления'),
-                              subtitle: const Text(
-                                  'Push-сигнал без текста · iOS: установленное приложение'),
+                              subtitle: Text(switch (controller.platform) {
+                                'ios' =>
+                                  'Push-сигнал без текста · iOS: установленное приложение',
+                                'android' =>
+                                  'Push-сигнал без текста · Android: разрешение уведомлений',
+                                _ =>
+                                  'Push-сигнал без текста · разрешите уведомления в браузере',
+                              }),
                               onTap: () => controller.act('push.toggle'))),
                       const SizedBox(height: 12),
                       OutlinedButton.icon(
@@ -1603,4 +1764,49 @@ class _ConversationPatternPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _ConversationPatternPainter oldDelegate) =>
       false;
+}
+
+// Key-card identicon, ported from the Android profile_screen.dart painter:
+// an 8×8 grid where each cell takes a nibble of the seed bytes (high nibble
+// on even cells, low on odd) mapped to a four-step grey palette.
+class _KeyIdenticon extends StatelessWidget {
+  final List<int> bytes;
+  final double size;
+  const _KeyIdenticon({required this.bytes, required this.size});
+
+  @override
+  Widget build(BuildContext context) => ClipRRect(
+      borderRadius: BorderRadius.circular(size > 100 ? 14 : 10),
+      child: CustomPaint(
+          size: Size.square(size), painter: _IdenticonPainter(bytes)));
+}
+
+class _IdenticonPainter extends CustomPainter {
+  final List<int> bytes;
+  const _IdenticonPainter(this.bytes);
+
+  static const _colors = [
+    Color(0xFF2A2A2A),
+    Color(0xFF5C5C5C),
+    Color(0xFF9E9E9E),
+    Color(0xFFEDEDED),
+  ];
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cell = size.width / 8;
+    final paint = Paint();
+    for (var i = 0; i < 64; i++) {
+      final byte = bytes.isEmpty ? 0 : bytes[(i >> 1) % bytes.length];
+      final nibble = i.isEven ? byte >> 4 : byte & 0x0F;
+      paint.color = _colors[nibble & 0x03];
+      canvas.drawRect(
+          Rect.fromLTWH((i % 8) * cell, (i >> 3) * cell, cell + .5, cell + .5),
+          paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _IdenticonPainter oldDelegate) =>
+      oldDelegate.bytes != bytes;
 }

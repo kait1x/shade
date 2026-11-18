@@ -79,7 +79,12 @@ function installGuide() {
     showDialog('Установить Shade', [node('p', 'Установить приложение Shade на это устройство?'), node('p', 'Ключи остаются в этом браузере. Не очищайте данные сайта. Перед установкой сохраните recovery-пакет. Установка PWA не переносит ключи из другого браузера.', 'muted'), button]);
     return;
   }
-  showDialog('Установить Shade', [node('p', 'В Safari нажмите «Поделиться» → «На экран Домой» → «Добавить». Открывайте Shade с этой иконки.'), node('p', 'Ключи остаются в этом браузере. Не очищайте данные сайта. Перед установкой сохраните recovery-пакет. Установка PWA не переносит ключи из другого браузера.', 'muted')]);
+  const manualGuide = platformName() === 'ios'
+    ? 'В Safari нажмите «Поделиться» → «На экран Домой» → «Добавить». Открывайте Shade с этой иконки.'
+    : platformName() === 'android'
+      ? 'В Chrome на Android: меню ⋮ → «Установить приложение» или «Добавить на главный экран». Открывайте Shade с этой иконки.'
+      : 'В Edge или Chrome нажмите значок установки в адресной строке → «Установить». Открывайте Shade с ярлыка.';
+  showDialog('Установить Shade', [node('p', manualGuide), node('p', 'Ключи остаются в этом браузере. Не очищайте данные сайта. Перед установкой сохраните recovery-пакет. Установка PWA не переносит ключи из другого браузера.', 'muted')]);
 }
 // Chromium offers a real install flow; Safari needs the manual guide above.
 let deferredInstall = null;
@@ -621,10 +626,32 @@ function render() {
     },
     typing: client.typingUntil || {},
     presence: client.presence || {},
-    devices: (client.state.own.history.at(-1)?.devices || []).map(({id}) => ({id, current:id === client.session.id})),
+    key: keyInfo,
+    platform: platformName(),
+    email: sessionEmail,
+    devices: (client.state.own.history.at(-1)?.devices || []).map(({id}) =>
+      ({id, current: id === client.session.id,
+        name: id === client.session.id ? thisDeviceName() : undefined})),
     positions: ui.positions, readUntil: ui.readUntil,
   }));
   announceIncoming();
+}
+// Own key presentation data (public material only): the identicon seed is
+// sha256 over the SPKI public key (matching the Android key card) and the
+// digest is the genesis fingerprint used for cross-device comparison.
+let keyInfo = null, sessionEmail = null;
+function platformName() {
+  const ua = navigator.userAgent;
+  return /iPhone|iPad|iPod/.test(ua) ? 'ios' : /Android/.test(ua) ? 'android' : 'desktop';
+}
+function thisDeviceName() {
+  const ua = navigator.userAgent;
+  const browser = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera'
+    : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : 'Safari';
+  const os = /iPhone|iPad|iPod/.test(ua) ? 'iOS' : /Android/.test(ua) ? 'Android'
+    : /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : 'web';
+  const short = String(client.session?.id || '').slice(0, 8);
+  return `${browser} · ${os}${short ? ` · ${short}` : ''}`;
 }
 async function openApp() {
   ready = true;
@@ -639,6 +666,13 @@ async function openApp() {
   root.firstChild.id = 'flutter-host';
   const loading = node('p','Загрузка интерфейса Shade…','flutter-loading'); root.append(loading);
   document.body.classList.add('flutter-ready'); updateViewport();
+  try {
+    const spki = client.state.own.genesis?.firstDevice?.signingKey || '';
+    const raw = Uint8Array.from(atob(spki), ch => ch.charCodeAt(0));
+    const seed = new Uint8Array(await crypto.subtle.digest('SHA-256', raw));
+    keyInfo = { seed: [...seed].map(b => b.toString(16).padStart(2, '0')).join(''),
+      digest: await hash(genesisText(client.state.own.genesis)) };
+  } catch { keyInfo = null; /* presentation data only */ }
   window.shadeAction = async (kind, raw = '{}') => {
     try {
       const data = JSON.parse(raw);
@@ -697,9 +731,32 @@ async function openApp() {
         }
         case 'verify': verifyContact(data.account); break;
         case 'refresh': users = await client.users(); render(); break;
-        case 'identity': showDialog('Ваш отпечаток', [node('p', '@' + client.session.account),
-          node('code', await hash(genesisText(client.state.own.genesis))),
-          node('p', 'Передайте этот отпечаток собеседнику через независимый доверенный канал.', 'muted')]); break;
+        case 'identity': {
+          // Key card dialog, styled after the Android 'Мой ключ' sheet:
+          // identicon from sha256(publicKey) + the genesis digest in grouped
+          // hex. Whitespace is stripped on both sides when comparing, so the
+          // grouping never changes the fingerprint value.
+          const digest = await hash(genesisText(client.state.own.genesis));
+          const canvas = document.createElement('canvas');
+          canvas.width = 148; canvas.height = 148;
+          canvas.setAttribute('aria-label', 'Идентикон ключа');
+          canvas.style.cssText = 'width:148px;height:148px;border-radius:14px;display:block;margin:0 auto;background:#000';
+          const palette = ['#2a2a2a', '#5c5c5c', '#9e9e9e', '#ededed'];
+          const seed = keyInfo?.seed || digest;
+          const g2d = canvas.getContext('2d');
+          for (let i = 0; i < 64; i++) {
+            const byte = parseInt(seed.slice(i >> 1, (i >> 1) + 2) || '0', 16);
+            g2d.fillStyle = palette[byte & 3];
+            g2d.fillRect((i % 8) * 18.5, (i >> 3) * 18.5, 18.5, 18.5);
+          }
+          const groups = (digest.toUpperCase().match(/.{1,4}/g) || []);
+          const grouped = Array.from({length: (groups.length + 3) >> 2},
+              (_, line) => groups.slice(line * 4, line * 4 + 4).join(' ')).join('\n');
+          showDialog('Мой ключ', [node('p', '@' + client.session.account + ' · ваш ключ'),
+            canvas, node('code', grouped),
+            node('p', 'Покажите рисунок и полный код собеседнику и сравните через независимый доверенный канал.', 'muted')]);
+          break;
+        }
         case 'backup': downloadBackup(); break;
         case 'install': installGuide(); break;
         case 'logout': await client.disablePush().catch(() => {}); client.stop(); await api('/api/logout', {}); location.reload(); break;
@@ -752,6 +809,9 @@ async function boot() {
     if (navigator.onLine || !local.length) throw error;
     status = { authenticated: true, account: local[0].account, offline: true };
   }
+  // Surfaces automatically once the relay includes the Google email in
+  // /api/session (server-side gap tracked for Qwen); absent until then.
+  sessionEmail = typeof status.email === 'string' && status.email ? status.email : null;
   if (!status.authenticated) { welcomeStep(status); return; }
   loggedIn = !status.offline;
   const vaults = await listVaults();
