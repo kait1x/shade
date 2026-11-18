@@ -66,21 +66,21 @@ on_error() {
 trap on_error ERR
 
 # Fail-closed: an unbaked placeholder is not a 40-hex commit sha.
-if ! [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then echo "script not prepared by package-upload (placeholder commit)" >&2; exit 1; fi
-[ -d "$NEW/server" ] || { echo "new release missing" >&2; exit 1; }
-[ -d "$NEW/server/node_modules" ] || { echo "run npm ci in new release first (shade-staging)" >&2; exit 1; }
-[ -f "$NEW/MANIFEST.sha256" ] || { echo "manifest missing" >&2; exit 1; }
-[ -f "$NEW/MANIFEST.meta" ] || { echo "manifest meta missing" >&2; exit 1; }
-[ -f /var/lib/shade-staging/staging.env ] || { echo "staging.env missing" >&2; exit 1; }
-[ -d "$OLD/server" ] || { echo "previous release dir missing; rollback would be impossible" >&2; exit 1; }
-if grep -q '^ALPHA_GOOGLE_CLIENT_ID=REPLACE_WITH' /var/lib/shade-staging/staging.env; then echo "staging.env: Google client id placeholder" >&2; exit 1; fi
-if grep -q '^ALPHA_GOOGLE_CLIENT_SECRET=REPLACE_WITH' /var/lib/shade-staging/staging.env; then echo "staging.env: Google client secret placeholder" >&2; exit 1; fi
+if ! [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then echo "script not prepared by package-upload (placeholder commit)" >&2; false; fi
+[ -d "$NEW/server" ] || { echo "new release missing" >&2; false; }
+[ -d "$NEW/server/node_modules" ] || { echo "run npm ci in new release first (shade-staging)" >&2; false; }
+[ -f "$NEW/MANIFEST.sha256" ] || { echo "manifest missing" >&2; false; }
+[ -f "$NEW/MANIFEST.meta" ] || { echo "manifest meta missing" >&2; false; }
+[ -f /var/lib/shade-staging/staging.env ] || { echo "staging.env missing" >&2; false; }
+[ -d "$OLD/server" ] || { echo "previous release dir missing; rollback would be impossible" >&2; false; }
+if grep -q '^ALPHA_GOOGLE_CLIENT_ID=REPLACE_WITH' /var/lib/shade-staging/staging.env; then echo "staging.env: Google client id placeholder" >&2; false; fi
+if grep -q '^ALPHA_GOOGLE_CLIENT_SECRET=REPLACE_WITH' /var/lib/shade-staging/staging.env; then echo "staging.env: Google client secret placeholder" >&2; false; fi
 
 echo "== manifest integrity (fail-closed) =="
 (cd "$NEW" && sha256sum -c MANIFEST.sha256 --quiet)
 echo "manifest: all checksums OK"
 echo "== exact commit binding =="
-grep -q "^commit: ${EXPECTED_COMMIT}$" "$NEW/MANIFEST.meta" || { echo "MANIFEST commit mismatch (expected $EXPECTED_COMMIT)" >&2; exit 1; }
+grep -q "^commit: ${EXPECTED_COMMIT}$" "$NEW/MANIFEST.meta" || { echo "MANIFEST commit mismatch (expected $EXPECTED_COMMIT)" >&2; false; }
 grep '^commit:' "$NEW/MANIFEST.meta"
 
 echo "== syntax =="
@@ -101,13 +101,13 @@ systemctl is-active shade-staging
 curl -fsS -m 5 http://127.0.0.1:3101/api/health; echo
 curl -fsS -m 10 https://alpha.shadechat.ru/api/health; echo
 echo "== googleConfigured must be true =="
-curl -fsS -m 10 https://alpha.shadechat.ru/api/session | grep -q '"googleConfigured":true' || { echo "googleConfigured is not true" >&2; exit 1; }
+curl -fsS -m 10 https://alpha.shadechat.ru/api/session | grep -q '"googleConfigured":true' || { echo "googleConfigured is not true" >&2; false; }
 echo "googleConfigured:true OK"
 echo "== SW version must be $EXPECTED_SW =="
-curl -fsS -m 10 https://alpha.shadechat.ru/flutter-ui/cache-files.js | grep -q "$EXPECTED_SW" || { echo "served SW version mismatch" >&2; exit 1; }
+curl -fsS -m 10 https://alpha.shadechat.ru/flutter-ui/cache-files.js | grep -q "$EXPECTED_SW" || { echo "served SW version mismatch" >&2; false; }
 echo "SW version OK"
 echo "== previous release preserved =="
-[ -d "$OLD/server" ] || { echo "previous release disappeared" >&2; exit 1; }
+[ -d "$OLD/server" ] || { echo "previous release disappeared" >&2; false; }
 echo "previous release intact: $OLD"
 
 echo "== production untouched =="
