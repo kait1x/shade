@@ -141,4 +141,7 @@ for (const [width,height,label] of [[320,568,'320x568-se'],[375,812,'375x812'],[
   await context.close();
 }
 await main.context.close();
+// The fixture HTTPS server keeps the event loop alive; close it so the tool
+// exits after printing DONE (otherwise the process hangs with all shots done).
+await f.close();
 console.log('DONE', output);
