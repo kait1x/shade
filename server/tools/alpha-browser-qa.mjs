@@ -412,7 +412,8 @@ try {
   // Favorites (B3): self-chat through the single-roster fanout.
   await a.page.getByRole('button',{name:'Назад к чатам',exact:true}).click();
   // ListTile semantics merge title+trailing: substring match.
-  await a.page.getByText('Избранное',{exact:false}).first().click();
+  // Home filter chips also contain 'Избранное' (role=checkbox); the chat tile is the button whose merged label starts with the title.
+  await a.page.getByRole('button',{name:/^Избранное/}).first().click();
   await send(a.page,'Заметка для себя 🔖');
   await a.page.getByText('Заметка для себя 🔖',{exact:false}).last().waitFor();
   results.favoritesSelfChat = true; console.log('PASS favorites self-chat E2EE');
@@ -496,7 +497,10 @@ try {
     if (!book) await b.page.getByLabel('Книжка').click({timeout:5000});
     // The book entry merges title+count into one aria-label.
     try {
-      await b.page.getByLabel(/×1/).first().waitFor({timeout:15000});
+      // The gifted sticker must appear in the inventory with any positive
+      // count: the defensive double 'Подарить' click above can legitimately
+      // deliver the same gift twice under slow dialog timing.
+      await b.page.getByLabel(/×\d+/).first().waitFor({timeout:15000});
       inventory = true;
     } catch (error) {
       const throttled = await b.page.getByText('rate_limited',{exact:false}).count().catch(() => 0);
@@ -818,7 +822,8 @@ try {
   await newcomer.page.getByText('Подключено · E2EE',{exact:true}).waitFor({timeout:120000});
   // Self-chat fanout now reaches every device of the roster, incl. the newcomer.
   await ensureList();
-  await a.page.getByText('Избранное',{exact:false}).first().click();
+  // Home filter chips also contain 'Избранное' (role=checkbox); the chat tile is the button whose merged label starts with the title.
+  await a.page.getByRole('button',{name:/^Избранное/}).first().click();
   await send(a.page,'Сообщение на второе устройство');
   await newcomer.page.waitForFunction(() => (window.__shadeClient?.state?.messages || [])
     .some(m => (m.text || '').includes('Сообщение на второе устройство')), undefined, {timeout:120000, polling:1000});

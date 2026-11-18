@@ -14,7 +14,7 @@ let selected = null, users = [], ready = false, actionTail = Promise.resolve(), 
 // Registration draft shared by the onboarding steps (nickname → identity → recovery).
 const draft = { account: '' };
 function node(tag, text, className) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (className) n.className = className; return n; }
-function notice(text) { const n = document.querySelector('#notice'); n.textContent = text; n.classList.add('visible'); clearTimeout(noticeTimer); noticeTimer = setTimeout(() => n.classList.remove('visible'), 9000); }
+function notice(text, ms = 9000) { const n = document.querySelector('#notice'); n.textContent = text; n.classList.add('visible'); clearTimeout(noticeTimer); noticeTimer = setTimeout(() => n.classList.remove('visible'), ms); }
 // Floating arrival toast for messages in chats that are not open, mirroring
 // the Android in-app overlay. Clicking it opens that conversation.
 let toastTimer;
@@ -686,11 +686,12 @@ async function openApp() {
         case 'devices.pair': pairDeviceDialog(); break;
         case 'push.toggle': {
           // Push is optional: failures surface as an honest notice, never as
-          // an unhandled action error (the chat must keep working).
+          // an unhandled action error (the chat must keep working). Success
+          // feedback is brief — a status confirmation, not a lingering banner.
           try {
             const status = await client.pushStatus();
-            if (status.subscribed) { await client.disablePush(); notice('Уведомления выключены.'); }
-            else { await client.enablePush(); notice('Уведомления включены · только сигнал, без текста сообщений.'); }
+            if (status.subscribed) { await client.disablePush(); notice('Уведомления выключены.', 3500); }
+            else { await client.enablePush(); notice('Уведомления включены · только сигнал, без текста сообщений.', 3500); }
           } catch (e) { notice(errors[e.message] || e.message); }
           break;
         }

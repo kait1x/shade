@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shade/core/theme/shade_theme.dart';
@@ -126,6 +127,7 @@ class _ChatsState extends State<_Chats> {
   final search = TextEditingController();
   final seenAccounts = <String>{};
   bool directory = false;
+  bool savedOnly = false;
   @override
   void dispose() {
     search.dispose();
@@ -142,6 +144,7 @@ class _ChatsState extends State<_Chats> {
       final hasChat =
           items.isNotEmpty || p['pinned'] == true || p['unverified'] == true;
       return (directory || hasChat) &&
+          (!savedOnly || p['favorites'] == true) &&
           (account.contains(query) ||
               (items.lastOrNull?['text'] as String? ?? '')
                   .toLowerCase()
@@ -158,7 +161,8 @@ class _ChatsState extends State<_Chats> {
             0;
         return bt.compareTo(at);
       });
-    return Column(children: [
+    return Stack(children: [
+      Column(children: [
       Expanded(
           child: CustomScrollView(slivers: [
         SliverToBoxAdapter(
@@ -204,9 +208,17 @@ class _ChatsState extends State<_Chats> {
                             fontWeight: FontWeight.w700,
                             letterSpacing: -1.3)),
                     const SizedBox(height: 10),
-                    const Text('Личное остаётся личным',
-                        style: TextStyle(
-                            fontSize: 14, color: ShadeColors.textMuted)),
+                    const Row(children: [
+                      Icon(Icons.lock_outline_rounded,
+                          size: 14, color: ShadeColors.textMuted),
+                      SizedBox(width: 6),
+                      Expanded(
+                          child: Text('Личное остаётся личным',
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  height: 1.4,
+                                  color: ShadeColors.textMuted))),
+                    ]),
                     const SizedBox(height: 24),
                     TextField(
                         controller: search,
@@ -229,22 +241,29 @@ class _ChatsState extends State<_Chats> {
                                     icon: const Icon(Icons.close_rounded,
                                         size: 18)))),
                   ])),
-          Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Row(children: [
-                Expanded(
-                    child: Text(
-                        directory ? 'ПОЛЬЗОВАТЕЛИ SHADE' : 'ЛИЧНЫЕ СООБЩЕНИЯ',
-                        style: const TextStyle(
-                            fontSize: 10,
-                            letterSpacing: 1.5,
-                            color: ShadeColors.textMuted,
-                            fontWeight: FontWeight.w700))),
-                IconButton(
-                    tooltip: 'Обновить список',
-                    onPressed: () => c.act('refresh'),
-                    icon: const Icon(Icons.refresh_rounded, size: 18)),
-              ])),
+          if (directory)
+            Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Row(children: [
+                  const Expanded(
+                      child: Text('ПОЛЬЗОВАТЕЛИ SHADE',
+                          style: TextStyle(
+                              fontSize: 10,
+                              letterSpacing: 1.5,
+                              color: ShadeColors.textMuted,
+                              fontWeight: FontWeight.w700))),
+                  IconButton(
+                      tooltip: 'Обновить список',
+                      onPressed: () => c.act('refresh'),
+                      icon: const Icon(Icons.refresh_rounded, size: 18)),
+                ]))
+          else
+            Padding(
+                padding: const EdgeInsets.fromLTRB(24, 14, 24, 0),
+                child: Wrap(spacing: 8, children: [
+                  _homeFilter('Все чаты', false),
+                  _homeFilter('Избранное', true),
+                ])),
         ])),
         if (peers.isEmpty)
           SliverToBoxAdapter(
@@ -399,8 +418,46 @@ class _ChatsState extends State<_Chats> {
                               onPressed: () => c.act('sync'),
                               child: const Text('Повторить')))),
               ]))),
+      ]),
+      if (!directory)
+        Positioned(
+            right: 16,
+            bottom: 58,
+            child: FloatingActionButton.extended(
+                elevation: 0,
+                heroTag: 'alpha-compose',
+                backgroundColor: const Color(0xFFF5F5F7),
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20)),
+                onPressed: () {
+                  setState(() => directory = true);
+                  c.act('refresh');
+                },
+                icon: const Icon(Icons.edit_outlined, size: 20),
+                label: const Text('Написать',
+                    style: TextStyle(fontWeight: FontWeight.w700)))),
     ]);
   }
+
+  // Android home filters (home_screen.dart _filter): selected chip fills
+  // light with black text, idle chip stays dark with the hairline border.
+  Widget _homeFilter(String title, bool saved) => ChoiceChip(
+      label: Text(title),
+      selected: savedOnly == saved,
+      showCheckmark: false,
+      selectedColor: const Color(0xFFF5F5F7),
+      backgroundColor: const Color(0xFF111113),
+      labelStyle: TextStyle(
+          fontSize: 13,
+          fontWeight: FontWeight.w700,
+          color: savedOnly == saved ? Colors.black : ShadeColors.textSecondary),
+      side: BorderSide(
+          color: savedOnly == saved
+              ? Colors.transparent
+              : const Color(0xFF29292D)),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      onSelected: (_) => setState(() => savedOnly = saved));
 }
 
 // Typing (contract C2) wins over presence; both degrade to the static line.
@@ -770,7 +827,9 @@ class _ConversationState extends State<_Conversation>
                           fontSize: 12, color: ShadeColors.textSecondary)))
               : const SizedBox(width: double.infinity)),
       Expanded(
-          child: Align(
+          child: CustomPaint(
+              painter: const _ConversationPatternPainter(),
+              child: Align(
               alignment: Alignment.topCenter,
               child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 840),
@@ -883,7 +942,7 @@ class _ConversationState extends State<_Conversation>
                                                       .arrow_downward_rounded,
                                                       size: 21)))
                                       : null)),
-                        ])))),
+                        ]))))),
       if (!c.pinned(peer))
         SafeArea(
             top: false,
@@ -1502,4 +1561,46 @@ class _AccountAvatarState extends State<AccountAvatar> {
       }
     }
   }
+}
+
+// Subtle conversation backdrop matching the Android chat texture: a staggered
+// grid of tiny circles and crosses over a near-black diagonal gradient
+// (AMOLED — barely visible, never competes with the bubbles).
+class _ConversationPatternPainter extends CustomPainter {
+  const _ConversationPatternPainter();
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bg = Paint()
+      ..shader = ui.Gradient.linear(
+          Offset.zero, Offset(size.width, size.height), const [
+        Color(0xFF0C0C0C),
+        Color(0xFF101010),
+      ]);
+    canvas.drawRect(Offset.zero & size, bg);
+    final mark = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2
+      ..color = const Color(0xFF232326);
+    const stepX = 91.0, circleToCross = 39.0, crossToCircle = 52.0, half = 45.5;
+    var y = 26.0;
+    var circleRow = true;
+    while (y < size.height + 10) {
+      final offset = circleRow ? 0.0 : half;
+      for (var x = offset; x < size.width + 10; x += stepX) {
+        if (circleRow) {
+          canvas.drawCircle(Offset(x, y), 2.2, mark);
+        } else {
+          const r = 3.2;
+          canvas.drawLine(Offset(x - r, y - r), Offset(x + r, y + r), mark);
+          canvas.drawLine(Offset(x - r, y + r), Offset(x + r, y - r), mark);
+        }
+      }
+      y += circleRow ? circleToCross : crossToCircle;
+      circleRow = !circleRow;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ConversationPatternPainter oldDelegate) =>
+      false;
 }
