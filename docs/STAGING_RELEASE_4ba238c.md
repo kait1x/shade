@@ -3,10 +3,13 @@
 Статус: **подготовлено, НЕ переключено**. Переключение выполняет владелец
 после явного подтверждения. Production v1 не затрагивается ни одним шагом.
 
-Релиз: commit `4ba238ca1b636fafc16c858ebd2013a77cf7b87e` (ветка
-`v2-glm-integration`), база 9a94fb0 + b9a101f (onboarding/PRF) + 6347782
-(pairing). SW-версия оболочки `8b648d1d131aa57e14d7`. Stamp релиза:
-`20261118-122400` (зашит в `admin-update-v2-glm.sh`).
+Релиз: ветка `v2-glm-integration`, runtime-код server/client зафиксирован
+коммитом `4ba238ca1b636fafc16c858ebd2013a77cf7b87e` (база 9a94fb0 + b9a101f
+onboarding/PRF + 6347782 pairing); поверх — только deploy/docs-артефакты
+подготовки релиза. Точный commit упаковки записан в `MANIFEST.meta`
+(на момент подготовки: `fac01e0e522a…`, сверяйте с meta). SW-версия оболочки
+`8b648d1d131aa57e14d7`. Stamp релиза: `20261118-122400` (зашит в
+`admin-update-v2-glm.sh`).
 
 Проверки на этом commit: server 98/98, Flutter 139/139 (analyze 0
 errors/warnings), Edge QA PASS + WebKit QA PASS (pairing=true, 0 ошибок
@@ -92,7 +95,10 @@ sudo -u shade-staging bash -c "export PATH=/opt/node/bin:\$PATH; cd $REL/server 
 node --check "$REL/server/alpha.mjs"
 # верификация MANIFEST до переключения (fail-closed):
 (cd "$REL" && sha256sum -c MANIFEST.sha256 --quiet) && echo 'MANIFEST OK'
-grep '^commit:' "$REL/MANIFEST.meta"    # ожидается 4ba238ca1b636fafc16c858ebd2013a77cf7b87e
+grep '^commit:' "$REL/MANIFEST.meta"
+# commit-binding: runtime-код пакета должен совпадать с 4ba238c:
+# на рабочей машине: git diff <commit из MANIFEST.meta> 4ba238c -- server client
+# ожидается пустой diff (после 4ba238c менялись только deploy/ и docs/).
 # hardening после установки зависимостей:
 chown -R root:root "$REL"
 chmod -R go-w "$REL"
