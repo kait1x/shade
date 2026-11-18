@@ -71,6 +71,8 @@ Copy-Item (Join-Path $PSScriptRoot 'Caddyfile.staging.example') (Join-Path $Out 
 Copy-Item (Join-Path $PSScriptRoot 'staging.env.example') (Join-Path $Out 'staging.env.example')
 Copy-Item (Join-Path $PSScriptRoot 'staging-deploy.sh') (Join-Path $Out 'staging-deploy.sh')
 Copy-Item (Join-Path $PSScriptRoot 'smoke-staging.sh') (Join-Path $Out 'smoke-staging.sh')
+Copy-Item (Join-Path $PSScriptRoot 'admin-update-v2-glm.sh') (Join-Path $Out 'admin-update-v2-glm.sh')
+Copy-Item (Join-Path $PSScriptRoot 'make-manifest.py') (Join-Path $Out 'make-manifest.py')
 
 @"
 Shade v2 staging upload (generated $(Get-Date -Format s)).
@@ -81,8 +83,14 @@ staging-deploy.sh в этом пакете использует именован
 env: владелец заполняет staging.env.example -> /etc/shade-staging/staging.env
 на сервере (новые секреты, отдельный OAuth-клиент). Никаких секретов в пакете нет.
 Состав: server/ (исходники, npm ci на сервере), client/web/, client/build/web-alpha/,
-shade-staging.service, Caddyfile.staging-block, staging.env.example, скрипты.
+shade-staging.service, Caddyfile.staging-block, staging.env.example, скрипты,
+MANIFEST.sha256 + MANIFEST.meta (commit-bound, генерируются make-manifest.py).
+Переключение: admin-update-v2-glm.sh (root), процедура docs/STAGING_RELEASE_4ba238c.md.
 "@ | Set-Content (Join-Path $Out 'README.txt') -Encoding UTF8
+
+# Commit-bound MANIFEST for the release runtime (server/ + client/).
+python (Join-Path $PSScriptRoot 'make-manifest.py') $Out
+if ($LASTEXITCODE -ne 0) { throw 'MANIFEST generation failed' }
 
 $size = (Get-ChildItem $Out -Recurse -File | Measure-Object Length -Sum).Sum
 "UPLOAD READY: $Out ($([math]::Round($size/1MB,1)) MB)"
