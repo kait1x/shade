@@ -277,7 +277,19 @@ function prfIdentityStep() {
       showProgress(note, 'Подтверждаем защиту устройства…');
       let binding, passphrase;
       try { ({ binding, passphrase } = await createDeviceBinding(draft.account)); }
-      catch (error) { note.hidden = true; throw Error(bindingErrorText(error) || `Не удалось настроить защиту устройства: ${error.message}`); }
+      catch (error) {
+        note.hidden = true;
+        if (error.message === 'prf_unavailable') {
+          // The authenticator cannot produce PRF results (Edge/Windows Hello
+          // without PRF, older Safari): switch to the passphrase path instead
+          // of failing the registration. Nothing was created yet — no keys or
+          // vault have been touched.
+          notice('Аутентификатор не поддерживает вывод ключа (PRF). Придумайте фразу устройства — шифрование остаётся прежним.');
+          phraseIdentityStep(false);
+          return;
+        }
+        throw Error(bindingErrorText(error) || `Не удалось настроить защиту устройства: ${error.message}`);
+      }
       showProgress(note, 'Создаём RSA-4096 ключи… Оставьте страницу открытой.');
       const recoveryPhrase = generateRecoveryPhrase();
       await client.prepare(draft.account, passphrase, recoveryPhrase, binding);
@@ -407,7 +419,16 @@ function unlockStep(candidates, status) {
       if (vault.binding?.method === 'prf') {
         showProgress(note, 'Подтверждаем защиту устройства…');
         try { passphrase = await unlockDeviceBinding(vault.binding); }
-        catch (error) { note.hidden = true; throw Error(bindingErrorText(error) || error.message); }
+        catch (error) {
+          note.hidden = true;
+          if (error.message === 'prf_unavailable') {
+            // The passkey/PRF gate is unavailable on this device; the vault has
+            // no separate passphrase by design. Point at the recovery package
+            // instead of leaving a dead end. Keys and storage stay untouched.
+            throw Error('Аутентификатор этого устройства не поддерживает вывод ключа (PRF), а у PRF-vault нет отдельной фразы. Разблокировка — биометрией на исходном устройстве или восстановление через recovery-пакет.');
+          }
+          throw Error(bindingErrorText(error) || error.message);
+        }
       } else passphrase = phraseField.value;
       // loadForPairing also resumes an interrupted second-device pairing: a
       // vault without committed state is a pairing in progress, not a loss.

@@ -27,8 +27,25 @@
 | Платформа | PRF с платформенным аутентификатором | Источник |
 |---|---|---|
 | Safari 18+ / iOS 18+, macOS 15+ | да (iCloud Keychain) | WebKit release notes, Yubico guide |
-| Chrome/Edge 118+ (Win Hello/Touch ID) | да | MDN, Bitwarden |
+| Chrome/Edge 118+ (Win Hello/Touch ID) | да, с оговоркой ниже | MDN, Bitwarden |
 | Firefox | нет → fallback | Mozilla bug tracker |
+
+**Инцидент 18.11.2026 (исправлен):** в первой реализации `prf.eval` передавался
+как сырой BufferSource. По спеке WebAuthn L3 `eval` — `AuthenticationExtensions
+PRFValues` `{first: BufferSource}`, и Chromium падал на обязательном члене
+`first` до всякого запроса к аутентификатору: «Failed to execute 'get' ...
+Failed to read the 'first' property ... Required member is undefined». Формат
+исправлен (`eval: { first: salt }`), байты salt не менялись — ранее установленных
+PRF-vault'ов быть не могло (setup никогда не завершался), миграция не требуется.
+Регрессии: mock-тесты `device-binding.test.mjs` (формат `{first}`, отсутствие
+члена `first` → честный `prf_unavailable`; детерминизм setup→reopen→unlock) и
+браузерный пин `server/tools/prf-browser-check.mjs` (реальный Chromium WebAuthn,
+виртуальный аутентификатор). Дополнительно: `user.id` passkey теперь детерминирован
+по аккаунту (ретрай setup не создаёт orphan-passkey), при `prf_unavailable` на
+setup включается авто-переход на фразу устройства, при недоступности PRF на
+разблокировке — честное указание на recovery-пакет; ключи и хранилище при любых
+ошибках PRF не затрагиваются.
+
 
 - Проверка на устройстве: `platformAuthenticatorAvailable()` =
   `isUserVerifyingPlatformAuthenticatorAvailable()` + secure context; повторная

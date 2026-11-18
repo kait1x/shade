@@ -24,14 +24,27 @@ export async function platformAuthenticatorAvailable() {
 // Deterministic passphrase for (credential, salt): one PRF evaluation at
 // registration and the identical evaluation at every unlock. userVerification
 // stays required, so the biometric/device-passcode gate is part of the secret.
+// The eval input MUST be AuthenticationExtensionsPRFValues ({first: BufferSource}):
+// a bare BufferSource makes Chromium fail dict parsing on the required `first`
+// member ("Required member is undefined") before any authenticator round-trip.
 async function prfPassphrase(credentialId, salt) {
-  const assertion = await navigator.credentials.get({ publicKey: {
-    challenge: crypto.getRandomValues(new Uint8Array(32)),
-    rpId: location.hostname,
-    allowCredentials: [{ id: credentialId, type: 'public-key' }],
-    userVerification: 'required', timeout: 60000,
-    extensions: { prf: { eval: salt } },
-  } });
+  check(salt instanceof Uint8Array && salt.byteLength >= 16 && salt.byteLength <= 64,
+    'Invalid PRF evaluation salt');
+  let assertion;
+  try {
+    assertion = await navigator.credentials.get({ publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rpId: location.hostname,
+      allowCredentials: [{ id: credentialId, type: 'public-key' }],
+      userVerification: 'required', timeout: 60000,
+      extensions: { prf: { eval: { first: salt } } },
+    } });
+  } catch (error) {
+    // A TypeError here is WebIDL dict/extension parsing, not user refusal:
+    // treat it as missing PRF support so callers fall back honestly.
+    if (error instanceof TypeError) throw Error('prf_unavailable');
+    throw error;
+  }
   const first = assertion.getClientExtensionResults()?.prf?.results?.first;
   if (!(first instanceof ArrayBuffer) || first.byteLength < 32) throw Error('prf_unavailable');
   return toB64Url(new Uint8Array(first));
@@ -42,10 +55,15 @@ async function prfPassphrase(credentialId, salt) {
 // standard PRF onboarding (create, then evaluate); both are user-gesture driven.
 export async function createDeviceBinding(account) {
   const salt = crypto.getRandomValues(new Uint8Array(16));
+  // Deterministic user.id per account: a setup retry (e.g. authenticator
+  // without PRF results) re-creates the SAME credential entry instead of
+  // piling up orphan passkeys for the origin.
+  const userId = new Uint8Array(await crypto.subtle.digest('SHA-256',
+    new TextEncoder().encode(`shade:${account}`))).slice(0, 16);
   const credential = await navigator.credentials.create({ publicKey: {
     challenge: crypto.getRandomValues(new Uint8Array(32)),
     rp: { id: location.hostname, name: 'Shade' },
-    user: { id: crypto.getRandomValues(new Uint8Array(16)), name: account, displayName: account },
+    user: { id: userId, name: account, displayName: account },
     pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
     authenticatorSelection: { authenticatorAttachment: 'platform',
       residentKey: 'required', userVerification: 'required' },
@@ -60,7 +78,10 @@ export async function unlockDeviceBinding(binding) {
   check(binding?.method === 'prf' && typeof binding.credentialId === 'string' &&
     typeof binding.salt === 'string' && Object.keys(binding).sort().join(',') === 'credentialId,method,salt',
     'Некорректная привязка устройства');
-  return prfPassphrase(unb64(binding.credentialId, 4096), unb64(binding.salt, 32));
+  // Same stored salt bytes → the identical PRF evaluation as at registration.
+  const salt = unb64(binding.salt, 32);
+  check(salt instanceof Uint8Array && salt.byteLength >= 16, 'Invalid stored PRF salt');
+  return prfPassphrase(unb64(binding.credentialId, 4096), salt);
 }
 
 // User-facing text for the handful of WebAuthn failure modes; everything else
@@ -69,7 +90,7 @@ export function bindingErrorText(error) {
   if (error?.name === 'NotAllowedError') return 'Защита устройства не подтверждена. Попробуйте снова или используйте фразу устройства.';
   if (error?.name === 'InvalidStateError') return 'Ключ защиты для этого аккаунта уже существует на устройстве.';
   if (error?.name === 'SecurityError') return 'Защита устройства недоступна для этого происхождения. Используйте фразу устройства.';
-  if (error?.message === 'prf_unavailable') return 'Аутентификатор не поддерживает вывод ключа (PRF). Используйте фразу устройства.';
+  if (error?.message === 'prf_unavailable') return 'Аутентификатор не поддерживает вывод ключа (PRF).';
   return null;
 }
 
