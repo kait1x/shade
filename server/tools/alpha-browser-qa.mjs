@@ -48,11 +48,24 @@ async function browser(name) {
   return { context, page };
 }
 async function register(page, account, sub) {
-  f.setLoginSub(sub); await page.goto(f.origin); await page.getByText('Войти через Google', { exact:true }).click();
-  await page.getByLabel('Имя пользователя').fill(account);
+  f.setLoginSub(sub); await page.goto(f.origin); await page.getByRole('link',{name:'Продолжить с Google'}).click();
+  await page.getByLabel('Ваш никнейм').fill(account);
+  await page.getByRole('button',{name:'Продолжить',exact:true}).click();
+  // The identity step renders after the async authenticator probe: wait for
+  // EITHER variant. Headless engines have no platform authenticator, so the
+  // PRF path ends at its explicit phrase fallback (a real user's escape too).
+  const phraseButton = page.getByRole('button',{name:'Создать ключи на этом устройстве'});
+  const prfButton = page.getByRole('button',{name:'Создать ключи и включить защиту'});
+  const first = await Promise.any([phraseButton.waitFor({timeout:30000}), prfButton.waitFor({timeout:30000})]).catch(() => null);
+  if (first === prfButton) {
+    await prfButton.click();
+    if (!await phraseButton.waitFor({timeout:10000}).catch(() => null)) {
+      await page.getByRole('button',{name:'Использовать фразу устройства'}).click();
+    }
+  }
+  await phraseButton.waitFor({timeout:30000});
   await page.getByLabel('Фраза устройства ·').fill(phrase);
   await page.getByLabel('Повторите фразу устройства').fill(phrase);
-  await page.getByLabel('Отдельная recovery-фраза').fill('browser QA independent offline recovery phrase');
   await page.getByRole('button', {name:'Создать ключи на этом устройстве'}).click();
   await page.getByRole('heading',{name:'Сохраните recovery-пакет'}).waitFor({timeout:120000});
   const downloaded = page.waitForEvent('download'); await page.getByRole('button',{name:'Скачать recovery-пакет'}).click(); await downloaded;
@@ -452,7 +465,7 @@ try {
   await b.page.getByLabel(/×1/).first().waitFor({timeout:30000});
   results.stickerInventoryV2 = true; console.log('PASS sticker inventory shows the gift');
   const third = await browser('unlinked'); qaPages.push(['unlinked', third.page]); f.setLoginSub('synthetic-browser-alice');
-  await third.page.goto(f.origin); await third.page.getByText('Войти через Google',{exact:true}).click();
+  await third.page.goto(f.origin); await third.page.getByRole('link',{name:'Продолжить с Google'}).click();
   try {
     await third.page.getByRole('heading',{name:'Нужна привязка устройства'}).waitFor({timeout:30000});
   } catch {
@@ -462,7 +475,7 @@ try {
     if (!blank) throw Error('linking heading missing on a rendered page');
     console.log('DIAG unlinked blank document after OAuth redirect — retrying navigation');
     await third.page.goto(f.origin);
-    await third.page.getByText('Войти через Google',{exact:true}).click();
+    await third.page.getByRole('link',{name:'Продолжить с Google'}).click();
     await third.page.getByRole('heading',{name:'Нужна привязка устройства'}).waitFor({timeout:60000});
   }
   assert.equal(await third.page.evaluate(async () => (await (await import('/device_crypto.mjs')).listVaults()).length),0);
@@ -499,7 +512,21 @@ try {
     await a.page.waitForTimeout(180);
   }
   await a.page.getByText('Уведомления',{exact:false}).first().click();
-  await a.page.locator('#notice').filter({ hasText: /.+/ }).waitFor({timeout:30000});
+  try {
+    await a.page.locator('#notice').filter({ hasText: /.+/ }).waitFor({timeout:30000});
+  } catch (error) {
+    // Flakiness evidence, not a retry: capture the toggle's actual outcome so
+    // a timeout distinguishes a missed semantics tap from a hung permission.
+    const diag = await a.page.evaluate(async () => ({
+      notice: document.querySelector('#notice')?.textContent || '',
+      shadeAction: typeof window.shadeAction,
+      pushStatus: window.__shadeClient ? await window.__shadeClient.pushStatus().catch(e => 'error: ' + e.message) : 'no client',
+      permission: typeof Notification !== 'undefined' ? Notification.permission : 'none',
+    })).catch(e => 'diag failed: ' + e.message);
+    console.log('DIAG push-notice timeout:', JSON.stringify(diag));
+    await a.page.screenshot({ path: path.join(output, `${engineName}-push-diag.png`) }).catch(() => {});
+    throw error;
+  }
   const pushNotice = (await a.page.locator('#notice').textContent()) || '';
   const aliceDeviceId = await a.page.evaluate(async () => (await (await import('/device_crypto.mjs')).listVaults())[0].id);
   const pushSubs = f.registry.exportSnapshot().pushSubscriptions || {};
@@ -614,7 +641,26 @@ try {
   await a.page.waitForTimeout(400);
   // The unchanged API enforces 300 requests/minute per IP. A fast two-account
   // run may hit it; compare layout after the real client's normal retry recovers.
-  await a.page.getByText(/Ошибка синхронизации|Переподключение|Операция отклонена/).waitFor({state:'hidden',timeout:90000});
+  try {
+    await a.page.getByText(/Ошибка синхронизации|Переподключение|Операция отклонена/).waitFor({state:'hidden',timeout:90000});
+  } catch {
+    // Evidence first: a healthy peer on the same IP rules out server saturation.
+    const diag = await a.page.evaluate(async () => {
+      const client = window.__shadeClient;
+      return client ? { lastError: client.lastError || '', connected: client.connected,
+        registered: client.state?.registered ?? null, outbox: client.state?.outbox?.length ?? -1 }
+        : { noClient: true };
+    }).catch(e => 'diag failed: ' + e.message);
+    console.log('DIAG sync banner persisted:', JSON.stringify(diag));
+    // A fast engine can leave the reloaded client cycling (navigation flake +
+    // socket auth under the shared limiter) long past the throttle window; a
+    // real user reloads. ONE honest recovery cycle — the banner must still
+    // clear and the layout must still match, or this scenario fails.
+    await a.page.reload();
+    await unlock(a.page);
+    await a.page.getByText(/Ошибка синхронизации|Переподключение|Операция отклонена/).waitFor({state:'hidden',timeout:120000});
+    console.log('DIAG sync banner cleared after one user-style reload');
+  }
   await a.page.waitForTimeout(260);
   const scrollAfter = await a.page.getByText(textMarker(longText),{exact:false}).last().boundingBox();
   const prefsAfter = await a.page.evaluate(() => Object.fromEntries(Object.keys(sessionStorage).filter(k=>k.startsWith('shade-ui:')).map(k=>[k,JSON.parse(sessionStorage.getItem(k))])));

@@ -292,8 +292,19 @@ async function flushVaultCommit(db, id) {
   });
   check(stored && stored.id === id, 'Vault was not durably stored; retry before use');
 }
+// Optional non-secret binding metadata (device_binding.mjs). Never part of the
+// ciphertext or AAD: swapping it cannot help an attacker decrypt (the PRF
+// passphrase is not stored anywhere), it only selects the local unlock factor.
+function validBinding(binding) {
+  if (binding === undefined) return true;
+  return !!binding && binding.method === 'prf' && typeof binding.credentialId === 'string' &&
+    typeof binding.salt === 'string' && Object.keys(binding).sort().join(',') === 'credentialId,method,salt';
+}
 export async function saveVault(vault) {
-  check(vault && Object.keys(vault).sort().join(',') === 'account,ciphertext,encryptionKey,id,iv,salt,signingKey,version', 'Unexpected vault fields');
+  check(vault && ['account,binding,ciphertext,encryptionKey,id,iv,salt,signingKey,version',
+    'account,ciphertext,encryptionKey,id,iv,salt,signingKey,version']
+    .includes(Object.keys(vault).sort().join(',')), 'Unexpected vault fields');
+  check(validBinding(vault.binding), 'Invalid binding metadata');
   check(vault.version === 2 && typeof vault.account === 'string' && /^[a-z0-9_]{3,32}$/.test(vault.account) &&
     vault.id === await deviceId(vault.encryptionKey, vault.signingKey), 'Invalid vault identity');
   check(unb64(vault.salt, 32).length === 16 && unb64(vault.iv, 24).length === 12 &&

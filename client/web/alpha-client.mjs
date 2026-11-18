@@ -116,9 +116,12 @@ export class AlphaClient extends EventTarget {
     check(this.state, 'История устройства отсутствует. Новые ключи не созданы; нужно восстановление.');
     this.changed();
   }
-  async prepare(account, passphrase, recoveryPhrase) {
+  async prepare(account, passphrase, recoveryPhrase, binding) {
     check(!(await c.listVaults()).some(v => v.account === account), 'На этом устройстве уже есть ключи аккаунта. Разблокируйте их.');
     const vault = await c.createVault(account, passphrase);
+    // Binding metadata (device_binding.mjs) rides on the vault record; the
+    // ciphertext, AAD and unlock path stay byte-compatible with passphrase vaults.
+    if (binding) vault.binding = binding;
     const session = await c.unlockVault(vault, passphrase);
     let backup = await c.createRecoveryBackup(account, vault.signingKey, recoveryPhrase);
     const genesis = await c.createGenesis(vault, session, backup.publicKey);

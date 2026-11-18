@@ -1,6 +1,8 @@
 import { AlphaClient, api } from './alpha-client.mjs';
 import { listVaults } from './device_crypto.mjs';
 import { hash, genesisText } from './protocol/device-v2.mjs';
+import { createDeviceBinding, unlockDeviceBinding, platformAuthenticatorAvailable,
+  generateRecoveryPhrase, bindingErrorText } from './device_binding.mjs';
 
 const root = document.querySelector('#root'), dialog = document.querySelector('#dialog');
 const client = new AlphaClient();
@@ -9,6 +11,8 @@ const client = new AlphaClient();
 window.__shadeClient = client;
 const contact = account => client.state && Object.hasOwn(client.state.contacts, account) ? client.state.contacts[account] : null;
 let selected = null, users = [], ready = false, actionTail = Promise.resolve(), noticeTimer, loggedIn = false;
+// Registration draft shared by the onboarding steps (nickname → identity → recovery).
+const draft = { account: '' };
 function node(tag, text, className) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (className) n.className = className; return n; }
 function notice(text) { const n = document.querySelector('#notice'); n.textContent = text; n.classList.add('visible'); clearTimeout(noticeTimer); noticeTimer = setTimeout(() => n.classList.remove('visible'), 9000); }
 // Floating arrival toast for messages in chats that are not open, mirroring
@@ -65,7 +69,7 @@ function isStandalone() {
 function installGuide() {
   if (isStandalone()) { notice('Shade уже установлен на этом устройстве.'); return; }
   if (deferredInstall) {
-    const button = node('button', 'Установить', 'primary'); button.type = 'button';
+    const button = node('button', 'Установить', 'btn primary'); button.type = 'button';
     button.onclick = async () => {
       const event = deferredInstall; deferredInstall = null; dialog.close();
       event.prompt();
@@ -81,33 +85,347 @@ function installGuide() {
 let deferredInstall = null;
 window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); deferredInstall = event; });
 window.addEventListener('appinstalled', () => { deferredInstall = null; notice('Shade установлен.'); });
-function welcome(title, description) {
-  const box = node('section', undefined, 'welcome'); box.append(node('h1', 'Shade'), node('p', 'WEB ALPHA 0.1', 'eyebrow'), node('h2', title), node('p', description, 'muted'));
-  if (loggedIn) {
-    const change = node('button', 'Сменить Google-аккаунт'); change.type = 'button';
-    change.onclick = () => action(async () => { await client.disablePush().catch(() => {}); client.stop(); await api('/api/logout', {}); location.href = '/auth/google'; }); box.append(change);
+
+// ---- Onboarding presentation ----------------------------------------------
+// Visual language mirrors the Android WelcomeScreen (shade_theme.dart +
+// welcome_screen.dart): the ghost mascot and the Google mark reuse the exact
+// painter geometry of the native build. Auth DOM screens stay outside Flutter;
+// the client never exposes vaults, keys, backups or tokens to the projection.
+let ghostUid = 0;
+function ghost(size) {
+  const id = `shade-ghost-${++ghostUid}`;
+  const span = node('span', undefined, 'ghost');
+  span.setAttribute('aria-hidden', 'true');
+  span.style.width = span.style.height = `${size}px`;
+  span.innerHTML = `<svg viewBox="0 0 100 100" focusable="false"><defs><linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="15" y1="13" x2="89" y2="93"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#e3e3e3"/></linearGradient></defs><g transform="translate(50 50) scale(0.82) translate(-53 -51.5)"><path fill="url(#${id})" d="M18 48C18 25 31 13 50 13C70 13 82 27 82 48C82 62 86 73 88 79C90 86 80 90 74 85L66 79C61 92 49 94 43 81C34 92 20 91 19 80C18 70 18 58 18 48Z"/><ellipse cx="37.5" cy="47" rx="5.5" ry="9" fill="#181818"/><ellipse cx="62.5" cy="45" rx="5.5" ry="9" fill="#181818"/><path d="M44 64Q51 70 58 62" fill="none" stroke="#181818" stroke-width="3.5" stroke-linecap="round"/></g></svg>`;
+  return span;
+}
+// Google's four-colour G in the original 24-unit coordinate system, ported
+// verbatim from the Android _GoogleMark CustomPainter (welcome_screen.dart).
+const GOOGLE_MARK = `<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path fill="#4285f4" d="M21.6 12.23C21.6 11.52 21.54 10.84 21.42 10.18L12 10.18L12 14.05L17.38 14.05C17.15 15.3 16.44 16.36 15.38 17.07L15.38 19.58L18.61 19.58C20.5 17.84 21.6 15.28 21.6 12.23Z"/><path fill="#34a853" d="M12 22C14.7 22 16.96 21.1 18.61 19.58L15.38 17.07C14.48 17.67 13.33 18.04 12 18.04C9.39 18.04 7.18 16.28 6.39 13.91L3.05 13.91L3.05 16.5C4.7 19.76 8.09 22 12 22Z"/><path fill="#fbbc05" d="M6.39 13.91C6.19 13.31 6.07 12.67 6.07 12C6.07 11.33 6.19 10.69 6.39 10.09L6.39 7.5L3.05 7.5C2.38 8.85 2 10.38 2 12C2 13.62 2.38 15.15 3.05 16.5Z"/><path fill="#ea4335" d="M12 5.96C13.47 5.96 14.78 6.47 15.82 7.47L18.68 4.61C16.95 3 14.7 2 12 2C8.09 2 4.7 4.24 3.05 7.5L6.39 10.09C7.18 7.72 9.39 5.96 12 5.96Z"/></svg>`;
+function spinner(size = 18) {
+  const span = node('span', undefined, 'spin');
+  span.setAttribute('aria-hidden', 'true');
+  span.style.width = span.style.height = `${size}px`;
+  return span;
+}
+// Inline progress line inside a card, mirroring the Android busy-button labels
+// ('Подготавливаем хранилище…', 'Создаём RSA-4096 ключи…').
+function showProgress(note, text) {
+  note.replaceChildren(spinner(16), node('span', text));
+  note.hidden = false;
+}
+function changeAccountButton() {
+  const button = node('button', 'Сменить Google-аккаунт', 'btn-text');
+  button.type = 'button';
+  button.onclick = () => action(async () => { await client.disablePush().catch(() => {}); client.stop(); await api('/api/logout', {}); location.href = '/auth/google'; });
+  return button;
+}
+function expander(summaryText, children) {
+  const details = node('details', undefined, 'expain');
+  details.append(node('summary', summaryText), ...children);
+  return details;
+}
+// Common onboarding frame: brand row, optional medallion and title, the form
+// card, step dots, fineprint and a quiet details expander.
+function onboard({ title, subtitle, cardTitle, cardSubtitle, medallion = false, dots = 0, footer, details, children }) {
+  const section = node('section', undefined, 'onboard enter');
+  const inner = node('div', undefined, 'onboard-inner');
+  const brand = node('div', undefined, 'brand');
+  brand.append(ghost(30), node('span', 'shade', 'brand-name'));
+  inner.append(brand);
+  if (medallion) { const medallionEl = node('div', undefined, 'medallion'); medallionEl.append(ghost(100)); inner.append(medallionEl); }
+  if (title) inner.append(node('h1', title));
+  if (subtitle) inner.append(node('p', subtitle, 'subtitle'));
+  const card = node('div', undefined, 'onboard-card');
+  if (cardTitle) card.append(node('h2', cardTitle));
+  if (cardSubtitle) card.append(node('p', cardSubtitle, 'card-sub'));
+  card.append(...children);
+  inner.append(card);
+  if (dots) {
+    const dotsEl = node('div', undefined, 'dots');
+    dotsEl.setAttribute('role', 'img');
+    dotsEl.setAttribute('aria-label', `Шаг ${dots} из 3`);
+    for (let step = 1; step <= 3; step++) dotsEl.append(node('span', undefined, step === dots ? 'dot active' : 'dot'));
+    inner.append(dotsEl);
   }
-  root.replaceChildren(box); return box;
+  if (footer) inner.append(node('p', footer, 'fineprint'));
+  if (details) inner.append(details);
+  section.append(inner);
+  root.replaceChildren(section);
+  return section;
 }
-function input(form, title, name, type = 'text', minLength = 0) {
-  const label = node('label', title), field = node('input'); field.name = name; field.type = type; field.required = true;
+function input(form, title, name, type = 'text', minLength = 0, options = {}) {
+  const label = node('label', undefined, 'field');
+  const box = node('span', undefined, 'field-box' + (options.prefix ? ' has-prefix' : ''));
+  if (options.prefix) { const prefix = node('span', options.prefix, 'prefix'); prefix.setAttribute('aria-hidden', 'true'); box.append(prefix); }
+  const field = node('input');
+  field.name = name; field.type = type; field.required = true;
   if (minLength) field.minLength = minLength;
-  field.autocomplete = type === 'password' ? 'current-password' : 'off'; label.append(field); form.append(label); return field;
+  if (options.placeholder) field.placeholder = options.placeholder;
+  field.autocomplete = options.autocomplete || (type === 'password' ? 'current-password' : 'off');
+  box.append(field);
+  label.append(node('span', title, 'field-label'), box);
+  form.append(label);
+  return field;
 }
-function submit(form, text) { const button = node('button', text, 'primary'); button.type = 'submit'; form.append(button); }
+function submit(form, text) { const button = node('button', text, 'btn primary'); button.type = 'submit'; form.append(button); return button; }
 function downloadBackup() {
   const blob = new Blob([JSON.stringify({ backup: client.state.backup, genesis: client.state.own.genesis }, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob), anchor = node('a'); anchor.href = url; anchor.download = `shade-recovery-${client.session.account}.json`; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
-async function backupStep() {
-  const box = welcome('Сохраните recovery-пакет', 'Пакет зашифрован отдельной фразой. Сохраните файл вне этого устройства и запишите фразу отдельно. Без пакета или другого доверенного устройства потерянные ключи не восстановить.');
-  const download = node('button', 'Скачать recovery-пакет'); download.onclick = downloadBackup; box.append(download);
-  const form = node('form'), checkLabel = node('label', 'Я сохранил пакет и recovery-фразу отдельно'), checkbox = node('input'); checkbox.type = 'checkbox'; checkbox.required = true; checkLabel.prepend(checkbox); form.append(checkLabel); submit(form, 'Завершить регистрацию'); box.append(form);
-  form.onsubmit = event => { event.preventDefault(); action(async () => { await client.register(); await openApp(); }); };
-  const renew = node('details'); renew.append(node('summary','Если регистрация прервалась или прошло больше 4 минут'));
-  renew.append(node('p','Обновите пакет и скачайте его заново. Ключи устройства и recovery-ключ сохранятся. Это доступно только до регистрации аккаунта.','muted'));
-  const renewForm = node('form'), recovery = input(renewForm,'Recovery-фраза','recovery','password',24); submit(renewForm,'Обновить пакет'); renew.append(renewForm); box.append(renew);
-  renewForm.onsubmit = event => { event.preventDefault(); action(async () => { await client.renewPending(recovery.value); recovery.value = ''; await backupStep(); }); };
+function welcomeStep(status) {
+  const children = [];
+  if (status.googleConfigured) {
+    const login = node('a', undefined, 'btn google');
+    login.href = '/auth/google';
+    login.id = 'google-sign-in';
+    const mark = node('span', undefined, 'mark'); mark.setAttribute('aria-hidden', 'true'); mark.innerHTML = GOOGLE_MARK;
+    const label = node('span', 'Продолжить с Google', 'btn-label');
+    login.append(mark, label);
+    // Full-page redirect to Google; the busy state covers slow handoff networks.
+    login.addEventListener('click', event => {
+      if (login.classList.contains('busy')) { event.preventDefault(); return; }
+      login.classList.add('busy');
+      login.replaceChildren(spinner(18), node('span', 'Подключаем…', 'btn-label'));
+    });
+    children.push(login);
+  } else {
+    children.push(node('p', 'Google OAuth ещё не настроен администратором. Переписка требует входа.', 'card-error'));
+  }
+  if (!isStandalone()) {
+    const install = node('button', 'Установить Shade', 'btn outline');
+    install.type = 'button';
+    install.onclick = installGuide;
+    children.push(install);
+  }
+  onboard({
+    medallion: true,
+    title: 'Свои люди.\nЛичные разговоры.',
+    subtitle: 'Место для ваших разговоров,\nфотографий и маленьких планов.',
+    children,
+    footer: 'Ключи и история остаются в этом браузере.\nСервер не видит содержание переписки.',
+    details: expander('Как используется Google-аккаунт',
+      [node('p', 'Google подтверждает имя, email и фото профиля. Shade не получает пароль Google. Шифрование переписки использует отдельные ключи на вашем устройстве.', 'expain-body')]),
+  });
+}
+function nicknameStep() {
+  const form = node('form');
+  const nickname = input(form, 'Ваш никнейм', 'account', 'text', 0,
+    { prefix: '@', placeholder: 'например, kait1x', autocomplete: 'off' });
+  nickname.maxLength = 32;
+  nickname.autocapitalize = 'none';
+  nickname.spellcheck = false;
+  nickname.setAttribute('enterkeyhint', 'next');
+  const error = node('p', undefined, 'field-error');
+  error.setAttribute('role', 'alert');
+  error.hidden = true;
+  form.append(error);
+  submit(form, 'Продолжить');
+  const box = onboard({
+    cardTitle: 'Давайте познакомимся',
+    cardSubtitle: 'По никнейму друзья смогут найти вас.',
+    children: [form, changeAccountButton()],
+    dots: 1,
+    footer: 'Ключи и история остаются в этом браузере.',
+  });
+  const fieldBox = box.querySelector('.field-box');
+  nickname.addEventListener('input', () => {
+    error.hidden = true;
+    nickname.removeAttribute('aria-invalid');
+    fieldBox.classList.remove('invalid');
+  });
+  form.onsubmit = event => {
+    event.preventDefault();
+    const value = nickname.value.trim().toLowerCase();
+    if (!/^[a-z0-9_]{3,32}$/.test(value)) {
+      error.textContent = 'От 3 до 32 символов: a–z, 0–9 и _';
+      error.hidden = false;
+      nickname.setAttribute('aria-invalid', 'true');
+      fieldBox.classList.add('invalid');
+      nickname.focus();
+      return;
+    }
+    draft.account = value;
+    identityStep();
+  };
+}
+// Identity step: keys are generated automatically. When the platform
+// authenticator supports PRF, the device passphrase is derived from it and the
+// user invents nothing; otherwise a single device passphrase is requested.
+function identityStep() {
+  platformAuthenticatorAvailable().then(available => available ? prfIdentityStep() : phraseIdentityStep(true));
+}
+function prfIdentityStep() {
+  const form = node('form');
+  const note = node('p', undefined, 'gen-progress');
+  note.hidden = true;
+  submit(form, 'Создать ключи и включить защиту');
+  const fallbackLink = node('button', 'Использовать фразу устройства', 'btn-text');
+  fallbackLink.type = 'button';
+  fallbackLink.onclick = () => phraseIdentityStep(false);
+  onboard({
+    cardTitle: 'Создаём вашу идентичность',
+    cardSubtitle: 'RSA-ключи создаются в этом браузере и защищаются биометрией устройства. Придумывать фразу не нужно.',
+    children: [form, fallbackLink, note],
+    dots: 2,
+    footer: 'Сервер и Google не получают ключи шифрования.',
+  });
+  form.onsubmit = event => {
+    event.preventDefault();
+    action(async () => {
+      showProgress(note, 'Подтверждаем защиту устройства…');
+      let binding, passphrase;
+      try { ({ binding, passphrase } = await createDeviceBinding(draft.account)); }
+      catch (error) { note.hidden = true; throw Error(bindingErrorText(error) || `Не удалось настроить защиту устройства: ${error.message}`); }
+      showProgress(note, 'Создаём RSA-4096 ключи… Оставьте страницу открытой.');
+      const recoveryPhrase = generateRecoveryPhrase();
+      await client.prepare(draft.account, passphrase, recoveryPhrase, binding);
+      await backupStep(recoveryPhrase);
+    });
+  };
+}
+function phraseIdentityStep(auto) {
+  const form = node('form');
+  const phrase = input(form, 'Фраза устройства · от 16 символов', 'passphrase', 'password', 16, { autocomplete: 'new-password' });
+  const confirm = input(form, 'Повторите фразу устройства', 'confirm', 'password', 16, { autocomplete: 'new-password' });
+  const note = node('p', undefined, 'gen-progress');
+  note.hidden = true;
+  form.append(note);
+  submit(form, 'Создать ключи на этом устройстве');
+  onboard({
+    cardTitle: 'Создаём вашу идентичность',
+    cardSubtitle: auto
+      ? 'Биометрическая защита недоступна в этом браузере. Придумайте фразу устройства — она шифрует ключи и историю только здесь.'
+      : 'Фраза устройства шифрует ключи и историю в этом браузере. Сервер её не получает.',
+    children: [form],
+    dots: 2,
+    footer: 'Recovery-фразу сгенерируем автоматически на следующем шаге.',
+  });
+  form.onsubmit = event => {
+    event.preventDefault();
+    action(async () => {
+      if (phrase.value !== confirm.value) throw Error('Фразы устройства не совпадают');
+      showProgress(note, 'Создаём RSA-4096 ключи… Оставьте страницу открытой.');
+      const recoveryPhrase = generateRecoveryPhrase();
+      await client.prepare(draft.account, phrase.value, recoveryPhrase);
+      phrase.value = ''; confirm.value = '';
+      await backupStep(recoveryPhrase);
+    });
+  };
+}
+function backupStep(recoveryPhrase) {
+  const box = onboard({
+    cardTitle: 'Сохраните recovery-пакет',
+    cardSubtitle: 'Пакет зашифрован этой фразой. Сохраните файл вне устройства и запишите фразу отдельно. Без пакета или другого доверенного устройства потерянные ключи не восстановить.',
+    children: [],
+    dots: 3,
+    footer: 'Пакет содержит только зашифрованный recovery-ключ. Приватные ключи устройства в него не входят.',
+  });
+  const card = box.querySelector('.onboard-card');
+  if (recoveryPhrase) {
+    card.append(node('span', 'Recovery-фраза · запишите её', 'field-label'));
+    const phraseBox = node('div', undefined, 'phrase-box');
+    phraseBox.append(node('code', recoveryPhrase));
+    card.append(phraseBox);
+    const copy = node('button', 'Скопировать фразу', 'btn outline');
+    copy.type = 'button';
+    copy.onclick = async () => {
+      try { await navigator.clipboard.writeText(recoveryPhrase); notice('Recovery-фраза скопирована'); }
+      catch { notice('Не удалось скопировать. Выделите фразу вручную.'); }
+    };
+    card.append(copy);
+  }
+  const download = node('button', 'Скачать recovery-пакет', 'btn outline');
+  download.type = 'button';
+  download.onclick = downloadBackup;
+  const form = node('form');
+  const checkLabel = node('label', undefined, 'check');
+  const checkbox = node('input'); checkbox.type = 'checkbox'; checkbox.required = true;
+  checkLabel.append(checkbox, node('span', 'Я сохранил пакет и recovery-фразу отдельно'));
+  form.append(checkLabel);
+  const finish = submit(form, 'Завершить регистрацию');
+  card.append(download, form);
+  const renew = node('details', undefined, 'expain');
+  renew.append(node('summary', 'Если регистрация прервалась или прошло больше 4 минут'));
+  renew.append(node('p', 'Обновите пакет и скачайте его заново. Ключи устройства и recovery-ключ сохранятся. Это доступно только до регистрации аккаунта.', 'expain-body'));
+  const renewForm = node('form');
+  const recovery = input(renewForm, 'Recovery-фраза', 'recovery', 'password', 24);
+  submit(renewForm, 'Обновить пакет');
+  renew.append(renewForm);
+  card.append(renew);
+  form.onsubmit = event => {
+    event.preventDefault();
+    action(async () => {
+      finish.replaceChildren(spinner(18), node('span', 'Подключаемся к серверу…'));
+      try { await client.register(); await openApp(); }
+      finally { finish.textContent = 'Завершить регистрацию'; }
+    });
+  };
+  renewForm.onsubmit = event => {
+    event.preventDefault();
+    action(async () => { await client.renewPending(recovery.value); recovery.value = ''; await backupStep(recoveryPhrase); });
+  };
+}
+function unlockStep(candidates, status) {
+  const form = node('form');
+  let select = null;
+  if (candidates.length > 1) {
+    select = node('select');
+    select.setAttribute('aria-label', 'Локальное устройство');
+    for (const v of candidates) { const option = node('option', '@' + v.account); option.value = v.id; select.append(option); }
+    form.append(select);
+  }
+  const chosen = () => candidates.find(v => v.id === (select ? select.value : candidates[0].id));
+  const phraseField = input(form, 'Фраза устройства', 'passphrase', 'password', 0, { autocomplete: 'current-password' });
+  const note = node('p', undefined, 'gen-progress');
+  note.hidden = true;
+  form.append(note);
+  submit(form, 'Разблокировать');
+  const box = onboard({
+    cardTitle: 'Разблокировать Shade',
+    cardSubtitle: 'Фраза расшифровывает ключи и историю только в этом браузере. Сервер её не получает.',
+    children: [form, changeAccountButton()],
+  });
+  const card = box.querySelector('.onboard-card');
+  const hint = node('p', undefined, 'card-sub');
+  const refresh = () => {
+    const vault = chosen();
+    const byPhrase = vault.binding?.method !== 'prf';
+    phraseField.closest('label').hidden = !byPhrase;
+    phraseField.required = byPhrase;
+    hint.textContent = byPhrase ? `Локальные ключи @${vault.account}` : 'Ключи @' + vault.account + ' защищены биометрией этого устройства.';
+    card.insertBefore(hint, form);
+  };
+  if (select) select.addEventListener('change', refresh);
+  refresh();
+  form.onsubmit = event => {
+    event.preventDefault();
+    action(async () => {
+      const vault = chosen();
+      let passphrase;
+      if (vault.binding?.method === 'prf') {
+        showProgress(note, 'Подтверждаем защиту устройства…');
+        passphrase = await unlockDeviceBinding(vault.binding);
+      } else passphrase = phraseField.value;
+      await client.load(vault, passphrase);
+      phraseField.value = '';
+      if (status.account) await openApp(); else await backupStep();
+    });
+  };
+}
+function linkStep() {
+  onboard({
+    cardTitle: 'Нужна привязка устройства',
+    cardSubtitle: 'Этот Google-аккаунт уже зарегистрирован, но в браузере нет его ключей. Откройте прежнее доверенное устройство. В этой альфе добавление устройства и восстановление через интерфейс ещё недоступны. Исходные RSA-ключи не заменены.',
+    children: [changeAccountButton()],
+  });
+}
+function errorStep(message) {
+  const retry = node('button', 'Обновить', 'btn outline');
+  retry.type = 'button';
+  retry.onclick = () => location.reload();
+  onboard({ cardTitle: 'Shade недоступен', cardSubtitle: message, children: [retry] });
 }
 // This module still owns auth and AlphaClient. Flutter receives a read-only
 // presentation projection; it never receives vaults, keys, backups or tokens.
@@ -291,49 +609,25 @@ async function boot() {
     if (navigator.onLine || !local.length) throw error;
     status = { authenticated: true, account: local[0].account, offline: true };
   }
-  if (!status.authenticated) {
-    const box = welcome('Личная переписка. На любом устройстве.', 'Google подтверждает ваш аккаунт. Криптографические ключи создаются и остаются в браузере. Для их разблокировки понадобится отдельная фраза.');
-    if (status.googleConfigured) { const login = node('a', 'Войти через Google', 'button'); login.href = '/auth/google'; box.append(login); }
-    else box.append(node('p', 'Google OAuth ещё не настроен администратором. Переписка требует входа.', 'card'));
-    if (!isStandalone()) { const install = node('button', 'Установить Shade'); install.onclick = installGuide; box.append(install); }
-    return;
-  }
+  if (!status.authenticated) { welcomeStep(status); return; }
   loggedIn = !status.offline;
   const vaults = await listVaults();
   const matching = vaults.filter(v => v.account === status.account);
-  if (status.account && !matching.length) {
-    welcome('Нужна привязка устройства', 'Этот Google-аккаунт уже зарегистрирован, но в браузере нет его ключей. Откройте прежнее доверенное устройство. В этой альфе добавление устройства и восстановление через интерфейс ещё недоступны. Исходные RSA-ключи не заменены.'); return;
-  }
+  if (status.account && !matching.length) { linkStep(); return; }
   if (matching.length || (!status.account && vaults.length)) {
-    const candidates = matching.length ? matching : vaults;
-    const box = welcome('Разблокировать Shade', 'Фраза расшифровывает ключи и историю только в этом браузере. Сервер её не получает.');
-    const form = node('form'), select = node('select'); select.setAttribute('aria-label','Локальное устройство');
-    for (const v of candidates) { const option = node('option','@' + v.account); option.value = v.id; select.append(option); }
-    form.append(select); const phrase = input(form, 'Фраза устройства', 'passphrase', 'password'); submit(form, 'Разблокировать'); box.append(form);
-    form.onsubmit = event => { event.preventDefault(); action(async () => { await client.load(candidates.find(v => v.id === select.value), phrase.value); phrase.value = '';
-      if (status.account) await openApp(); else await backupStep(); }); }; return;
+    unlockStep(matching.length ? matching : vaults, status);
+    return;
   }
-  const box = welcome('Создать аккаунт', 'Регистрация работает с iPhone и ПК. Используйте две разные сильные фразы: для устройства и для offline recovery-пакета.');
-  const form = node('form'), account = input(form, 'Имя пользователя', 'account'); account.pattern = '[a-z0-9_]{3,32}'; account.maxLength = 32; account.autocapitalize = 'none';
-  const phrase = input(form, 'Фраза устройства · от 16 символов', 'passphrase', 'password', 16); phrase.autocomplete = 'new-password';
-  const confirm = input(form, 'Повторите фразу устройства', 'confirm', 'password', 16); confirm.autocomplete = 'new-password';
-  const recovery = input(form, 'Отдельная recovery-фраза · от 24 символов', 'recovery', 'password', 24); recovery.autocomplete = 'new-password';
-  submit(form, 'Создать ключи на этом устройстве'); box.append(form);
-  form.onsubmit = event => { event.preventDefault(); action(async () => {
-    if (phrase.value !== confirm.value) throw Error('Фразы устройства не совпадают');
-    if (phrase.value === recovery.value) throw Error('Recovery-фраза должна отличаться');
-    notice('Создание RSA-4096 ключей… Оставьте страницу открытой.');
-    await client.prepare(account.value, phrase.value, recovery.value); phrase.value = ''; confirm.value = ''; recovery.value = ''; await backupStep();
-  }); };
+  nicknameStep();
 }
-boot().catch(error => { welcome('Shade недоступен', errors[error.message] || error.message); });
+boot().catch(error => errorStep(errors[error.message] || error.message));
 if ('serviceWorker' in navigator && window.isSecureContext) {
   navigator.serviceWorker.register('/alpha-sw.js', { updateViaCache: 'none' }).then(reg => {
     // A waiting worker means a newer offline shell exists. Never switch
     // automatically: the user explicitly reloads, keys and history untouched.
     const offerUpdate = () => {
       if (!navigator.serviceWorker.controller) return;
-      const button = node('button', 'Перезагрузить и обновить', 'primary'); button.type = 'button';
+      const button = node('button', 'Перезагрузить и обновить', 'btn primary'); button.type = 'button';
       button.onclick = () => {
         // Reload only after the new worker actually takes control — an
         // immediate reload races skipWaiting and can leave the tab loading.
