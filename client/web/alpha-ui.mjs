@@ -408,17 +408,22 @@ function unlockStep(candidates, status) {
         showProgress(note, 'Подтверждаем защиту устройства…');
         passphrase = await unlockDeviceBinding(vault.binding);
       } else passphrase = phraseField.value;
-      await client.load(vault, passphrase);
+      // loadForPairing also resumes an interrupted second-device pairing: a
+      // vault without committed state is a pairing in progress, not a loss.
+      const result = await client.loadForPairing(vault, passphrase);
       phraseField.value = '';
+      if (result.pending) { pairingOfferStage(); return; }
       if (status.account) await openApp(); else await backupStep();
     });
   };
 }
-function linkStep() {
+function linkStep(account) {
+  const pair = node('button', 'Подключить это устройство', 'btn primary'); pair.type = 'button';
+  pair.onclick = () => pairingOnboarding(account);
   onboard({
     cardTitle: 'Нужна привязка устройства',
-    cardSubtitle: 'Этот Google-аккаунт уже зарегистрирован, но в браузере нет его ключей. Откройте прежнее доверенное устройство. В этой альфе добавление устройства и восстановление через интерфейс ещё недоступны. Исходные RSA-ключи не заменены.',
-    children: [changeAccountButton()],
+    cardSubtitle: 'Этот Google-аккаунт уже зарегистрирован, но в этом браузере нет его ключей. Ключи создаются здесь и входят в аккаунт только после подтверждения на доверенном устройстве.',
+    children: [pair, node('p', 'Восстановление после потери всех устройств появится позже; исходные RSA-ключи не заменяются.', 'muted'), changeAccountButton()],
   });
 }
 function errorStep(message) {
@@ -426,6 +431,111 @@ function errorStep(message) {
   retry.type = 'button';
   retry.onclick = () => location.reload();
   onboard({ cardTitle: 'Shade недоступен', cardSubtitle: message, children: [retry] });
+}
+// ── Подключение второго устройства ────────────────────────────────────────
+// Транспорт offer/confirmation — обычный буфер обмена между устройствами
+// пользователя. Целостность подтверждается криптографией, а не каналом.
+function copyArea(area, text) {
+  return action(async () => {
+    try { await navigator.clipboard.writeText(text); notice('Скопировано в буфер обмена.'); }
+    catch { area.focus(); area.select(); notice('Скопируйте текст вручную (Ctrl+C).'); }
+  });
+}
+// Доверенное устройство: код подключения → проверка запроса → одобрение.
+function pairDeviceDialog() {
+  const challenge = client.pairingChallenge();
+  const expires = new Date(challenge.expiresAt).toLocaleTimeString();
+  const code = node('code', challenge.code);
+  const field = node('textarea'); field.rows = 6; field.autocomplete = 'off';
+  field.setAttribute('aria-label', 'Запрос подключения с нового устройства');
+  field.placeholder = 'Вставьте запрос подключения (shade-pair-v1:…)';
+  const review = node('button', 'Проверить запрос', 'primary'); review.type = 'button';
+  review.onclick = () => action(async () => {
+    const reviewed = await client.reviewPairingOffer(field.value);
+    const short = reviewed.deviceId.slice(0, 16).replace(/(.{4})/g, '$1 ').trim();
+    const approve = node('button', 'Подтвердить устройство', 'primary'); approve.type = 'button';
+    approve.onclick = () => action(async () => {
+      const confirmation = await client.approvePairing(field.value);
+      const out = node('textarea'); out.rows = 6; out.readOnly = true; out.value = confirmation;
+      out.setAttribute('aria-label', 'Подтверждение подключения');
+      const copy = node('button', 'Копировать подтверждение'); copy.type = 'button';
+      copy.onclick = () => copyArea(out, confirmation);
+      showDialog('Устройство подключено', [
+        node('p', `Устройство ${short}… добавлено к аккаунту @${client.session.account}.`),
+        node('p', 'Перенесите подтверждение на новое устройство и вставьте его там. Ключи и история остаются на устройствах; сервер их не получает.', 'muted'),
+        out, copy]);
+    });
+    showDialog('Добавить устройство', [
+      node('p', `Аккаунт: @${client.session.account}`),
+      node('p', `Отпечаток нового устройства: ${reviewed.deviceId}`),
+      node('p', 'Убедитесь, что это ВАШЕ новое устройство. Подтверждение даёт ему доступ ко всем будущим сообщениям аккаунта.', 'muted'),
+      approve]);
+  });
+  showDialog('Добавить устройство', [
+    node('p', 'Шаг 1. Код подключения (действует до ' + expires + '):'),
+    code,
+    node('p', 'Введите этот код на новом устройстве. Код — только для вашего устройства: он не даёт доступ сам по себе, но нужен для запроса подключения.', 'muted'),
+    node('p', 'Шаг 2. Запрос подключения с нового устройства:'),
+    field, review]);
+}
+// Новое устройство: шаг 2 — запрос и подтверждение (ключи уже созданы).
+// initialCode — код, введённый на шаге 1: offer генерируется сразу, без
+// повторного ввода. Пустой код (возобновление прерванного подключения)
+// показывает форму ввода свежего кода.
+function pairingOfferStage(initialCode = '') {
+  const codeForm = node('form');
+  const code = input(codeForm, 'Код подключения с доверенного устройства (4 группы по 6 символов)', 'challenge');
+  code.autocapitalize = 'characters'; code.autocomplete = 'off';
+  const show = node('button', 'Показать запрос подключения', 'primary'); show.type = 'submit';
+  const offer = node('textarea'); offer.rows = 8; offer.readOnly = true; offer.hidden = true;
+  offer.setAttribute('aria-label', 'Запрос подключения');
+  const copy = node('button', 'Копировать запрос'); copy.type = 'button'; copy.hidden = true;
+  let offerText = '';
+  const generate = async value => {
+    offerText = await client.createPairingOffer(value);
+    offer.value = offerText; offer.hidden = false; copy.hidden = false;
+    notice('Запрос создан. Перенесите его на доверенное устройство.');
+  };
+  codeForm.onsubmit = event => { event.preventDefault(); action(async () => { await generate(code.value); }); };
+  copy.onclick = () => copyArea(offer, offerText);
+  const confirmForm = node('form');
+  const confirmation = node('textarea'); confirmation.rows = 8; confirmation.autocomplete = 'off';
+  confirmation.setAttribute('aria-label', 'Подтверждение подключения');
+  confirmation.placeholder = 'Вставьте подтверждение (shade-pair-confirm-v1:…)';
+  submit(confirmForm, 'Завершить подключение');
+  confirmForm.onsubmit = event => { event.preventDefault(); action(async () => {
+    const result = await client.completePairing(confirmation.value);
+    notice(`Устройство подключено к @${result.account}.`);
+    await openApp();
+  }); };
+  confirmForm.prepend(confirmation);
+  onboard({
+    cardTitle: 'Подключение устройства · шаг 2 из 2',
+    cardSubtitle: 'Покажите запрос подключения на доверенном устройстве и вставьте полученное подтверждение. Ключи уже созданы в этом браузере.',
+    children: [codeForm, offer, copy, confirmForm, changeAccountButton()],
+  });
+  if (initialCode) { codeForm.hidden = true; action(async () => { await generate(initialCode); }); }
+}
+// Новое устройство: шаг 1 — ключи и код подключения.
+function pairingOnboarding(account) {
+  const form = node('form');
+  const code = input(form, 'Код подключения с доверенного устройства (4 группы по 6 символов)', 'challenge');
+  code.autocapitalize = 'characters'; code.autocomplete = 'off';
+  const phrase = input(form, 'Фраза устройства · от 16 символов', 'passphrase', 'password', 16); phrase.autocomplete = 'new-password';
+  const confirm = input(form, 'Повторите фразу устройства', 'confirm', 'password', 16); confirm.autocomplete = 'new-password';
+  submit(form, 'Создать ключи и показать запрос');
+  form.onsubmit = event => { event.preventDefault(); action(async () => {
+    if (phrase.value !== confirm.value) throw Error('Фразы устройства не совпадают');
+    notice('Создание RSA-4096 ключей… Оставьте страницу открытой.');
+    await client.preparePairingVault(account, phrase.value);
+    pairingOfferStage(code.value);
+    phrase.value = ''; confirm.value = '';
+  }); };
+  onboard({
+    cardTitle: 'Подключить это устройство',
+    cardSubtitle: 'Этот Google-аккаунт уже зарегистрирован в Shade. Ключи создаются локально и входят в аккаунт только после подтверждения на доверенном устройстве.',
+    children: [form, changeAccountButton()],
+  });
 }
 // This module still owns auth and AlphaClient. Flutter receives a read-only
 // presentation projection; it never receives vaults, keys, backups or tokens.
@@ -542,6 +652,7 @@ async function openApp() {
         case 'stickers.save': return JSON.stringify({ ok: true, data: await client.saveStickers(data.revision, data.wall) });
         case 'stickers.gift': return JSON.stringify({ ok: true, data: await client.giftSticker(data.to, data.art, data.note, data.requestId) });
         case 'devices.revoke': await client.revokeDevice(data.id); break;
+        case 'devices.pair': pairDeviceDialog(); break;
         case 'push.toggle': {
           // Push is optional: failures surface as an honest notice, never as
           // an unhandled action error (the chat must keep working).
@@ -613,7 +724,7 @@ async function boot() {
   loggedIn = !status.offline;
   const vaults = await listVaults();
   const matching = vaults.filter(v => v.account === status.account);
-  if (status.account && !matching.length) { linkStep(); return; }
+  if (status.account && !matching.length) { linkStep(status.account); return; }
   if (matching.length || (!status.account && vaults.length)) {
     unlockStep(matching.length ? matching : vaults, status);
     return;
