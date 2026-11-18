@@ -406,7 +406,8 @@ function unlockStep(candidates, status) {
       let passphrase;
       if (vault.binding?.method === 'prf') {
         showProgress(note, 'Подтверждаем защиту устройства…');
-        passphrase = await unlockDeviceBinding(vault.binding);
+        try { passphrase = await unlockDeviceBinding(vault.binding); }
+        catch (error) { note.hidden = true; throw Error(bindingErrorText(error) || error.message); }
       } else passphrase = phraseField.value;
       // loadForPairing also resumes an interrupted second-device pairing: a
       // vault without committed state is a pairing in progress, not a loss.
@@ -467,8 +468,9 @@ function pairDeviceDialog() {
     });
     showDialog('Добавить устройство', [
       node('p', `Аккаунт: @${client.session.account}`),
-      node('p', `Отпечаток нового устройства: ${reviewed.deviceId}`),
-      node('p', 'Убедитесь, что это ВАШЕ новое устройство. Подтверждение даёт ему доступ ко всем будущим сообщениям аккаунта.', 'muted'),
+      node('p', 'Отпечаток нового устройства:'),
+      node('code', reviewed.deviceId),
+      node('p', 'Сравните его с отпечатком, который показывает новое устройство на экране подключения: значения должны совпадать символ в символ. Не совпадают или устройство не ваше — НЕ подтверждайте. Подтверждение даёт устройству доступ ко всем будущим сообщениям аккаунта.', 'muted'),
       approve]);
   });
   showDialog('Добавить устройство', [
@@ -509,10 +511,20 @@ function pairingOfferStage(initialCode = '') {
     await openApp();
   }); };
   confirmForm.prepend(confirmation);
+  // Security review (18.11): the challenge echo is NOT inside the signed
+  // pairingText, so a substituted offer can still carry a valid signature.
+  // The user-verifiable binding is the device fingerprint: show this device's
+  // own fingerprint so it can be compared with the trusted screen BEFORE the
+  // user approves there. Protocol change (signing the challenge) is a separate
+  // agreed task; this is the UI mitigation.
+  const fpBox = node('div', undefined, 'phrase-box');
+  fpBox.append(node('code', client.session.id));
   onboard({
     cardTitle: 'Подключение устройства · шаг 2 из 2',
     cardSubtitle: 'Покажите запрос подключения на доверенном устройстве и вставьте полученное подтверждение. Ключи уже созданы в этом браузере.',
-    children: [codeForm, offer, copy, confirmForm, changeAccountButton()],
+    children: [node('span', 'Отпечаток этого устройства', 'field-label'), fpBox,
+      node('p', 'Перед подтверждением сравните этот отпечаток с отпечатком на доверенном устройстве. Не совпадает — не подтверждайте подключение.', 'muted'),
+      codeForm, offer, copy, confirmForm, changeAccountButton()],
   });
   if (initialCode) { codeForm.hidden = true; action(async () => { await generate(initialCode); }); }
 }
