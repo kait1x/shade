@@ -101,10 +101,14 @@ systemctl is-active shade-staging
 curl -fsS -m 5 http://127.0.0.1:3101/api/health; echo
 curl -fsS -m 10 https://alpha.shadechat.ru/api/health; echo
 echo "== googleConfigured must be true =="
-curl -fsS -m 10 https://alpha.shadechat.ru/api/session | grep -q '"googleConfigured":true' || { echo "googleConfigured is not true" >&2; false; }
+# Capture first, match second: curl | grep -q under pipefail can fail via
+# SIGPIPE (grep -q exits on first match while curl still writes).
+SESSION_JSON=$(curl -fsS -m 10 https://alpha.shadechat.ru/api/session)
+[[ "$SESSION_JSON" == *'"googleConfigured":true'* ]] || { echo "googleConfigured is not true" >&2; false; }
 echo "googleConfigured:true OK"
 echo "== SW version must be $EXPECTED_SW =="
-curl -fsS -m 10 https://alpha.shadechat.ru/flutter-ui/cache-files.js | grep -q "$EXPECTED_SW" || { echo "served SW version mismatch" >&2; false; }
+SW_JS=$(curl -fsS -m 10 https://alpha.shadechat.ru/flutter-ui/cache-files.js)
+[[ "$SW_JS" == *"$EXPECTED_SW"* ]] || { echo "served SW version mismatch" >&2; false; }
 echo "SW version OK"
 echo "== previous release preserved =="
 [ -d "$OLD/server" ] || { echo "previous release disappeared" >&2; false; }
