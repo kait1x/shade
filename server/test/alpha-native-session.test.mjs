@@ -69,6 +69,9 @@ test('native Google ID-token session, legacy enrollment and bidirectional E2EE o
     const session = await f.request('/api/session', undefined, nc);
     assert.equal(session.result.authenticated, true);
     assert.equal(session.result.account, 'native_android');
+    // Verified Google email surfaces only for an authenticated session.
+    assert.equal(session.result.email, 'synthetic-native@test.invalid');
+    assert.equal('email' in (await f.request('/api/session')).result, false);
 
     const recovery = await createRecoveryBackup('native_android', root, 'synthetic native offline recovery phrase');
     const now = Date.now();

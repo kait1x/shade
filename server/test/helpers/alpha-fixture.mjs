@@ -16,7 +16,9 @@ export async function fixture(options) {
   const instance = await createAlphaServer({ ...options, publicOrigin: origin,
     oauthProvider: { configured: true,
       start: ({ state }) => `${origin}/auth/google/callback?state=${state}&code=${encodeURIComponent(loginSub)}`,
-      finish: async code => { if (!code.startsWith('synthetic-')) throw Error('Invalid test code'); return { googleSub: code }; } } });
+      finish: async code => { if (!code.startsWith('synthetic-')) throw Error('Invalid test code');
+        // Mirror the real googleProfile contract: verified email always present.
+        return { googleSub: code, email: `${code}@synthetic.invalid`, email_verified: true }; } } });
   await new Promise(r => instance.server.listen(port, '127.0.0.1', r));
   async function request(route, body, cookie = '', headers = {}, method) {
     const httpMethod = method || (body === undefined ? 'GET' : 'POST');

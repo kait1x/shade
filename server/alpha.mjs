@@ -205,7 +205,11 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     const s = sessions.get(req.cookies[sidName]);
     if (!s || s.expiresAt <= Date.now()) return res.json({ authenticated: false, googleConfigured: provider.configured, vapidPublicKey });
     const account = sessionAccount(s);
+    // Verified Google email from the server-side session profile; the web
+    // bridge forwards it into the shadeReceive presentation snapshot. Legacy
+    // (nickname-only) sessions carry no profile — email stays null for them.
     res.json({ authenticated: true, googleConfigured: provider.configured, account, vapidPublicKey,
+      email: typeof s.profile?.email === 'string' ? s.profile.email : null,
       directory: account ? registry.directory(account) : null });
   });
   app.get('/auth/google', rateLimit({ windowMs: 60000, limit: 15 }), wrap(async (_req, res) => {
