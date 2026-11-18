@@ -118,11 +118,21 @@ bash /opt/shade-staging/admin-update-v2-glm.sh
 ```
 
 Скрипт: проверит MANIFEST по checksum (fail-closed), commit-binding,
-синтаксис, наличие env; переключит symlink; рестартует shade-staging;
+синтаксис, наличие env; проверит baseline production v1 (shade/caddy active,
+health :3000) ДО переключения; переключит symlink; рестартует shade-staging;
 проверит health loopback:3101 + https://alpha.shadechat.ru, googleConfigured,
-SW-версию; проверит production (shade/caddy active, v1 health :3000,
-ExecStart production-юнита); напечатает команду отката. При любой ошибке
-trap ERR печатает откат. Ожидается `UPDATE_DONE`.
+SW-версию; проверит production после переключения; напечатает команду отката.
+Ожидается `UPDATE_DONE`.
+
+Откат:
+- **Автоматический** — при провале любой проверки ПОСЛЕ переключения
+  (restart/is-active/health/SW-файл) скрипт сам возвращает предыдущий релиз,
+  рестартует и проверяет его health (одна попытка, без циклов, результат
+  печатается: `AUTO-ROLLBACK OK` либо `CRITICAL`).
+- **Ручной** — команда печатается всегда; прежние релизы не удаляются.
+- Ошибка ДО переключения не меняет staging (откат не нужен).
+- Деградация production v1 после переключения НЕ вызывает автооткат staging
+  (скрипт не пишет в production): печатается CRITICAL + ручной откат, exit 1.
 
 ## 7. Проверки после переключения
 
@@ -139,6 +149,10 @@ curl -fsS -m 5 http://127.0.0.1:3000/api/health; echo   # production v1 жив
 диалог «Доступно обновление Shade» (ключи/история не затрагиваются).
 
 ## 8. Откат (всегда доступен)
+
+Автооткат срабатывает сам при провале post-switch проверок (см. §6).
+Ручной откат — в любой момент, включая случай, когда автооткат сообщил
+CRITICAL или когда владелец хочет вернуться без ошибки:
 
 ```bash
 ln -sfn /opt/shade-staging/releases/<предыдущий stamp> /opt/shade-staging/current
