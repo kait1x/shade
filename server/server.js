@@ -2049,271 +2049,316 @@ app.get('/dashboard', requireAuth, (_req, res) => {
       .replace(/'/g, '&#39;');
   }
 
+  // Ghost mascot SVG derived 1:1 from client ShadeGhostPainter
+  // (client/lib/core/widgets/shade_logo.dart, 100-unit coordinate space).
+  const ghostSvg = '<svg class="ghost" viewBox="0 0 100 100" aria-hidden="true" focusable="false">' +
+    '<g transform="translate(50 50) scale(0.82) translate(-53 -51.5)">' +
+    '<path fill="#F5F5F7" d="M18 48C18 25 31 13 50 13C70 13 82 27 82 48C82 62 86 73 88 79C90 86 80 90 74 85L66 79C61 92 49 94 43 81C34 92 20 91 19 80C18 70 18 58 18 48Z"/>' +
+    '<ellipse cx="37.5" cy="47" rx="5.5" ry="9" fill="#000000"/>' +
+    '<ellipse cx="62.5" cy="45" rx="5.5" ry="9" fill="#000000"/>' +
+    '<path d="M44 64Q51 70 58 62" fill="none" stroke="#000000" stroke-width="3.5" stroke-linecap="round"/>' +
+    '</g></svg>';
+
+  // Existing filtered log buffer (see /logs) — presentation only, newest first.
+  const logEntries = recentLogs.slice(-50);
+  const logRows = logEntries.length === 0
+    ? '<tr class="empty-row"><td colspan="2">No logs yet</td></tr>'
+    : logEntries.map((line, i) => ({ line: line, n: i + 1 })).reverse().map(e =>
+        '<tr><td class="log-num">' + e.n + '</td><td class="log-msg">' + escHtml(e.line) + '</td></tr>'
+      ).join('');
+
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#000000">
 <title>Shade — Admin Dashboard</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg-primary:#0f0f1a;
-  --bg-secondary:#1a1a2e;
-  --bg-card:#16213e;
-  --bg-hover:#1f2b47;
-  --accent:#7c3aed;
-  --accent-light:#a78bfa;
-  --accent-glow:rgba(124,58,237,.25);
-  --teal:#00d4aa;
-  --text-primary:#e2e8f0;
-  --text-secondary:#94a3b8;
-  --text-muted:#64748b;
-  --border:rgba(148,163,184,.1);
-  --danger:#ef4444;
-  --success:#22c55e;
-  --warning:#f59e0b;
-  --radius:12px;
-  --shadow:0 4px 24px rgba(0,0,0,.35);
-  --shadow-sm:0 2px 8px rgba(0,0,0,.25);
-  --font:Inter,system-ui,-apple-system,sans-serif;
+  --bg:#000000;
+  --surface:#111113;
+  --surface-zebra:#0C0C0E;
+  --surface-elevated:#1C1C1F;
+  --border:#29292D;
+  --text:#F5F5F7;
+  --text-secondary:#9C9CA3;
+  --text-muted:#8E8E93;
+  --success:#32D74B;
+  --danger:#FF453A;
+  --warning:#FF9F0A;
+  --radius:16px;
+  --radius-sm:12px;
+  --font:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Inter,sans-serif;
+  --mono:ui-monospace,'SF Mono','Cascadia Code',Consolas,'JetBrains Mono',monospace;
 }
-html{font-size:15px}
+html{font-size:16px;-webkit-text-size-adjust:100%}
 body{
   font-family:var(--font);
-  background:var(--bg-primary);
-  color:var(--text-primary);
+  background:var(--bg);
+  color:var(--text);
   min-height:100vh;
   display:flex;
   flex-direction:column;
   line-height:1.5;
+  font-size:.9375rem;
 }
 a{color:inherit;text-decoration:none}
 button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+:focus-visible{outline:2px solid var(--text-muted);outline-offset:2px;border-radius:4px}
+[id]{scroll-margin-top:84px}
+.ghost{width:30px;height:30px;flex-shrink:0;display:block}
 
 /* ── Layout ── */
 .layout{display:flex;min-height:100vh;flex:1}
 
 /* ── Sidebar ── */
 .sidebar{
-  width:240px;
-  background:var(--bg-secondary);
+  width:232px;
+  background:var(--bg);
   border-right:1px solid var(--border);
   display:flex;
   flex-direction:column;
   position:fixed;
   top:0;left:0;bottom:0;
   z-index:100;
-  transition:transform .3s ease;
+  transition:transform .2s ease;
 }
 .sidebar-brand{
-  padding:24px 20px;
+  padding:20px;
   display:flex;
   align-items:center;
-  gap:10px;
+  gap:12px;
   border-bottom:1px solid var(--border);
 }
-.sidebar-brand .logo{
-  width:36px;height:36px;
-  background:linear-gradient(135deg,var(--accent),var(--teal));
-  border-radius:10px;
-  display:flex;align-items:center;justify-content:center;
-  font-weight:800;font-size:18px;color:#fff;
-}
-.sidebar-brand h1{font-size:1.25rem;font-weight:700;letter-spacing:.5px}
-.sidebar-nav{flex:1;padding:16px 12px;display:flex;flex-direction:column;gap:4px}
+.brand-text{display:flex;flex-direction:column;line-height:1.2}
+.brand-name{font-size:.9375rem;font-weight:700;letter-spacing:2px;color:var(--text)}
+.brand-sub{font-size:.6875rem;font-weight:500;letter-spacing:1.5px;text-transform:uppercase;color:var(--text-muted)}
+.sidebar-nav{flex:1;padding:16px 12px;display:flex;flex-direction:column;gap:2px}
+.nav-label{padding:0 12px 8px}
 .nav-item{
   display:flex;align-items:center;gap:12px;
-  padding:10px 14px;border-radius:var(--radius);
-  font-size:.925rem;font-weight:500;
-  color:var(--text-secondary);
-  transition:all .2s ease;
+  padding:9px 12px;border-radius:var(--radius-sm);
+  font-size:.875rem;font-weight:500;
+  color:var(--text-muted);
+  border:1px solid transparent;
+  transition:color .16s ease,background-color .16s ease,border-color .16s ease;
 }
-.nav-item:hover,.nav-item.active{
-  background:var(--bg-hover);
-  color:var(--text-primary);
-}
+.nav-item svg{width:18px;height:18px;flex-shrink:0}
+.nav-item:hover{color:var(--text);background:var(--surface-zebra)}
 .nav-item.active{
-  background:var(--accent-glow);
-  color:var(--accent-light);
+  background:var(--surface);
+  border-color:var(--border);
+  color:var(--text);
 }
-.nav-item .icon{font-size:1.15rem;width:22px;text-align:center}
 .sidebar-footer{
   padding:16px 20px;
   border-top:1px solid var(--border);
-  font-size:.78rem;
+  font-size:.75rem;
   color:var(--text-muted);
 }
 
 /* ── Main ── */
-.main{flex:1;margin-left:240px;display:flex;flex-direction:column;min-height:100vh}
+.main{flex:1;margin-left:232px;display:flex;flex-direction:column;min-height:100vh;min-width:0}
 
 /* ── Header ── */
 .header{
-  background:var(--bg-secondary);
+  background:var(--bg);
   border-bottom:1px solid var(--border);
-  padding:14px 28px;
+  padding:12px 28px;
   display:flex;
   align-items:center;
   justify-content:space-between;
+  gap:12px;
   position:sticky;top:0;z-index:50;
-  backdrop-filter:blur(12px);
 }
-.header-left{display:flex;align-items:center;gap:16px}
-.menu-toggle{display:none;font-size:1.4rem;padding:4px}
-.header-title{font-size:1.05rem;font-weight:600}
-.header-right{display:flex;align-items:center;gap:16px}
+.header-left{display:flex;align-items:center;gap:12px;min-width:0}
+.menu-toggle{
+  display:none;
+  width:32px;height:32px;
+  align-items:center;justify-content:center;
+  border-radius:8px;color:var(--text-secondary);
+}
+.menu-toggle svg{width:20px;height:20px}
+.header-brand{display:flex;align-items:center;gap:10px;min-width:0}
+.header-brand .ghost{width:26px;height:26px}
+.header-tag{
+  font-size:.6875rem;font-weight:600;letter-spacing:1.5px;
+  text-transform:uppercase;color:var(--text-muted);
+  padding:3px 8px;border:1px solid var(--border);border-radius:999px;
+  white-space:nowrap;
+}
+.header-right{display:flex;align-items:center;gap:12px;flex-shrink:0}
 .server-status{
-  display:flex;align-items:center;gap:8px;
-  font-size:.85rem;font-weight:500;
-  padding:6px 14px;
-  border-radius:20px;
-  background:rgba(34,197,94,.1);
-  color:var(--success);
+  display:flex;align-items:center;gap:7px;
+  font-size:.8125rem;font-weight:500;
+  padding:5px 12px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  background:var(--surface);
+  color:var(--text-secondary);
+  white-space:nowrap;
 }
 .server-status .dot{
-  width:8px;height:8px;border-radius:50%;
+  width:7px;height:7px;border-radius:50%;
   background:var(--success);
-  box-shadow:0 0 6px var(--success);
-  animation:pulse 2s infinite;
+  flex-shrink:0;
 }
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 .btn-logout{
-  padding:7px 16px;
-  border-radius:8px;
-  font-size:.85rem;
+  padding:6px 14px;
+  border-radius:var(--radius-sm);
+  font-size:.8125rem;
   font-weight:500;
-  background:rgba(239,68,68,.1);
-  color:var(--danger);
-  transition:background .2s;
+  background:var(--surface);
+  border:1px solid var(--border);
+  color:var(--text-secondary);
+  transition:color .16s ease,border-color .16s ease;
+  white-space:nowrap;
 }
-.btn-logout:hover{background:rgba(239,68,68,.2)}
+.btn-logout:hover{color:var(--text);border-color:var(--text-muted)}
 
 /* ── Content ── */
-.content{padding:28px;flex:1}
-.content-title{font-size:1.5rem;font-weight:700;margin-bottom:24px}
+.content{padding:28px;flex:1;width:100%;max-width:1160px;margin:0 auto;display:flex;flex-direction:column;gap:24px}
+.content-title{font-size:1.75rem;font-weight:700;letter-spacing:-.3px;line-height:1.2}
+.section-label{
+  font-size:.75rem;
+  font-weight:600;
+  letter-spacing:1.5px;
+  text-transform:uppercase;
+  color:var(--text-muted);
+}
 
 /* ── Stat Cards ── */
 .stats{
   display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
-  gap:20px;
-  margin-bottom:32px;
+  grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+  gap:16px;
 }
 .stat-card{
-  background:var(--bg-card);
+  background:var(--surface);
   border:1px solid var(--border);
   border-radius:var(--radius);
-  padding:22px 24px;
-  box-shadow:var(--shadow-sm);
-  transition:transform .2s,box-shadow .2s;
+  padding:18px 20px;
+  display:flex;flex-direction:column;gap:8px;
 }
-.stat-card:hover{
-  transform:translateY(-2px);
-  box-shadow:var(--shadow);
+.stat-card .stat-label{
+  font-size:.75rem;color:var(--text-muted);font-weight:600;
+  letter-spacing:1.2px;text-transform:uppercase;
 }
-.stat-card .stat-icon{
-  width:44px;height:44px;
-  border-radius:10px;
-  display:flex;align-items:center;justify-content:center;
-  font-size:1.3rem;
-  margin-bottom:14px;
+.stat-card .stat-value{
+  font-size:1.75rem;font-weight:700;letter-spacing:-.5px;
+  font-variant-numeric:tabular-nums;line-height:1.1;
 }
-.stat-card .stat-icon.purple{background:rgba(124,58,237,.15);color:var(--accent-light)}
-.stat-card .stat-icon.teal{background:rgba(0,212,170,.12);color:var(--teal)}
-.stat-card .stat-icon.yellow{background:rgba(245,158,11,.12);color:var(--warning)}
-.stat-card .stat-icon.green{background:rgba(34,197,94,.12);color:var(--success)}
-.stat-card .stat-label{font-size:.82rem;color:var(--text-muted);font-weight:500;margin-bottom:4px}
-.stat-card .stat-value{font-size:1.75rem;font-weight:700}
 
-/* ── Table ── */
-.table-section{
-  background:var(--bg-card);
+/* ── Cards / Tables ── */
+.card{
+  background:var(--surface);
   border:1px solid var(--border);
   border-radius:var(--radius);
-  box-shadow:var(--shadow-sm);
   overflow:hidden;
 }
 .table-header{
-  padding:18px 24px;
+  padding:16px 20px;
   border-bottom:1px solid var(--border);
-  display:flex;align-items:center;justify-content:space-between;
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
 }
-.table-header h2{font-size:1.1rem;font-weight:600}
 .table-header .count{
-  font-size:.8rem;
-  padding:4px 10px;
-  border-radius:12px;
-  background:var(--accent-glow);
-  color:var(--accent-light);
-  font-weight:600;
+  font-size:.75rem;
+  padding:3px 10px;
+  border-radius:999px;
+  background:var(--surface-elevated);
+  border:1px solid var(--border);
+  color:var(--text-secondary);
+  font-weight:500;
+  font-variant-numeric:tabular-nums;
+  white-space:nowrap;
 }
-.table-wrap{overflow-x:auto}
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{width:100%;border-collapse:collapse;min-width:600px}
 thead th{
   text-align:left;
-  padding:12px 20px;
-  font-size:.78rem;
+  padding:10px 20px;
+  font-size:.6875rem;
   font-weight:600;
   text-transform:uppercase;
-  letter-spacing:.5px;
+  letter-spacing:1.2px;
   color:var(--text-muted);
   border-bottom:1px solid var(--border);
-  background:rgba(0,0,0,.15);
+  white-space:nowrap;
 }
 tbody td{
-  padding:14px 20px;
-  font-size:.9rem;
-  border-bottom:1px solid var(--border);
+  padding:12px 20px;
+  font-size:.875rem;
   vertical-align:middle;
 }
-tbody tr:last-child td{border-bottom:none}
-tbody tr:hover{background:var(--bg-hover)}
-.user-cell{display:flex;align-items:center;gap:10px}
+tbody tr:nth-child(odd){background:var(--surface-zebra)}
+tbody tr:nth-child(even){background:var(--surface)}
+tbody tr:hover{background:var(--surface-elevated)}
+.muted-cell{color:var(--text-secondary);font-variant-numeric:tabular-nums;white-space:nowrap}
+.user-cell{display:flex;align-items:center;gap:10px;min-width:0}
 .avatar{
-  width:34px;height:34px;
+  width:32px;height:32px;
   border-radius:50%;
-  background:linear-gradient(135deg,var(--accent),var(--teal));
+  background:var(--surface-elevated);
+  border:1px solid var(--border);
   display:flex;align-items:center;justify-content:center;
-  font-weight:700;font-size:.8rem;color:#fff;
-  flex-shrink:0;
+  font-weight:700;font-size:.75rem;color:var(--text);
+  flex-shrink:0;text-transform:uppercase;
+}
+.user-cell .name{
+  font-family:var(--mono);
+  font-size:.8125rem;
+  color:var(--text);
+  overflow-wrap:anywhere;
 }
 .status-badge{
-  display:inline-flex;align-items:center;gap:5px;
-  padding:4px 10px;border-radius:12px;
-  font-size:.78rem;font-weight:600;
+  display:inline-flex;align-items:center;gap:6px;
+  padding:3px 10px;border-radius:999px;
+  font-size:.75rem;font-weight:600;white-space:nowrap;
 }
-.status-badge.online{background:rgba(34,197,94,.12);color:var(--success)}
-.status-badge.offline{background:rgba(100,116,139,.12);color:var(--text-muted)}
-.status-badge .dot{width:6px;height:6px;border-radius:50%}
+.status-badge.online{background:rgba(50,215,75,.1);color:var(--success)}
+.status-badge.offline{background:rgba(142,142,147,.1);color:var(--text-muted)}
+.status-badge .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
 .status-badge.online .dot{background:var(--success)}
 .status-badge.offline .dot{background:var(--text-muted)}
-.btn-revoke{
+.btn-revoke,.btn-delete{
   padding:5px 12px;
-  border-radius:6px;
-  font-size:.78rem;
+  border-radius:10px;
+  font-size:.75rem;
   font-weight:600;
-  background:rgba(239,68,68,.1);
-  color:var(--danger);
-  transition:background .2s;
+  transition:background-color .16s ease;
+  white-space:nowrap;
 }
-.btn-revoke:hover{background:rgba(239,68,68,.22)}
-.btn-delete{
-  padding:5px 12px;
-  border-radius:6px;
-  font-size:.78rem;
-  font-weight:600;
-  background:rgba(245,158,11,.1);
-  color:var(--warning);
-  transition:background .2s;
-}
-.btn-delete:hover{background:rgba(245,158,11,.22)}
+.btn-revoke{background:rgba(255,69,58,.08);color:var(--danger)}
+.btn-revoke:hover{background:rgba(255,69,58,.18)}
+.btn-delete{background:rgba(255,159,10,.08);color:var(--warning)}
+.btn-delete:hover{background:rgba(255,159,10,.18)}
 .actions{display:flex;gap:8px}
 .empty-row td{
   text-align:center;
-  padding:40px 20px;
+  padding:36px 20px;
   color:var(--text-muted);
-  font-size:.9rem;
+  font-size:.875rem;
+}
+
+/* ── Logs ── */
+.logs-table{min-width:0;table-layout:fixed}
+.logs-table .log-num{
+  width:56px;
+  font-family:var(--mono);
+  font-size:.75rem;
+  color:var(--text-muted);
+  font-variant-numeric:tabular-nums;
+}
+.logs-table .log-msg{
+  font-family:var(--mono);
+  font-size:.78125rem;
+  color:var(--text-secondary);
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  line-height:1.55;
 }
 
 /* ── Footer ── */
@@ -2323,36 +2368,51 @@ tbody tr:hover{background:var(--bg-hover)}
   display:flex;
   align-items:center;
   justify-content:space-between;
-  font-size:.8rem;
+  gap:8px;flex-wrap:wrap;
+  font-size:.75rem;
   color:var(--text-muted);
-  background:var(--bg-secondary);
-}
-
-/* ── Mobile ── */
-@media(max-width:768px){
-  .sidebar{transform:translateX(-100%)}
-  .sidebar.open{transform:translateX(0)}
-  .main{margin-left:0}
-  .menu-toggle{display:block}
-  .stats{grid-template-columns:1fr 1fr}
-  .content{padding:20px 16px}
-  .header{padding:12px 16px}
-  .footer{flex-direction:column;gap:6px;text-align:center}
-}
-@media(max-width:480px){
-  .stats{grid-template-columns:1fr}
-  .header-right{gap:10px}
-  .server-status span:not(.dot){display:none}
+  background:var(--bg);
+  font-variant-numeric:tabular-nums;
 }
 
 /* ── Overlay ── */
 .overlay{
   display:none;
   position:fixed;inset:0;
-  background:rgba(0,0,0,.5);
+  background:rgba(0,0,0,.6);
   z-index:90;
 }
 .overlay.active{display:block}
+
+/* ── Mobile ── */
+@media(max-width:768px){
+  .sidebar{transform:translateX(-100%)}
+  .sidebar.open{transform:translateX(0)}
+  .main{margin-left:0}
+  .menu-toggle{display:flex}
+  .stats{grid-template-columns:1fr 1fr}
+  .content{padding:20px 16px;gap:20px}
+  .header{padding:10px 16px}
+  .footer{padding:14px 16px;justify-content:center;text-align:center}
+  .content-title{font-size:1.5rem}
+}
+@media(max-width:480px){
+  .stats{grid-template-columns:1fr}
+  .header-right{gap:8px}
+  .server-status{padding:5px 9px}
+  .server-status span:not(.dot){display:none}
+  .stat-card{padding:16px}
+  thead th,tbody td{padding-left:14px;padding-right:14px}
+  .table-header{padding:14px 16px}
+}
+@media(max-width:360px){
+  .header-tag{display:none}
+  .header-left{gap:8px}
+  .btn-logout{padding:6px 10px}
+}
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition:none!important;animation:none!important}
+}
 </style>
 </head>
 <body>
@@ -2361,15 +2421,18 @@ tbody tr:hover{background:var(--bg-hover)}
   <!-- Sidebar -->
   <aside class="sidebar" id="sidebar">
     <div class="sidebar-brand">
-      <div class="logo">S</div>
-      <h1>Shade</h1>
+      ${ghostSvg}
+      <div class="brand-text">
+        <span class="brand-name">SHADE</span>
+        <span class="brand-sub">Admin</span>
+      </div>
     </div>
-    <nav class="sidebar-nav">
-      <a href="/dashboard" class="nav-item active"><span class="icon">&#x1F4CA;</span>Dashboard</a>
-      <a href="#users" class="nav-item"><span class="icon">&#x1F465;</span>Users</a>
-      <a href="#groups" class="nav-item"><span class="icon">&#x1F4AC;</span>Groups</a>
-      <a href="#logs" class="nav-item"><span class="icon">&#x1F4CB;</span>Logs</a>
-      <a href="#settings" class="nav-item"><span class="icon">&#x2699;&#xFE0F;</span>Settings</a>
+    <nav class="sidebar-nav" aria-label="Admin navigation">
+      <span class="nav-label section-label">Navigation</span>
+      <a href="/dashboard" class="nav-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>Dashboard</a>
+      <a href="#users" class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Users</a>
+      <a href="#groups" class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>Groups</a>
+      <a href="#logs" class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="M10 9H8"/></svg>Logs</a>
     </nav>
     <div class="sidebar-footer">
       v${serverVersion} &middot; Shade Relay Server
@@ -2381,8 +2444,12 @@ tbody tr:hover{background:var(--bg-hover)}
     <!-- Header -->
     <header class="header">
       <div class="header-left">
-        <button class="menu-toggle" onclick="toggleSidebar()">&#x2630;</button>
-        <span class="header-title">Dashboard</span>
+        <button class="menu-toggle" onclick="toggleSidebar()" aria-label="Toggle menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/></svg></button>
+        <div class="header-brand">
+          ${ghostSvg}
+          <span class="brand-name">SHADE</span>
+          <span class="header-tag">Admin</span>
+        </div>
       </div>
       <div class="header-right">
         <div class="server-status">
@@ -2390,7 +2457,7 @@ tbody tr:hover{background:var(--bg-hover)}
           <span>Online</span>
         </div>
         <form action="/admin/logout" method="POST">
-          <button type="submit" class="btn-logout">&#x21A9; Logout</button>
+          <button type="submit" class="btn-logout">Logout</button>
         </form>
       </div>
     </header>
@@ -2402,42 +2469,38 @@ tbody tr:hover{background:var(--bg-hover)}
       <!-- Stat Cards -->
       <div class="stats">
         <div class="stat-card">
-          <div class="stat-icon purple">&#x1F465;</div>
           <div class="stat-label">Total Users</div>
           <div class="stat-value">${totalUsers}</div>
         </div>
         <div class="stat-card">
-          <div class="stat-icon teal">&#x1F525;</div>
           <div class="stat-label">Active Sessions</div>
           <div class="stat-value">${activeSessions}</div>
         </div>
-        <div class="stat-card">
-          <div class="stat-icon yellow">&#x1F4AC;</div>
+        <div class="stat-card" id="groups">
           <div class="stat-label">Groups</div>
           <div class="stat-value">${totalGroups}</div>
         </div>
         <div class="stat-card">
-          <div class="stat-icon green">&#x1F4E8;</div>
           <div class="stat-label">Queued Messages</div>
           <div class="stat-value">${todayMessages}</div>
         </div>
       </div>
 
       <!-- Users Table -->
-      <div class="table-section" id="users">
+      <div class="card table-section" id="users">
         <div class="table-header">
-          <h2>Users</h2>
+          <h2 class="section-label">Users</h2>
           <span class="count">${totalUsers} total</span>
         </div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>User</th>
-                <th>Status</th>
-                <th>Last Seen</th>
-                <th>Registered</th>
-                <th>Actions</th>
+                <th scope="col">User</th>
+                <th scope="col">Status</th>
+                <th scope="col">Last Seen</th>
+                <th scope="col">Registered</th>
+                <th scope="col">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -2446,20 +2509,41 @@ tbody tr:hover{background:var(--bg-hover)}
                 : userList.map(u => {
                     const ls = u.lastSeen ? timeAgo(u.lastSeen) : 'Never';
                     const reg = u.registeredAt ? timeAgo(u.registeredAt) : 'Unknown';
-                    const initial = u.username.charAt(0).toUpperCase();
                     const usernameEscaped = escHtml(u.username);
+                    const initial = escHtml(u.username.charAt(0).toUpperCase());
                     return '<tr>' +
-                      '<td><div class="user-cell"><div class="avatar">' + initial + '</div>' + usernameEscaped + '</div></td>' +
+                      '<td><div class="user-cell"><span class="avatar">' + initial + '</span><span class="name">' + usernameEscaped + '</span></div></td>' +
                       '<td><span class="status-badge ' + (u.online ? 'online' : 'offline') + '"><span class="dot"></span>' + (u.online ? 'Online' : 'Offline') + '</span></td>' +
-                      '<td>' + ls + '</td>' +
-                      '<td>' + reg + '</td>' +
+                      '<td class="muted-cell">' + ls + '</td>' +
+                      '<td class="muted-cell">' + reg + '</td>' +
                       '<td><div class="actions">' +
-                        '<button class="btn-revoke" onclick="revokeToken(\'' + usernameEscaped + '\')">Revoke</button>' +
-                        '<button class="btn-delete" onclick="deleteUser(\'' + usernameEscaped + '\')">Delete</button>' +
+                        '<button type="button" class="btn-revoke" data-action="revoke" data-username="' + usernameEscaped + '">Revoke</button>' +
+                        '<button type="button" class="btn-delete" data-action="delete" data-username="' + usernameEscaped + '">Delete</button>' +
                       '</div></td>' +
                     '</tr>';
                   }).join('')
               }
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Logs -->
+      <div class="card logs-section" id="logs">
+        <div class="table-header">
+          <h2 class="section-label">Logs</h2>
+          <span class="count">${logEntries.length} entries</span>
+        </div>
+        <div class="table-wrap">
+          <table class="logs-table">
+            <thead>
+              <tr>
+                <th scope="col" class="log-num">#</th>
+                <th scope="col">Event</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${logRows}
             </tbody>
           </table>
         </div>
@@ -2515,6 +2599,18 @@ function deleteUser(user){
     })
     .catch(function(e){alert('Request failed')});
 }
+// User actions via event delegation: usernames travel in HTML-escaped
+// data attributes (never inside inline JS), and handlers survive the
+// periodic table refresh below.
+document.addEventListener('click',function(e){
+  var el=e.target;
+  var btn=(el&&el.closest)?el.closest('button[data-action]'):null;
+  if(!btn)return;
+  var user=btn.getAttribute('data-username');
+  var action=btn.getAttribute('data-action');
+  if(action==='revoke')revokeToken(user);
+  else if(action==='delete')deleteUser(user);
+});
 // Auto-refresh every 5 seconds
 setInterval(function(){
   fetch('/api/dashboard-stats')
@@ -2529,7 +2625,7 @@ setInterval(function(){
       }
     })
     .catch(function(){});
-  // Refresh user table
+  // Refresh user table and logs
   fetch('/dashboard')
     .then(function(r){return r.text()})
     .then(function(html){
@@ -2538,6 +2634,9 @@ setInterval(function(){
       var newTable=doc.querySelector('.table-section');
       var oldTable=document.querySelector('.table-section');
       if(newTable&&oldTable) oldTable.innerHTML=newTable.innerHTML;
+      var newLogs=doc.querySelector('.logs-section');
+      var oldLogs=document.querySelector('.logs-section');
+      if(newLogs&&oldLogs) oldLogs.innerHTML=newLogs.innerHTML;
     })
     .catch(function(){});
 },5000);
