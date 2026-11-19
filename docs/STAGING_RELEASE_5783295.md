@@ -85,7 +85,10 @@ sudo -u shade-staging bash -c "export PATH=/opt/node/bin:\$PATH; cd $REL/server 
 node --check "$REL/server/alpha.mjs"
 (cd "$REL" && sha256sum -c MANIFEST.sha256 --quiet) && echo 'MANIFEST OK'
 grep '^commit:' "$REL/MANIFEST.meta"
-chown -R root:root "$REL"; chmod -R go-w "$REL"
+chown -R root:root "$REL"; chmod -R u+rwX,go+rX,go-w "$REL"
+# Грабля 19.11: cp -a сохраняет режимы источника (scp с Windows даёт каталогам 700);
+# одного go-w НЕ достаточно — shade-staging теряет вход в каталог (CHDIR Permission
+# denied при старте юнита). go+rX возвращает чтение/вход без права записи.
 cp "$UP/admin-update-challenge.sh" /opt/shade-staging/; chmod 755 /opt/shade-staging/admin-update-challenge.sh
 ```
 
