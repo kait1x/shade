@@ -26,7 +26,8 @@ import { createMigration } from './multidevice/migration.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const token = () => randomBytes(32).toString('hex');
-const SESSION_MS = 8 * 60 * 60 * 1000;
+const SESSION_MS = 30 * 24 * 60 * 60 * 1000;
+const SESSION_REFRESH_LEFT = 7 * 24 * 60 * 60 * 1000;
 
 // Injected OAuth providers are available ONLY to in-process tests. No test login
 // route, environment bypass or fake identity provider is shipped to users.
@@ -57,6 +58,19 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   check(path.resolve(dataDir) !== path.join(here, 'data'), 'Production directory forbidden');
   const store = await alphaStore(dataDir, storageSecret, { checkpointDir, checkpointKeep });
   const sessions = new Map(), flows = new Map(), handoffs = new Map();
+  // Browser sessions survive restarts (encrypted at rest, same AES-GCM as the
+  // registry): a deploy must never log users out. sid is a 64-hex random;
+  // profiles were verified against the OAuth allowlist at creation time.
+  for (const [savedSid, value] of Object.entries(await store.loadSessions())) {
+    if (/^[0-9a-f]{64}$/.test(savedSid) && value && Number.isFinite(value.expiresAt) &&
+      value.expiresAt > Date.now() &&
+      (typeof value.account === 'string' ||
+        (value.profile && typeof value.profile.googleSub === 'string'))) {
+      sessions.set(savedSid, value);
+    }
+  }
+  let sessionsDirty = false;
+  const markSessionsDirty = () => { sessionsDirty = true; };
   const oauth = new OAuth2Client(clientId, clientSecret, `${publicOrigin}/auth/google/callback`);
   const verifier = createAuthProof({ audience: clientId, verifyGoogle });
   // Web Push (C6): wake-only notifications, no E2EE content or message refs.
@@ -191,7 +205,16 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     : (session.account || null);
   const requireSession = (req, res, next) => {
     const sid = req.cookies[sidName], session = sessions.get(sid);
-    if (!session || session.expiresAt <= Date.now()) return res.status(401).json({ error: 'login_required' });
+    if (!session || session.expiresAt <= Date.now()) {
+      if (session) { sessions.delete(sid); markSessionsDirty(); }
+      return res.status(401).json({ error: 'login_required' });
+    }
+    // Rolling refresh: active devices stay logged in without re-running OAuth.
+    if (session.expiresAt - Date.now() < SESSION_REFRESH_LEFT) {
+      session.expiresAt = Date.now() + SESSION_MS;
+      res.cookie(sidName, sid, { ...cookieOptions, maxAge: SESSION_MS });
+      markSessionsDirty();
+    }
     req.alphaSession = session; req.alphaSid = sid; next();
   };
   // Browser mutations must be same-origin JSON. Device proofs additionally bind
@@ -245,7 +268,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     check(typeof profile?.googleSub === 'string' && profile.googleSub.length > 0, 'Verified Google identity required');
     check(allowlistOk(profile), 'Google account is not in the tester allowlist');
     const old = req.cookies[sidName]; if (old) sessions.delete(old);
-    const sid = token(); sessions.set(sid, { profile, expiresAt: Date.now() + SESSION_MS });
+    const sid = token(); sessions.set(sid, { profile, expiresAt: Date.now() + SESSION_MS }); markSessionsDirty();
     res.cookie(sidName, sid, { ...cookieOptions, maxAge: SESSION_MS });
     // One-time handoff for the PWA jar: if the callback ran in another jar
     // (iOS in-app browser), the session cookie above is invisible to the
@@ -269,7 +292,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     for (const [key, value] of handoffs) if (value.expiresAt <= now) handoffs.delete(key);
     check(entry && entry.expiresAt > now, 'Handoff code invalid or expired');
     const old = req.cookies[sidName]; if (old) sessions.delete(old);
-    const sid = token(); sessions.set(sid, { profile: entry.profile, expiresAt: now + SESSION_MS });
+    const sid = token(); sessions.set(sid, { profile: entry.profile, expiresAt: now + SESSION_MS }); markSessionsDirty();
     res.cookie(sidName, sid, { ...cookieOptions, maxAge: SESSION_MS });
     const account = registry.accountForGoogle(entry.profile.googleSub);
     res.json({ authenticated: true, account, directory: account ? registry.directory(account) : null });
@@ -303,7 +326,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     const profile = await verifier.googleProfile(idToken, nonce);
     check(allowlistOk(profile), 'Google account is not in the tester allowlist');
     const old = req.cookies[sidName]; if (old) sessions.delete(old);
-    const sid = token(); sessions.set(sid, { profile, expiresAt: Date.now() + SESSION_MS });
+    const sid = token(); sessions.set(sid, { profile, expiresAt: Date.now() + SESSION_MS }); markSessionsDirty();
     res.cookie(sidName, sid, { ...cookieOptions, maxAge: SESSION_MS });
     const account = registry.accountForGoogle(profile.googleSub);
     res.json({ authenticated: true, account, directory: account ? registry.directory(account) : null });
@@ -338,7 +361,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     check(typeof proof === 'string' && proof.length <= 2000 &&
       await verify(requestText(account, 'primary', nonce, operation), proof, dir.root), 'Invalid key proof');
     const old = req.cookies[sidName]; if (old) sessions.delete(old);
-    const sid = token(); sessions.set(sid, { account, expiresAt: Date.now() + SESSION_MS });
+    const sid = token(); sessions.set(sid, { account, expiresAt: Date.now() + SESSION_MS }); markSessionsDirty();
     res.cookie(sidName, sid, { ...cookieOptions, maxAge: SESSION_MS });
     res.json({ authenticated: true, account, directory: dir.history.length ? dir : null });
   }));
@@ -350,12 +373,12 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     const operation = await operationDigest('device-session');
     await registry.authorize({ account, id, nonce, proof }, operation);
     const old = req.cookies[sidName]; if (old) sessions.delete(old);
-    const sid = token(); sessions.set(sid, { account, expiresAt: Date.now() + SESSION_MS });
+    const sid = token(); sessions.set(sid, { account, expiresAt: Date.now() + SESSION_MS }); markSessionsDirty();
     res.cookie(sidName, sid, { ...cookieOptions, maxAge: SESSION_MS });
     res.json({ authenticated: true, account, directory: registry.directory(account) });
   }));
   app.post('/api/logout', requireSession, (req, res) => {
-    sessions.delete(req.alphaSid); res.clearCookie(sidName, cookieOptions);
+    sessions.delete(req.alphaSid); markSessionsDirty(); res.clearCookie(sidName, cookieOptions);
     for (const socket of io.sockets.sockets.values()) if (socket.data.sid === req.alphaSid) socket.disconnect(true);
     res.json({ ok: true });
   });
@@ -640,6 +663,12 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     store.savePresence(Object.fromEntries(lastSeenAt)).catch(() => { presenceDirty = true; });
   }, 30000);
   presenceFlush.unref();
+  const sessionsFlush = setInterval(() => {
+    if (!sessionsDirty) return;
+    sessionsDirty = false;
+    store.saveSessions(Object.fromEntries(sessions)).catch(() => { sessionsDirty = true; });
+  }, 15000);
+  sessionsFlush.unref();
   const broadcastPresence = (account, online) => {
     for (const socket of watchers.get(account) || []) {
       if (socket.connected) socket.emit('presence', { account, online, lastSeen: lastSeenAt.get(account) || 0 });
@@ -713,9 +742,10 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   });
   return { app, server, io, registry, migration,
     async close() {
-      clearInterval(cleanup); clearInterval(presenceFlush);
+      clearInterval(cleanup); clearInterval(presenceFlush); clearInterval(sessionsFlush);
       await new Promise(resolve => io.close(resolve));
       if (presenceDirty) await store.savePresence(Object.fromEntries(lastSeenAt)).catch(() => {});
+      if (sessionsDirty) await store.saveSessions(Object.fromEntries(sessions)).catch(() => {});
       await store.close();
     } };
 }

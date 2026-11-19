@@ -587,6 +587,23 @@ function updateViewport() {
 window.visualViewport?.addEventListener('resize', updateViewport);
 window.visualViewport?.addEventListener('scroll', updateViewport);
 window.addEventListener('resize', updateViewport);
+// Full-screen re-login prompt: the notice banner alone left users stuck —
+// the vault (keys) stays on this device, only the browser session died.
+function sessionOverlay(show) {
+  let box = document.querySelector('#session-overlay');
+  if (!show) { box?.remove(); return; }
+  if (box) return;
+  box = node('div', undefined, 'session-overlay'); box.id = 'session-overlay';
+  const card = node('div', undefined, 'session-card');
+  card.append(node('h3', 'Сессия истекла'),
+    node('p', 'Ключи сохранены на этом устройстве. Войдите снова, чтобы продолжить переписку.'));
+  const button = node('button', 'Войти через Google', 'btn primary');
+  button.type = 'button';
+  button.onclick = () => { window.location.assign('/auth/google'); };
+  card.append(button);
+  box.append(card);
+  document.body.append(box);
+}
 function render() {
   if (!ready || !window.shadeReceive) return;
   const accounts = [...new Set([...users.map(u => u.account), ...Object.keys(client.state.contacts),
@@ -595,6 +612,7 @@ function render() {
   const connection = !navigator.onLine ? 'Нет сети · история сохранена' : client.lastError ?
     (errors[client.lastError] || 'Ошибка синхронизации · повтор через 15 секунд') :
     client.connected ? 'Подключено · E2EE' : 'Переподключение…';
+  sessionOverlay(client.lastError === 'google_login_required' || client.lastError === 'login_required');
   window.__lastProjection = { messages: (client.state.messages || []).length,
     firstMessage: client.state.messages?.[0] || null,
     selected, contacts: Object.keys(client.state.contacts || {}) };

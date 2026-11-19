@@ -24,6 +24,7 @@ export async function alphaStore(directory, secret, { checkpointDir = null, chec
   const lock = await fs.open(path.join(directory, 'writer.lock'), 'wx', 0o600);
   const filename = path.join(directory, 'device-v2.enc');
   const presenceFilename = path.join(directory, 'presence.enc');
+  const sessionsFilename = path.join(directory, 'sessions.enc');
   let closed = false;
   const decode = content => {
     const value = JSON.parse(content);
@@ -58,6 +59,12 @@ export async function alphaStore(directory, secret, { checkpointDir = null, chec
       catch (e) { if (e.code === 'ENOENT') return {}; throw e; }
     },
     savePresence(presence) { return writeEncrypted(presenceFilename, presence); },
+    // Browser sessions survive restarts: a deploy must never log users out.
+    async loadSessions() {
+      try { return decode(await fs.readFile(sessionsFilename, 'utf8')); }
+      catch (e) { if (e.code === 'ENOENT') return {}; throw e; }
+    },
+    saveSessions(sessions) { return writeEncrypted(sessionsFilename, sessions); },
     async save(snapshot) {
       // Checkpoints reuse the exact bytes committed to the main file.
       const encoded = await writeEncrypted(filename, snapshot);

@@ -128,3 +128,10 @@ flt-glass-pane input, flt-glass-pane textarea { font-size: 16px; }
 flt-semantics-host flt-semantics:empty:not([role]):not([aria-label]):not([flt-tappable]):not([tabindex]) {
   pointer-events: none !important;
 }
+/* Re-login overlay: session died, keys stay on the device. */
+.session-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .72);
+  display: flex; align-items: center; justify-content: center; z-index: 90; padding: 24px; }
+.session-card { background: #111113; border: 1px solid #29292D; border-radius: 16px;
+  padding: 24px; max-width: 360px; width: 100%; display: flex; flex-direction: column; gap: 12px; }
+.session-card h3 { margin: 0; font-size: 18px; font-weight: 700; color: #F5F5F7; }
+.session-card p { margin: 0; font-size: 14px; line-height: 1.5; color: #8E8E93; }

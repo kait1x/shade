@@ -150,3 +150,19 @@ test('lastSeen is persisted and served honestly while the peer is offline', asyn
     assert.ok(restored.lastSeen > 0, 'lastSeen must survive restart');
   } finally { b2?.disconnect(); await f2.close(); }
 });
+test('browser sessions survive a server restart', async () => {
+  const dataDir = await tempDir(), storageSecret = randomBytes(32).toString('hex');
+  const f = await fixture({ dataDir, storageSecret });
+  const alice = await identity('alice_stays');
+  const ac = await f.login('synthetic-alice');
+  await register(f, alice, ac);
+  await f.close();
+  // Restart: the same cookie must stay authenticated (no surprise logouts).
+  const f2 = await fixture({ dataDir, storageSecret });
+  try {
+    const probe = await fetch(`${f2.origin}/api/session`, { headers: { cookie: ac } });
+    const body = await probe.json();
+    assert.equal(body.authenticated, true);
+    assert.equal(body.account, 'alice_stays');
+  } finally { await f2.close(); }
+});
