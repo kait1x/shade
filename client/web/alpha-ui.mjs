@@ -735,10 +735,15 @@ async function openApp() {
             ui.readUntil[data.account] = data.until; saveUi();
             // Read-ACK (contract C5): the relay op runs on refs the read mark
             // covers; failures surface honestly without breaking the UI.
+            // Media display messages carry a local pseudo-ref (media:<id>):
+            // their delivery is acknowledged through the chunk messages' own
+            // refs, which the relay accepts, so they are filtered out here —
+            // one pseudo-ref would otherwise reject the whole read batch.
             const refs = client.state.messages
               .filter(m => m.from === data.account && m.createdAt <= data.until &&
                 !m.readAt && m.status === 'received')
-              .slice(-200).map(m => m.ref);
+              .slice(-200).map(m => m.ref)
+              .filter(ref => /^[a-z0-9_]{3,32}:[a-f0-9]{64}:[a-f0-9]{64}$/.test(ref));
             if (refs.length) client.markRead(data.account, refs)
               .catch(e => notice(errors[e.message] || e.message));
             render();
