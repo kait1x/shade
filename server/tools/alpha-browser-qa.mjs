@@ -112,7 +112,9 @@ async function pin(page, account, code) {
   // New-chat screen: find by nickname (TOFU pin, chat opens immediately),
   // then manual verification upgrades trust via «Сверить» in the chat header.
   await page.getByRole('button',{name:'Найти собеседника',exact:true}).first().click();
-  await page.getByLabel('Никнейм собеседника').fill(account);
+  // Flutter web emits the semantic label twice (wrapper node + hint input);
+  // the editable field is the enabled one.
+  await page.locator('input[aria-label="Никнейм собеседника"]:not([disabled])').first().fill(account);
   await page.getByRole('button',{name:'Найти собеседника',exact:true}).click();
   await page.getByText('Ключ не сверен').first().waitFor({timeout:30000});
   await page.getByRole('button',{name:'Сверить',exact:true}).first().click();
