@@ -20,7 +20,6 @@ marker = '_flutter.loader.load('
 if marker not in source:
     raise SystemExit('Flutter bootstrap changed; review embedding before serving')
 bootstrap.write_text(source[:source.rindex(marker)] + """_flutter.loader.load({config: {
-  hostElement: document.querySelector('#flutter-host'),
   entrypointBaseUrl: '/flutter-ui/', assetBase: '/flutter-ui/',
   canvasKitBaseUrl: '/flutter-ui/canvaskit/'
 }});""", encoding='utf-8')

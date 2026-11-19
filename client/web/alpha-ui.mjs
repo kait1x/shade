@@ -687,9 +687,14 @@ async function openApp() {
   selected = ui.selected;
   // Restored conversation resumes its presence watch (queued while offline).
   if (selected && selected !== client.session?.account) client.watchPeer(selected, true);
-  root.replaceChildren(node('div', undefined, 'flutter-host'));
-  root.firstChild.id = 'flutter-host';
-  const loading = node('p','Загрузка интерфейса Shade…','flutter-loading'); root.append(loading);
+  // Implicit Flutter view (attached to <body>): the embedded custom-host path
+  // froze the view metrics when the mobile keyboard resized the page — the
+  // composer ended up under the keyboard and typing was blind. The standard
+  // implicit view tracks window resizes, which the keyboard does trigger
+  // (interactive-widget=resizes-content).
+  root.hidden = true;
+  const loading = node('p', 'Загрузка интерфейса Shade…', 'flutter-loading');
+  document.body.append(loading);
   document.body.classList.add('flutter-ready'); updateViewport();
   try {
     const spki = client.state.own.genesis?.firstDevice?.signingKey || '';
