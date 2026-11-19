@@ -27,6 +27,10 @@ import { createMigration } from './multidevice/migration.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const token = () => randomBytes(32).toString('hex');
 const SESSION_MS = 8 * 60 * 60 * 1000;
+// Recovery-сессия: короткоживущий доступ только к directory/install при утрате
+// всех устройств. Authority — независимый recovery-ключ из genesis аккаунта.
+const RECOVERY_SESSION_MS_MAX = 10 * 60 * 1000;
+const RECOVERY_WINDOW_MS = 60 * 60 * 1000, RECOVERY_LIMIT = 5;
 
 // Injected OAuth providers are available ONLY to in-process tests. No test login
 // route, environment bypass or fake identity provider is shipped to users.
@@ -34,7 +38,8 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   clientId = '', clientSecret = '', oauthProvider, verifyGoogle, legacyUsers = new Map(), tls,
   vapidKeys = null, pushSender = null, pushAllowedHosts = null,
   legacySource = null, guardFile = null, bridgeAckFile = null, checkpointDir = null, checkpointKeep = 20,
-  allowedOrigins = [], oauthAllowlist = [], handoffTtlMs = 60000 } = {}) {
+  allowedOrigins = [], oauthAllowlist = [], handoffTtlMs = 60000,
+  recoverySessionMs = RECOVERY_SESSION_MS_MAX } = {}) {
   check(dataDir && publicOrigin, 'Explicit alpha dataDir and publicOrigin required');
   const origin = new URL(publicOrigin);
   check(origin.origin === publicOrigin && (origin.protocol === 'https:' ||
@@ -55,6 +60,8 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   const allowlistOk = profile => allowlist.size === 0 ||
     allowlist.has(String(profile.email || '').toLowerCase()) || allowlist.has(profile.googleSub);
   check(path.resolve(dataDir) !== path.join(here, 'data'), 'Production directory forbidden');
+  check(Number.isSafeInteger(recoverySessionMs) && recoverySessionMs > 0 &&
+    recoverySessionMs <= RECOVERY_SESSION_MS_MAX, 'Recovery session TTL must be at most 10 minutes');
   const store = await alphaStore(dataDir, storageSecret, { checkpointDir, checkpointKeep });
   const sessions = new Map(), flows = new Map(), handoffs = new Map();
   const oauth = new OAuth2Client(clientId, clientSecret, `${publicOrigin}/auth/google/callback`);
@@ -189,6 +196,10 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     if (!session || session.expiresAt <= Date.now()) return res.status(401).json({ error: 'login_required' });
     req.alphaSession = session; req.alphaSid = sid; next();
   };
+  // Recovery-сессия не имеет доступа к маршрутам вне directory/install:
+  // регистрация, legacy-мост, stickers/profiles и socket-события ей закрыты.
+  const denyRecovery = (req, res, next) => req.alphaSession?.kind === 'recovery'
+    ? res.status(403).json({ error: 'operation_rejected' }) : next();
   // Browser mutations must be same-origin JSON. Device proofs additionally bind
   // every operation; cookies alone never authorize reading message queues.
   app.use('/api', rateLimit({ windowMs: 60000, limit: 300, standardHeaders: 'draft-8', legacyHeaders: false }), (req, res, next) => {
@@ -205,6 +216,9 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     const s = sessions.get(req.cookies[sidName]);
     if (!s || s.expiresAt <= Date.now()) return res.json({ authenticated: false, googleConfigured: provider.configured, vapidPublicKey });
     const account = sessionAccount(s);
+    // Recovery-сессия: каталог выдаётся только через op directory, здесь не раскрываем.
+    if (s.kind === 'recovery') return res.json({ authenticated: true, googleConfigured: provider.configured,
+      account, vapidPublicKey, email: null, directory: null, kind: 'recovery' });
     // Verified Google email from the server-side session profile; the web
     // bridge forwards it into the shadeReceive presentation snapshot. Legacy
     // (nickname-only) sessions carry no profile — email stays null for them.
@@ -349,12 +363,66 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     res.cookie(sidName, sid, { ...cookieOptions, maxAge: SESSION_MS });
     res.json({ authenticated: true, account, directory: registry.directory(account) });
   }));
+  // Recovery-сессия: вход при утрате всех устройств по независимому recovery-ключу.
+  // Challenge привязан к аккаунту (устройство не требуется — ростер мог быть утрачен),
+  // подпись проверяется ключом genesis.recoveryKey, а не device-key.
+  const recoveryChallenges = new Map(); // nonce -> {account, expiresAt}
+  const recoveryAttempts = new Map();   // account -> метки времени попыток (≤5/час)
+  app.post('/api/v2/session/recovery-challenge', rateLimit({ windowMs: 60000, limit: 30 }), wrap(async (req, res) => {
+    check(originAllowed(req.headers.origin), 'Origin required');
+    const { account } = req.body || {};
+    check(typeof account === 'string' && ACCOUNT.test(account), 'Invalid account');
+    const dir = registry.directory(account);
+    check(dir.genesis && dir.history.length, 'Account is not enrolled');
+    const now = Date.now();
+    for (const [key, value] of recoveryChallenges) if (value.expiresAt <= now) recoveryChallenges.delete(key);
+    check(recoveryChallenges.size < 1000, 'Challenge capacity reached');
+    let perAccount = 0;
+    for (const value of recoveryChallenges.values()) if (value.account === account) perAccount++;
+    check(perAccount < RECOVERY_LIMIT, 'Challenge quota reached');
+    const nonce = token();
+    recoveryChallenges.set(nonce, { account, expiresAt: now + 60000 });
+    res.json({ nonce });
+  }));
+  app.post('/api/v2/session/recovery', rateLimit({ windowMs: 60000, limit: 15 }), wrap(async (req, res) => {
+    check(originAllowed(req.headers.origin), 'Origin required');
+    const { account, genesis, nonce, proof } = req.body || {};
+    check(typeof account === 'string' && ACCOUNT.test(account), 'Invalid account');
+    // Квота попыток на аккаунт (включая неудачные): защита от перебора подписи.
+    const now = Date.now();
+    for (const [key, list] of recoveryAttempts) {
+      const fresh = list.filter(t => t > now - RECOVERY_WINDOW_MS);
+      if (fresh.length) recoveryAttempts.set(key, fresh); else recoveryAttempts.delete(key);
+    }
+    check(recoveryAttempts.size < 10000, 'Recovery capacity reached');
+    const attempts = recoveryAttempts.get(account) || [];
+    if (attempts.length >= RECOVERY_LIMIT) return res.status(429).json({ error: 'rate_limited' });
+    attempts.push(now); recoveryAttempts.set(account, attempts);
+    const challenge = recoveryChallenges.get(nonce);
+    recoveryChallenges.delete(nonce); // single-use, consumed even on failure
+    check(challenge && challenge.account === account && challenge.expiresAt > now, 'Invalid or replayed challenge');
+    const dir = registry.directory(account);
+    check(dir.genesis && dir.history.length, 'Account is not enrolled');
+    // Принесённый genesis сверяется канонически с хранимым: digest и recoveryKey.
+    const genesisDigest = await hash(genesisText(genesis));
+    check(genesisDigest === await hash(genesisText(dir.genesis)), 'Genesis digest mismatch');
+    check(genesis.recoveryKey === dir.genesis.recoveryKey, 'Recovery key mismatch');
+    // Подпись привязана к точному genesis через operation digest и к одноразовому nonce.
+    const operation = await operationDigest('recovery-session', genesisDigest);
+    check(typeof proof === 'string' && proof.length <= 2000 &&
+      await verify(requestText(account, 'primary', nonce, operation), proof, dir.genesis.recoveryKey), 'Invalid recovery proof');
+    const old = req.cookies[sidName]; if (old) sessions.delete(old);
+    const sid = token();
+    sessions.set(sid, { account, kind: 'recovery', expiresAt: now + recoverySessionMs });
+    res.cookie(sidName, sid, { ...cookieOptions, maxAge: recoverySessionMs });
+    res.json({ authenticated: true, account, kind: 'recovery', directory: dir });
+  }));
   app.post('/api/logout', requireSession, (req, res) => {
     sessions.delete(req.alphaSid); res.clearCookie(sidName, cookieOptions);
     for (const socket of io.sockets.sockets.values()) if (socket.data.sid === req.alphaSid) socket.disconnect(true);
     res.json({ ok: true });
   });
-  app.post('/api/v2/register', requireSession, wrap(async (req, res) => {
+  app.post('/api/v2/register', requireSession, denyRecovery, wrap(async (req, res) => {
     const { genesis, manifest, proofs } = req.body;
     const result = await registry.register({ genesis, manifest, proofs, googleIdToken: req.alphaSid });
     res.json(result);
@@ -364,7 +432,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   // device; the server never sees the private key. Idempotent resume: a client
   // crash after the server commit can retry with the SAME genesis and gets the
   // committed tip back instead of a conflict.
-  app.post('/api/v2/legacy-enrollment', requireSession, wrap(async (req, res) => {
+  app.post('/api/v2/legacy-enrollment', requireSession, denyRecovery, wrap(async (req, res) => {
     const { genesis, manifest, proofs = [] } = req.body;
     const account = sessionAccount(req.alphaSession);
     check(account && account === genesis?.account && genesis.legacy === true, 'Explicit legacy enrollment required');
@@ -494,6 +562,23 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   app.post('/api/v2/operation', requireSession, wrap(async (req, res) => {
     const { op, body = null, auth } = req.body;
     bindSession(req, auth);
+    // Recovery-сессия: только directory/install. Device-proof не требуется —
+    // authority подтверждается recovery-подписью манифеста внутри verifyHistory.
+    if (req.alphaSession.kind === 'recovery') {
+      check(op === 'directory' || op === 'install', 'Recovery session allows directory and install only');
+      if (op === 'directory') {
+        check(body === auth.account, 'Recovery directory is limited to the session account');
+        return res.json(registry.directory(body));
+      }
+      const manifest = body?.manifest;
+      check(manifest && manifest.account === auth.account && manifest.signer === 'recovery' &&
+        Array.isArray(manifest.devices), 'Recovery install requires a recovery-signed manifest');
+      // Ростер заменяется только новыми устройствами; старые retire-ятся tombstones.
+      const tip = registry.directory(auth.account).history.at(-1);
+      check(tip && manifest.devices.every(d => !tip.devices.some(o => o.id === d.id)),
+        'Recovery install must replace the roster with new devices');
+      return res.json(await registry.install(manifest, body.proofs || [], body.genesis || null));
+    }
     let result;
     if (op === 'send') {
       try {
@@ -589,7 +674,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   }));
   // Verified v1 stickers/profiles business logic behind device-v2 auth only
   // (session + one-time device proof). Storage: encrypted alpha snapshot.
-  app.use('/api/v2', requireSession, createV2Stickers({ registry, io, sessionAccount }));
+  app.use('/api/v2', requireSession, denyRecovery, createV2Stickers({ registry, io, sessionAccount }));
   // Socket events are wake-up hints only. Lost hints are repaired by signed
   // fetch on reconnect/foreground and periodic polling; receipt != socket emit.
   io.use(async (socket, next) => {
@@ -597,6 +682,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       const cookies = Object.fromEntries((socket.handshake.headers.cookie || '').split(';').map(p => p.trim().split('=')));
       const sid = cookies[sidName], session = sessions.get(sid);
       check(session && session.expiresAt > Date.now(), 'Login required');
+      check(session.kind !== 'recovery', 'Recovery session cannot open sockets');
       const auth = socket.handshake.auth;
       check(sessionAccount(session) === auth.account, 'Wrong session account');
       await registry.authorize(auth, await operationDigest('socket'));
@@ -662,6 +748,12 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   });
   const cleanup = setInterval(() => {
     for (const [sid, s] of sessions) if (s.expiresAt <= Date.now()) sessions.delete(sid);
+    const recoveryCutoff = Date.now() - RECOVERY_WINDOW_MS;
+    for (const [account, list] of recoveryAttempts) {
+      const fresh = list.filter(t => t > recoveryCutoff);
+      if (fresh.length) recoveryAttempts.set(account, fresh); else recoveryAttempts.delete(account);
+    }
+    for (const [nonce, c] of recoveryChallenges) if (c.expiresAt <= Date.now()) recoveryChallenges.delete(nonce);
     const typingCutoff = Date.now() - 60000;
     for (const [account, at] of lastTyping) if (at <= typingCutoff) lastTyping.delete(account);
     for (const socket of io.sockets.sockets.values()) {
