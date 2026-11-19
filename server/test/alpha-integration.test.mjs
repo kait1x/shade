@@ -88,7 +88,10 @@ test('full device-v2 PWA lifecycle integrates every backend feature', async () =
     await Promise.all([aliceSock, bobSock].map(s => new Promise((res, rej) => { s.once('connect', res); s.once('connect_error', rej); s.connect(); })));
     bobSock.emit('watch', { peer: 'alice_int' });
     const presence = await new Promise((res, rej) => { const t = setTimeout(() => rej(Error('presence timeout')), 4000); bobSock.once('presence', d => { clearTimeout(t); res(d); }); });
-    assert.deepEqual(presence, { account: 'alice_int', online: true });
+    // Presence carries the restart-safe lastSeen hint alongside live liveness.
+    assert.equal(presence.account, 'alice_int');
+    assert.equal(presence.online, true);
+    assert.ok(Number.isFinite(presence.lastSeen) && presence.lastSeen > 0);
     aliceSock.emit('typing', { peer: 'bob_int' });
     const typing = await new Promise((res, rej) => { const t = setTimeout(() => rej(Error('typing timeout')), 4000); bobSock.once('typing', d => { clearTimeout(t); res(d); }); });
     assert.equal(typing.account, 'alice_int');

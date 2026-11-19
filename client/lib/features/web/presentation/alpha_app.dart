@@ -68,7 +68,7 @@ class _ShellState extends State<_Shell> {
                   : _Conversation(
                       key: ValueKey(c.selected),
                       controller: c,
-                      back: () => c.act('back'),
+                      back: () => c.act('back', {'account': c.selected}),
                       openPeer: () => setState(() => peerProfile = true));
       return PopScope(
           canPop: c.selected == null && !profile && !peerProfile && !newChat,
@@ -81,7 +81,7 @@ class _ShellState extends State<_Shell> {
               } else if (profile) {
                 setState(() => profile = false);
               } else {
-                c.act('back');
+                c.act('back', {'account': c.selected});
               }
             }
           },
@@ -464,8 +464,23 @@ class _ChatsState extends State<_Chats> {
 String _statusLine(AlphaController c, String peer) {
   final typingUntil = c.typing[peer] as num? ?? 0;
   if (typingUntil > DateTime.now().millisecondsSinceEpoch) return 'печатает…';
-  if (c.presence[peer] == true) return 'В сети';
+  final p = c.presence[peer];
+  if (p is Map && p['online'] == true) return 'В сети';
+  final lastSeen = (p is Map ? p['lastSeen'] as num? : null)?.toInt() ?? 0;
+  if (lastSeen > 0) return _lastSeenLine(lastSeen);
   return 'Личная переписка';
+}
+
+// Last-seen wording mirrors UserStatus.displayText (connection_service.dart).
+String _lastSeenLine(int lastSeen) {
+  final diff = DateTime.now().millisecondsSinceEpoch - lastSeen;
+  if (diff <= 60000) return 'был(а) только что';
+  final minutes = diff ~/ 60000;
+  if (minutes < 60) return 'был(а) $minutes мин назад';
+  final hours = diff ~/ 3600000;
+  if (hours < 24) return 'был(а) сегодня';
+  if (hours < 48) return 'был(а) вчера';
+  return 'был(а) давно';
 }
 
 String _time(Map<String, dynamic> item) {
@@ -1769,6 +1784,12 @@ class _PeerProfile extends StatelessWidget {
     final tofu = c.unverified(peer);
     final messages = c.conversation(peer).length;
     final note = c.notes[peer] as String? ?? '';
+    final presence = c.presence[peer];
+    final online = presence is Map && presence['online'] == true;
+    final lastSeen =
+        (presence is Map ? presence['lastSeen'] as num? : null)?.toInt() ?? 0;
+    final statusLine =
+        online ? 'В сети' : lastSeen > 0 ? _lastSeenLine(lastSeen) : null;
     return Column(children: [
       Row(children: [
         IconButton(
@@ -1799,6 +1820,13 @@ class _PeerProfile extends StatelessWidget {
                     Text('@$peer',
                         textAlign: TextAlign.center,
                         style: const TextStyle(color: ShadeColors.textMuted)),
+                    if (statusLine != null) ...[
+                      const SizedBox(height: 4),
+                      Text(statusLine,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                              fontSize: 13, color: ShadeColors.textMuted)),
+                    ],
                     const SizedBox(height: 32),
                     const Text('ПЕРЕПИСКА И БЕЗОПАСНОСТЬ',
                         style: TextStyle(

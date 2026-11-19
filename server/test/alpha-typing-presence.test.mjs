@@ -58,7 +58,10 @@ test('typing and presence are relationship-gated, throttled and multi-device awa
     assert.equal((await operation(f, alice, ac, 'send', m)).result.accepted, true);
 
     bobSock.emit('watch', { peer: 'alice_typing' });
-    assert.deepEqual(await once(bobSock, 'presence'), { account: 'alice_typing', online: true });
+    const onlineEvent = await once(bobSock, 'presence');
+    assert.equal(onlineEvent.account, 'alice_typing');
+    assert.equal(onlineEvent.online, true);
+    assert.ok(Number.isFinite(onlineEvent.lastSeen) && onlineEvent.lastSeen > 0);
     aliceSock.emit('typing', { peer: 'bob_typing' });
     const typing = await once(bobSock, 'typing');
     assert.equal(typing.account, 'alice_typing');
@@ -84,7 +87,10 @@ test('typing and presence are relationship-gated, throttled and multi-device awa
     aliceSock.disconnect();
     assert.equal(await sawEvent(bobSock, 'presence'), false); // still online via sock2
     aliceSock2.disconnect();
-    assert.deepEqual(await once(bobSock, 'presence'), { account: 'alice_typing', online: false });
+    const offlineEvent = await once(bobSock, 'presence');
+    assert.equal(offlineEvent.account, 'alice_typing');
+    assert.equal(offlineEvent.online, false);
+    assert.ok(offlineEvent.lastSeen > 0); // recorded at disconnect
   } finally {
     aliceSock?.disconnect(); bobSock?.disconnect(); carolSock?.disconnect(); aliceSock2?.disconnect();
     await f.close();
@@ -98,8 +104,49 @@ test('typing and presence are relationship-gated, throttled and multi-device awa
     a2 = await connect(f2, alice, ac2);
     b2 = await connect(f2, bob, bc2);
     b2.emit('watch', { peer: 'alice_typing' });
-    assert.deepEqual(await once(b2, 'presence'), { account: 'alice_typing', online: true });
+    const reconnected = await once(b2, 'presence');
+    assert.equal(reconnected.account, 'alice_typing');
+    assert.equal(reconnected.online, true);
+    assert.ok(Number.isFinite(reconnected.lastSeen));
     a2.emit('typing', { peer: 'bob_typing' });
     assert.equal((await once(b2, 'typing')).account, 'alice_typing');
   } finally { a2?.disconnect(); b2?.disconnect(); await f2.close(); }
+});
+
+test('lastSeen is persisted and served honestly while the peer is offline', async () => {
+  const dataDir = await tempDir(), storageSecret = randomBytes(32).toString('hex');
+  const f = await fixture({ dataDir, storageSecret });
+  const alice = await identity('alice_seen'), bob = await identity('bob_seen');
+  const ac = await f.login('synthetic-alice'), bc = await f.login('synthetic-bob');
+  await register(f, alice, ac); await register(f, bob, bc);
+  let aliceSock, bobSock;
+  try {
+    aliceSock = await connect(f, alice, ac);
+    bobSock = await connect(f, bob, bc);
+    const m = await sealMessage('hi', [alice.manifest], [bob.manifest], alice.session,
+      { senderRoot: alice.vault.signingKey, recipientRoot: bob.vault.signingKey,
+        senderGenesis: alice.genesis, recipientGenesis: bob.genesis });
+    assert.equal((await operation(f, alice, ac, 'send', m)).result.accepted, true);
+    bobSock.emit('watch', { peer: 'alice_seen' });
+    await once(bobSock, 'presence'); // online:true with lastSeen
+    const offlineAt = Date.now();
+    aliceSock.disconnect();
+    const gone = await once(bobSock, 'presence');
+    assert.equal(gone.online, false);
+    assert.ok(gone.lastSeen >= offlineAt - 1000);
+  } finally { aliceSock?.disconnect(); bobSock?.disconnect(); await f.close(); }
+
+  // Restart: lastSeen is restored from the encrypted presence file, while
+  // "online" stays socket-derived (false — the peer has not connected yet).
+  const f2 = await fixture({ dataDir, storageSecret });
+  let b2;
+  try {
+    const bc2 = await f2.login('synthetic-bob');
+    b2 = await connect(f2, bob, bc2);
+    b2.emit('watch', { peer: 'alice_seen' });
+    const restored = await once(b2, 'presence');
+    assert.equal(restored.account, 'alice_seen');
+    assert.equal(restored.online, false);
+    assert.ok(restored.lastSeen > 0, 'lastSeen must survive restart');
+  } finally { b2?.disconnect(); await f2.close(); }
 });

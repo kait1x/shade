@@ -667,6 +667,8 @@ async function openApp() {
       positions: saved.positions || {}, readUntil: saved.readUntil || {} };
   } catch { /* UI preferences never prevent unlocking encrypted history. */ }
   selected = ui.selected;
+  // Restored conversation resumes its presence watch (queued while offline).
+  if (selected && selected !== client.session?.account) client.watchPeer(selected, true);
   root.replaceChildren(node('div', undefined, 'flutter-host'));
   root.firstChild.id = 'flutter-host';
   const loading = node('p','Загрузка интерфейса Shade…','flutter-loading'); root.append(loading);

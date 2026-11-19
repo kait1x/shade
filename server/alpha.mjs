@@ -465,6 +465,8 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   }));
   function bindSession(req, auth) {
     check(auth && sessionAccount(req.alphaSession) === auth.account, 'Wrong session account');
+    // Every signed operation counts as activity for "был(а) недавно" hints.
+    touchSeen(auth.account);
   }
   // Challenge issuance: with a valid session the account must match (prevents
   // cross-account quota exhaustion). Sessionless issuance is allowed ONLY for
@@ -616,9 +618,23 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   const watchers = new Map(); // account -> Set<socket>
   const onlineCount = new Map(); // account -> connected device sockets
   const lastTyping = new Map(); // account -> timestamp (2s throttle)
+  // Last-seen is persisted (restart-safe) while live "online" stays
+  // socket-derived; a stale lastSeen never flips an offline account online.
+  const lastSeenAt = new Map();
+  for (const [seenAccount, value] of Object.entries(await store.loadPresence())) {
+    if (ACCOUNT.test(seenAccount) && Number.isFinite(value) && value > 0) lastSeenAt.set(seenAccount, Number(value));
+  }
+  let presenceDirty = false;
+  const touchSeen = account => { lastSeenAt.set(account, Date.now()); presenceDirty = true; };
+  const presenceFlush = setInterval(() => {
+    if (!presenceDirty) return;
+    presenceDirty = false;
+    store.savePresence(Object.fromEntries(lastSeenAt)).catch(() => { presenceDirty = true; });
+  }, 30000);
+  presenceFlush.unref();
   const broadcastPresence = (account, online) => {
     for (const socket of watchers.get(account) || []) {
-      if (socket.connected) socket.emit('presence', { account, online });
+      if (socket.connected) socket.emit('presence', { account, online, lastSeen: lastSeenAt.get(account) || 0 });
     }
   };
   io.on('connection', socket => {
@@ -626,6 +642,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     socket.join(room(account, socket.data.id));
     socket.emit('inbox');
     onlineCount.set(account, (onlineCount.get(account) || 0) + 1);
+    touchSeen(account);
     broadcastPresence(account, true);
     socket.on('watch', data => {
       const peer = data?.peer;
@@ -634,7 +651,8 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       const set = watchers.get(peer) || new Set();
       if (set.size >= 100) return;
       set.add(socket); watchers.set(peer, set);
-      socket.emit('presence', { account: peer, online: (onlineCount.get(peer) || 0) > 0 });
+      socket.emit('presence', { account: peer, online: (onlineCount.get(peer) || 0) > 0,
+        lastSeen: lastSeenAt.get(peer) || 0 });
     });
     socket.on('unwatch', data => {
       const peer = data?.peer;
@@ -656,7 +674,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     socket.on('disconnect', () => {
       for (const set of watchers.values()) set.delete(socket);
       const left = (onlineCount.get(account) || 1) - 1;
-      if (left <= 0) { onlineCount.delete(account); broadcastPresence(account, false); }
+      if (left <= 0) { onlineCount.delete(account); touchSeen(account); broadcastPresence(account, false); }
       else onlineCount.set(account, left);
     });
   });
@@ -684,7 +702,12 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       /already registered/.test(message) ? 'account_requires_linking' : 'operation_rejected' });
   });
   return { app, server, io, registry, migration,
-    async close() { clearInterval(cleanup); await new Promise(resolve => io.close(resolve)); await store.close(); } };
+    async close() {
+      clearInterval(cleanup); clearInterval(presenceFlush);
+      await new Promise(resolve => io.close(resolve));
+      if (presenceDirty) await store.savePresence(Object.fromEntries(lastSeenAt)).catch(() => {});
+      await store.close();
+    } };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

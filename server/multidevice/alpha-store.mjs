@@ -23,29 +23,44 @@ export async function alphaStore(directory, secret, { checkpointDir = null, chec
   // Prevent two writers from acknowledging divergent snapshots.
   const lock = await fs.open(path.join(directory, 'writer.lock'), 'wx', 0o600);
   const filename = path.join(directory, 'device-v2.enc');
+  const presenceFilename = path.join(directory, 'presence.enc');
   let closed = false;
+  const decode = content => {
+    const value = JSON.parse(content);
+    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(value.nonce, 'hex'));
+    decipher.setAuthTag(Buffer.from(value.tag, 'hex'));
+    return JSON.parse(Buffer.concat([decipher.update(Buffer.from(value.data, 'hex')), decipher.final()]).toString('utf8'));
+  };
+  const writeEncrypted = async (target, value) => {
+    const nonce = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key, nonce);
+    const data = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
+    const encoded = JSON.stringify({ nonce: nonce.toString('hex'), tag: cipher.getAuthTag().toString('hex'), data: data.toString('hex') });
+    const temporary = `${target}.${randomBytes(8).toString('hex')}.tmp`;
+    try {
+      await fs.writeFile(temporary, encoded, { mode: 0o600, flush: true, flag: 'wx' });
+      await fs.rename(temporary, target);
+      if (process.platform !== 'win32') {
+        const dir = await fs.open(directory, 'r');
+        try { await dir.sync(); } finally { await dir.close(); }
+      }
+    } finally { await fs.rm(temporary, { force: true }); }
+    return encoded;
+  };
   return {
     async load() {
       let content;
       try { content = await fs.readFile(filename, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return undefined; throw e; }
-      const value = JSON.parse(content);
-      const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(value.nonce, 'hex'));
-      decipher.setAuthTag(Buffer.from(value.tag, 'hex'));
-      return JSON.parse(Buffer.concat([decipher.update(Buffer.from(value.data, 'hex')), decipher.final()]).toString('utf8'));
+      return decode(content);
     },
+    // Last-seen hints survive restarts; live "online" itself is socket-derived.
+    async loadPresence() {
+      try { return decode(await fs.readFile(presenceFilename, 'utf8')); }
+      catch (e) { if (e.code === 'ENOENT') return {}; throw e; }
+    },
+    savePresence(presence) { return writeEncrypted(presenceFilename, presence); },
     async save(snapshot) {
-      const nonce = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key, nonce);
-      const data = Buffer.concat([cipher.update(JSON.stringify(snapshot), 'utf8'), cipher.final()]);
-      const encoded = JSON.stringify({ nonce: nonce.toString('hex'), tag: cipher.getAuthTag().toString('hex'), data: data.toString('hex') });
-      const temporary = `${filename}.${randomBytes(8).toString('hex')}.tmp`;
-      try {
-        await fs.writeFile(temporary, encoded, { mode: 0o600, flush: true, flag: 'wx' });
-        await fs.rename(temporary, filename);
-        if (process.platform !== 'win32') {
-          const dir = await fs.open(directory, 'r');
-          try { await dir.sync(); } finally { await dir.close(); }
-        }
-      } finally { await fs.rm(temporary, { force: true }); }
+      // Checkpoints reuse the exact bytes committed to the main file.
+      const encoded = await writeEncrypted(filename, snapshot);
       // Durable rolling checkpoints for lossless rollback (best-effort: a
       // checkpoint failure must never break messaging; the main save already
       // committed atomically above). Same encrypted bytes, separate directory.

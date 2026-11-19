@@ -521,7 +521,11 @@ export class AlphaClient extends EventTarget {
     (this.lastTypingSent ??= new Map()).set(peer, now);
     this.socket.emit('typing', { peer });
   }
+  // Desired watch set survives disconnects: after reconnect (or a watch
+  // requested while offline) every peer is re-watched on 'connect'.
   watchPeer(peer, watch) {
+    if (typeof peer !== 'string' || peer === this.session?.account) return;
+    if (watch) (this.watching ??= new Set()).add(peer); else this.watching?.delete(peer);
     if (!this.socket?.connected) return;
     this.socket.emit(watch ? 'watch' : 'unwatch', { peer });
   }
@@ -840,6 +844,7 @@ export class AlphaClient extends EventTarget {
     this.stopped = false;
     this.typingUntil = {};
     this.presence = {};
+    this.watching = new Set();
     // Install reconnect handlers even when the first HTTP request cannot run.
     // This is essential after opening the PWA from its offline cache.
     try { if (navigator.onLine) await this.exclusive(() => this.refreshOwn()); }
@@ -847,7 +852,11 @@ export class AlphaClient extends EventTarget {
     this.socket = window.io({ autoConnect: false, transports: ['websocket'],
       auth: callback => this.proof('socket').then(callback).catch(() => callback({})),
       reconnection: true, reconnectionDelay: 1000, reconnectionDelayMax: 10000 });
-    this.socket.on('connect', () => { this.connected = true; this.changed(); this.sync().catch(() => {}); });
+    this.socket.on('connect', () => {
+      this.connected = true;
+      for (const peer of this.watching || []) this.socket.emit('watch', { peer });
+      this.changed(); this.sync().catch(() => {});
+    });
     this.socket.on('disconnect', () => { this.connected = false; this.changed(); });
     this.socket.on('connect_error', () => { this.connected = false; this.changed(); });
     for (const event of ['inbox', 'receipts', 'retracted']) this.socket.on(event, () => this.sync().catch(() => {}));
@@ -858,7 +867,8 @@ export class AlphaClient extends EventTarget {
     });
     this.socket.on('presence', data => {
       if (typeof data?.account !== 'string') return;
-      this.presence[data.account] = Boolean(data.online); this.changed();
+      this.presence[data.account] = { online: Boolean(data.online), lastSeen: Number(data.lastSeen) || 0 };
+      this.changed();
     });
     this.socket.on('profile', data => {
       this.peerMetaDirty ??= new Set();
