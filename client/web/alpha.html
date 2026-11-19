@@ -14,6 +14,36 @@
   <link rel="icon" href="favicon.png">
   <link rel="stylesheet" href="alpha.css">
   <title>Shade · Alpha 0.1</title>
+  <script>
+  /* GBoard (Samsung) reports phantom visualViewport states during its
+     open/minimize/close transitions — a shrunken height sometimes persists
+     after the keyboard is gone, and the Flutter view freezes mid-layout
+     (composer stranded near the header, message list hidden). The keyboard
+     occupies real space only while an editable field keeps focus AND the
+     viewport actually shrank; every other state reports the full layout
+     viewport so the engine's metrics never stick to a phantom value. Must
+     run before the Flutter engine captures window.visualViewport. */
+  (function () {
+    const real = window.visualViewport;
+    if (!real) return;
+    const typing = () => {
+      const el = document.activeElement;
+      return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+    };
+    const kbOpen = () => typing() && real.height < window.innerHeight - 80;
+    const view = {
+      get height() { return kbOpen() ? real.height : window.innerHeight; },
+      get width() { return real.width; },
+      get offsetTop() { return kbOpen() ? real.offsetTop : 0; },
+      get offsetLeft() { return real.offsetLeft; },
+      get scale() { return real.scale; },
+      addEventListener: (...a) => real.addEventListener(...a),
+      removeEventListener: (...a) => real.removeEventListener(...a),
+      dispatchEvent: (...a) => real.dispatchEvent(...a),
+    };
+    Object.defineProperty(window, 'visualViewport', { configurable: true, get: () => view });
+  })();
+  </script>
 </head>
 <body>
   <main id="root"><p role="status">Загрузка Shade…</p></main>
