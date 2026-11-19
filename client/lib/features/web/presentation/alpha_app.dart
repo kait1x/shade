@@ -15,6 +15,7 @@ import 'package:shade/features/stickers/collection.dart';
 import 'alpha_avatar_editor.dart';
 import 'alpha_controller.dart';
 import 'alpha_sticker_backend.dart';
+import 'recovery_screen.dart';
 
 class ShadeAlphaApp extends StatelessWidget {
   const ShadeAlphaApp({super.key, required this.controller});
@@ -29,7 +30,10 @@ class ShadeAlphaApp extends StatelessWidget {
               .apply(fontFamilyFallback: const ['ShadeEmoji'])),
       home: ListenableBuilder(
           listenable: controller,
-          builder: (_, __) => _Shell(controller: controller)));
+          // Режим восстановления: отдельный экран до появления device-сессии.
+          builder: (_, __) => controller.recovery != null
+              ? RecoveryScreen(controller: controller)
+              : _Shell(controller: controller)));
 }
 
 class _Shell extends StatefulWidget {

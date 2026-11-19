@@ -1,6 +1,6 @@
 import { AlphaClient, api } from './alpha-client.mjs';
 import { listVaults } from './device_crypto.mjs';
-import { hash, genesisText } from './protocol/device-v2.mjs';
+import { hash, genesisText, check } from './protocol/device-v2.mjs';
 import { createDeviceBinding, unlockDeviceBinding, platformAuthenticatorAvailable,
   generateRecoveryPhrase, bindingErrorText } from './device_binding.mjs';
 
@@ -390,7 +390,14 @@ function unlockStep(candidates, status) {
   if (candidates.length > 1) {
     select = node('select');
     select.setAttribute('aria-label', 'Локальное устройство');
-    for (const v of candidates) { const option = node('option', '@' + v.account); option.value = v.id; select.append(option); }
+    // После восстановления у аккаунта может быть два локальных vault
+    // (утраченный и новый): короткий id различает их в списке.
+    const counts = {};
+    for (const v of candidates) counts[v.account] = (counts[v.account] || 0) + 1;
+    for (const v of candidates) {
+      const option = node('option', '@' + v.account + (counts[v.account] > 1 ? ` · ${v.id.slice(0, 8)}` : ''));
+      option.value = v.id; select.append(option);
+    }
     form.append(select);
   }
   const chosen = () => candidates.find(v => v.id === (select ? select.value : candidates[0].id));
@@ -399,10 +406,19 @@ function unlockStep(candidates, status) {
   note.hidden = true;
   form.append(note);
   submit(form, 'Разблокировать');
+  // Точка входа в восстановление: ключи этого браузера могут быть утрачены
+  // (PRF-vault без passkey, забытая фраза). Кнопка рабочая всегда, без dead-end.
+  const prfError = node('p', undefined, 'card-error');
+  prfError.hidden = true;
+  prfError.setAttribute('role', 'alert');
+  const recovery = node('button', 'Восстановить с recovery-пакетом', 'btn outline');
+  recovery.type = 'button';
+  recovery.onclick = () => recoveryScreen();
+  const recoveryHint = node('p', 'Потеряли ключи этого браузера? Восстановление создаст новые ключи устройства; старая переписка останется недоступной.', 'muted');
   const box = onboard({
     cardTitle: 'Разблокировать Shade',
     cardSubtitle: 'Фраза расшифровывает ключи и историю только в этом браузере. Сервер её не получает.',
-    children: [form, changeAccountButton()],
+    children: [form, prfError, recovery, recoveryHint, changeAccountButton()],
   });
   const card = box.querySelector('.onboard-card');
   const hint = node('p', undefined, 'card-sub');
@@ -412,6 +428,8 @@ function unlockStep(candidates, status) {
     phraseField.closest('label').hidden = !byPhrase;
     phraseField.required = byPhrase;
     hint.textContent = byPhrase ? `Локальные ключи @${vault.account}` : 'Ключи @' + vault.account + ' защищены биометрией этого устройства.';
+    prfError.hidden = true;
+    recovery.className = 'btn outline';
     card.insertBefore(hint, form);
   };
   if (select) select.addEventListener('change', refresh);
@@ -426,13 +444,14 @@ function unlockStep(candidates, status) {
         try { passphrase = await unlockDeviceBinding(vault.binding); }
         catch (error) {
           note.hidden = true;
-          if (error.message === 'prf_unavailable') {
-            // The passkey/PRF gate is unavailable on this device; the vault has
-            // no separate passphrase by design. Point at the recovery package
-            // instead of leaving a dead end. Keys and storage stay untouched.
-            throw Error('Аутентификатор этого устройства не поддерживает вывод ключа (PRF), а у PRF-vault нет отдельной фразы. Разблокировка — биометрией на исходном устройстве или восстановление через recovery-пакет.');
-          }
-          throw Error(bindingErrorText(error) || error.message);
+          // Честный постоянный текст вместо временного notice: PRF-vault без
+          // passkey не открыть фразой, рабочий путь — recovery-пакет.
+          const text = error.message === 'prf_unavailable'
+            ? 'Аутентификатор этого устройства не поддерживает вывод ключа (PRF), а у PRF-vault нет отдельной фразы. Разблокировка — биометрией на исходном устройстве или восстановление через recovery-пакет.'
+            : (bindingErrorText(error) || error.message);
+          prfError.textContent = text; prfError.hidden = false;
+          recovery.className = 'btn primary';
+          return;
         }
       } else passphrase = phraseField.value;
       // loadForPairing also resumes an interrupted second-device pairing: a
@@ -447,10 +466,15 @@ function unlockStep(candidates, status) {
 function linkStep(account) {
   const pair = node('button', 'Подключить это устройство', 'btn primary'); pair.type = 'button';
   pair.onclick = () => pairingOnboarding(account);
+  // Все устройства потеряны: recovery-пакет — единственный оставшийся актив,
+  // поэтому вход в восстановление рабочий уже здесь, а не «появится позже».
+  const recovery = node('button', 'Восстановить с recovery-пакетом', 'btn outline');
+  recovery.type = 'button';
+  recovery.onclick = () => recoveryScreen();
   onboard({
     cardTitle: 'Нужна привязка устройства',
     cardSubtitle: 'Этот Google-аккаунт уже зарегистрирован, но в этом браузере нет его ключей. Ключи создаются здесь и входят в аккаунт только после подтверждения на доверенном устройстве.',
-    children: [pair, node('p', 'Восстановление после потери всех устройств появится позже; исходные RSA-ключи не заменяются.', 'muted'), changeAccountButton()],
+    children: [pair, recovery, node('p', 'Все устройства потеряны? Recovery-пакет вернёт личность и доступ к новым сообщениям; старая переписка останется недоступной.', 'muted'), changeAccountButton()],
   });
 }
 function errorStep(message) {
@@ -573,6 +597,152 @@ function pairingOnboarding(account) {
     children: [form, changeAccountButton()],
   });
 }
+// ── Восстановление с recovery-пакетом (PRF_RECOVERY_BLOCKER §3) ─────────────
+// Экран восстановления — Flutter-проекция (recovery_screen.dart): поля, шаги
+// и ошибки рисует Flutter, криптография и сеть остаются в JS-ядре. Сам пакет
+// и recovery-фраза не попадают в проекцию: пакет живёт в замыкании ниже,
+// фраза передаётся только как payload действия и нигде не сохраняется.
+let recoveryPackage = null, recoveryState = null, recoveryBusy = false;
+function projectRecovery(patch) {
+  recoveryState = { ...(recoveryState || {}), ...patch };
+  if (window.shadeReceive) window.shadeReceive(JSON.stringify({ mode: 'recovery', recovery: recoveryState }));
+}
+// Честные русские тексты ошибок восстановления: ни одна не замалчивается.
+const recoveryErrors = {
+  bad_package_json: 'Файл не похож на recovery-пакет Shade: не удалось разобрать JSON.',
+  bad_package_shape: 'Файл не похож на recovery-пакет Shade: ожидается JSON с полями backup и genesis.',
+  'Recovery identity mismatch': 'Recovery-пакет не соответствует аккаунту: ключ или отпечаток не совпадают. Возможно, файл повреждён или это чужой пакет.',
+  'Recovery backup must pin the exact account genesis': 'Пакет не привязан к genesis аккаунта: он не завершён или подменён. Используйте пакет, скачанный при регистрации.',
+  'Genesis digest mismatch': 'Genesis аккаунта на сервере не совпадает с пакетом. Восстановление остановлено; ключи не заменены.',
+  'Recovery key mismatch': 'Recovery-ключ аккаунта на сервере не совпадает с пакетом. Восстановление остановлено; ключи не заменены.',
+  'Invalid recovery proof': 'Сервер отклонил подпись recovery-ключа. Проверьте пакет и фразу.',
+  'Invalid or replayed challenge': 'Challenge восстановления истёк или уже использован. Повторите попытку.',
+  'Account is not enrolled': 'Аккаунт из пакета не найден на сервере.',
+  'Invalid account': 'Некорректный аккаунт в recovery-пакете.',
+  login_required: 'Recovery-сессия истекла. Повторите восстановление.',
+  operation_rejected: 'Сервер отклонил операцию восстановления. Повторите попытку.',
+  'Challenge quota reached': 'Слишком много запросов challenge. Подождите минуту и повторите.',
+  'Recovery capacity reached': 'Сервер перегружен попытками восстановления. Повторите позже.',
+  'Use a strong passphrase of at least 16 characters': 'Фраза устройства должна быть не короче 16 символов.',
+  'Каталог сервера не совпадает с recovery-пакетом': 'Каталог сервера не совпадает с recovery-пакетом. Восстановление остановлено; ключи не заменены.',
+  prf_unavailable: 'Аутентификатор не поддерживает вывод ключа (PRF). Выберите защиту фразой устройства.',
+};
+function recoveryErrorText(error) {
+  const message = error?.message || String(error);
+  if (error?.status === 429 || message === 'rate_limited') return 'Слишком много попыток, подожди час';
+  if (message === 'Нет сети') return 'Нет сети. Подключитесь к интернету и повторите попытку.';
+  if (message === 'Страница закрывается') return message;
+  // Сбой AES-GCM при расшифровке пакета: неверная фраза либо битый ciphertext.
+  if (error?.name === 'OperationError') return 'Неверная recovery-фраза или повреждённый пакет. Проверьте фразу и файл.';
+  if (message === 'Invalid protocol data' || message === 'Unexpected fields' || message === 'Unsupported RSA key')
+    return 'Recovery-пакет повреждён: данные не соответствуют формату Shade. Проверьте файл.';
+  if (error?.name === 'AbortError' || /abort/i.test(message)) return 'Сервер не ответил вовремя. Повторите попытку.';
+  if (/failed to fetch|load failed|networkerror/i.test(message)) return 'Сервер недоступен. Проверьте соединение и повторите попытку.';
+  const binding = bindingErrorText(error);
+  if (binding) return binding;
+  if (recoveryErrors[message]) return recoveryErrors[message];
+  if (message.startsWith('Recovery ')) return 'Сервер отклонил шаг восстановления. Повторите попытку; если ошибка повторяется, сообщите оператору.';
+  return message;
+}
+// Выбор JSON-файла пакета: скрытый DOM input внутри жеста пользователя.
+// Отмена выбора — не ошибка; содержимое читается только в JS-ядре.
+function pickRecoveryFile() {
+  return new Promise(resolve => {
+    const input = node('input');
+    input.type = 'file'; input.accept = '.json,application/json';
+    input.style.display = 'none'; input.tabIndex = -1;
+    input.setAttribute('aria-hidden', 'true');
+    const done = file => { input.remove(); resolve(file); };
+    input.addEventListener('change', () => done(input.files?.[0] || null), { once: true });
+    input.addEventListener('cancel', () => done(null), { once: true });
+    document.body.append(input);
+    input.click();
+  });
+}
+function recoveryScreen() {
+  recoveryPackage = null; recoveryBusy = false;
+  recoveryState = { step: 'form', busy: false, stepId: null, fileName: null,
+    packageAccount: null, prfAvailable: false, error: null };
+  hostFlutter();
+  window.shadeAction = async (kind, raw = '{}') => {
+    try {
+      const data = JSON.parse(raw);
+      switch (kind) {
+        case 'ready':
+          flutterReady(); projectRecovery({});
+          platformAuthenticatorAvailable()
+            .then(available => { if (recoveryState) projectRecovery({ prfAvailable: available }); })
+            .catch(() => {});
+          break;
+        case 'recovery.pick': {
+          if (recoveryBusy) break;
+          const file = await pickRecoveryFile();
+          if (!file) break; // выбор отменён — экран не меняется
+          check(file.size <= 1024 * 1024, 'bad_package_shape');
+          let pkg;
+          try { pkg = JSON.parse(await file.text()); } catch { throw Error('bad_package_json'); }
+          check(pkg && typeof pkg === 'object' && !Array.isArray(pkg) && pkg.backup && pkg.genesis &&
+            typeof pkg.genesis.account === 'string' && /^[a-z0-9_]{3,32}$/.test(pkg.genesis.account),
+            'bad_package_shape');
+          // Полная проверка формы genesis и полей пакета до ввода фразы:
+          // битый/чужой файл отсекается сразу с честным текстом.
+          try { genesisText(pkg.genesis); } catch { throw Error('bad_package_shape'); }
+          check(pkg.backup.version === 2 && typeof pkg.backup.ciphertext === 'string' &&
+            typeof pkg.backup.salt === 'string' && typeof pkg.backup.iv === 'string' &&
+            typeof pkg.backup.publicKey === 'string' && typeof pkg.backup.rootFingerprint === 'string',
+            'bad_package_shape');
+          recoveryPackage = pkg;
+          projectRecovery({ fileName: file.name, packageAccount: pkg.genesis.account, error: null });
+          break;
+        }
+        case 'recovery.run': {
+          if (recoveryBusy) break; // защита от повторного запуска
+          check(recoveryPackage, 'Сначала выберите файл recovery-пакета.');
+          const phrase = typeof data.recoveryPhrase === 'string' ? data.recoveryPhrase.trim().replace(/\s+/g, ' ') : '';
+          check(phrase.length >= 24, 'Введите recovery-фразу из пакета: 8 слов, не менее 24 символов.');
+          const protection = data.protection === 'prf' ? 'prf' : 'phrase';
+          let passphrase, binding;
+          if (protection === 'prf') {
+            // WebAuthn-жест: создание привязки до длительной криптографии.
+            projectRecovery({ busy: true, stepId: 'binding', error: null });
+            try { ({ binding, passphrase } = await createDeviceBinding(recoveryPackage.genesis.account)); }
+            catch (error) {
+              if (error.message === 'prf_unavailable') {
+                projectRecovery({ busy: false, stepId: null, prfAvailable: false,
+                  error: recoveryErrors.prf_unavailable });
+                break;
+              }
+              throw error;
+            }
+          } else {
+            passphrase = typeof data.devicePassphrase === 'string' ? data.devicePassphrase : '';
+            check(passphrase.length >= 16, 'Фраза устройства должна быть не короче 16 символов.');
+          }
+          recoveryBusy = true;
+          projectRecovery({ busy: true, stepId: 'unlock', error: null });
+          try {
+            await client.recoverWithBackup(recoveryPackage, phrase, { passphrase, binding },
+              stepId => projectRecovery({ stepId }));
+            projectRecovery({ busy: false, stepId: null, step: 'done' });
+          } finally { recoveryBusy = false; }
+          break;
+        }
+        case 'recovery.finish':
+          recoveryPackage = null; recoveryState = null;
+          await openApp();
+          break;
+        case 'recovery.back': location.reload(); break;
+        default: throw Error('Неизвестное действие интерфейса');
+      }
+      return JSON.stringify({ ok: true });
+    } catch (error) {
+      // Ошибка — часть проекции экрана, а не скрытый сбой действия.
+      recoveryBusy = false;
+      projectRecovery({ busy: false, stepId: null, error: recoveryErrorText(error) });
+      return JSON.stringify({ ok: true });
+    }
+  };
+}
 // This module still owns auth and AlphaClient. Flutter receives a read-only
 // presentation projection; it never receives vaults, keys, backups or tokens.
 let ui = { selected: null, positions: {}, readUntil: {} }, uiStorage;
@@ -653,6 +823,30 @@ function thisDeviceName() {
   const short = String(client.session?.id || '').slice(0, 8);
   return `${browser} · ${os}${short ? ` · ${short}` : ''}`;
 }
+// Общий хостинг Flutter-проекции: используется и обычным входом (openApp),
+// и экраном восстановления. Движок загружается один раз за жизнь страницы;
+// переход recovery → чат меняет только проекцию и обработчик shadeAction.
+let flutterHosted = false, flutterLoading = null;
+function hostFlutter() {
+  if (flutterHosted) return;
+  flutterHosted = true;
+  root.replaceChildren(node('div', undefined, 'flutter-host'));
+  root.firstChild.id = 'flutter-host';
+  flutterLoading = node('p', 'Загрузка интерфейса Shade…', 'flutter-loading');
+  root.append(flutterLoading);
+  document.body.classList.add('flutter-ready'); updateViewport();
+  const script = node('script'); script.src = '/flutter-ui/flutter_bootstrap.js';
+  script.onerror = () => {
+    flutterHosted = false;
+    if (recoveryState) {
+      errorStep('Не удалось загрузить интерфейс восстановления. Проверьте соединение и обновите страницу.');
+      return;
+    }
+    notice('Не удалось загрузить Flutter UI. Проверьте сборку и соединение; ключи сохранены.');
+  };
+  document.head.append(script);
+}
+function flutterReady() { flutterLoading?.remove(); flutterLoading = null; }
 async function openApp() {
   ready = true;
   uiStorage = `shade-ui:${client.vault.id}`;
@@ -662,10 +856,7 @@ async function openApp() {
       positions: saved.positions || {}, readUntil: saved.readUntil || {} };
   } catch { /* UI preferences never prevent unlocking encrypted history. */ }
   selected = ui.selected;
-  root.replaceChildren(node('div', undefined, 'flutter-host'));
-  root.firstChild.id = 'flutter-host';
-  const loading = node('p','Загрузка интерфейса Shade…','flutter-loading'); root.append(loading);
-  document.body.classList.add('flutter-ready'); updateViewport();
+  hostFlutter();
   try {
     const spki = client.state.own.genesis?.firstDevice?.signingKey || '';
     const raw = Uint8Array.from(atob(spki), ch => ch.charCodeAt(0));
@@ -677,7 +868,7 @@ async function openApp() {
     try {
       const data = JSON.parse(raw);
       switch (kind) {
-        case 'ready': loading.remove(); render(); break;
+        case 'ready': flutterReady(); render(); break;
         case 'select':
           selected = data.account; ui.selected = selected; saveUi(); render();
           client.watchPeer(selected, true);
@@ -768,9 +959,6 @@ async function openApp() {
       return JSON.stringify({ok:false,error:message});
     }
   };
-  const script = node('script'); script.src = '/flutter-ui/flutter_bootstrap.js';
-  script.onerror = () => notice('Не удалось загрузить Flutter UI. Проверьте сборку и соединение; ключи сохранены.');
-  document.head.append(script);
   try { await client.start(); users = await client.users(); client.loadProfile().catch(() => {}); client.restorePush().catch(() => {}); render(); }
   catch (error) { notice(errors[error.message] || error.message); }
 }

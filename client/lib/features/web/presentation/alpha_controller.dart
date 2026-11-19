@@ -29,6 +29,11 @@ class AlphaController extends ChangeNotifier {
   Map<String, dynamic>? get key =>
       data['key'] == null ? null : Map<String, dynamic>.from(data['key'] as Map);
   String get platform => data['platform'] as String? ?? 'desktop';
+  // Проекция экрана восстановления (mode:'recovery'): шаги, имя файла и
+  // честные ошибки из JS-ядра. Пакет, ключи и фразы в проекцию не попадают.
+  Map<String, dynamic>? get recovery => data['mode'] == 'recovery'
+      ? Map<String, dynamic>.from(data['recovery'] as Map? ?? {})
+      : null;
   // Populates only when the relay starts returning the Google email in
   // /api/session (server-side gap tracked for Qwen).
   String? get email => data['email'] as String?;

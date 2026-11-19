@@ -572,6 +572,76 @@ export class AlphaClient extends EventTarget {
       return { account, revision: own.checkpoint.revision };
     });
   }
+  // ── Восстановление с recovery-пакетом (PRF_RECOVERY_BLOCKER §3) ─────────────
+  // Все устройства аккаунта утрачены. Старые ключи устройства НЕ возвращаются:
+  // создаётся новый vault, независимый recovery-ключ из пакета открывает
+  // короткоживущую recovery-сессию, ростер заменяется манифестом signer:'recovery'
+  // только с новым устройством, затем открывается обычная device-сессия.
+  // Локальная фиксация — только после полного успеха на сервере: прерванная
+  // попытка не оставляет ключей без состояния, повтор создаёт новые ключи.
+  async recoverWithBackup(pkg, recoveryPhrase, { passphrase, binding }, onStep = () => {}) {
+    return this.exclusive(async () => {
+      check(navigator.onLine, 'Нет сети');
+      const backup = pkg?.backup, genesis = pkg?.genesis;
+      check(backup && genesis && typeof genesis === 'object' && !Array.isArray(genesis),
+        'Неверный формат recovery-пакета');
+      const account = genesis.account;
+      check(typeof account === 'string' && /^[a-z0-9_]{3,32}$/.test(account),
+        'Неверный аккаунт в recovery-пакете');
+      // 1) Recovery-ключ: фраза расшифровывает пакет, привязанный к точному genesis.
+      onStep('unlock');
+      const recovery = await c.unlockRecoveryBackup(backup, recoveryPhrase, genesis);
+      // 2) Новый vault с НОВЫМИ ключами устройства; формат vault не менялся.
+      onStep('keys');
+      const vault = await c.createVault(account, passphrase);
+      if (binding) vault.binding = binding;
+      const session = await c.unlockVault(vault, passphrase);
+      // 3) Recovery-сессия: challenge → подпись recovery-ключом, привязанная к
+      // genesisDigest, → вход. Сервер сверяет принесённый genesis с хранимым.
+      onStep('session');
+      const { nonce } = await api('/api/v2/session/recovery-challenge', { account });
+      const operation = await digest('recovery-session', await hash(genesisText(genesis)));
+      await api('/api/v2/session/recovery', { account, genesis, nonce,
+        proof: await sign(requestText(account, 'primary', nonce, operation), recovery.signing) });
+      // 4) Каталог через op directory: recovery-сессия разрешает только его и install.
+      const directory = await api('/api/v2/operation',
+        { op: 'directory', body: account, auth: { account } });
+      check(await hash(genesisText(directory.genesis)) === await hash(genesisText(genesis)),
+        'Genesis digest mismatch');
+      // 5) Манифест revision+1 signer:'recovery': ростер только из нового устройства,
+      // старые retire-ятся сервером. Possession proof — challenge-bound v2 с
+      // self-generated challenge (как при обычном pairing, доверенное устройство не нужно).
+      onStep('install');
+      const manifest = await c.approveDevices(genesis, directory.history, [c.descriptor(vault)], recovery);
+      const offer = await buildPairingOffer({ account, device: c.descriptor(vault),
+        signing: session.signing, challenge: createPairingChallenge().nonce });
+      const proofs = [{ id: offer.device.id, nonce: offer.nonce, expiresAt: offer.expiresAt,
+        challenge: offer.challenge, pairingVersion: 2, signature: offer.signature }];
+      await api('/api/v2/operation', { op: 'install', body: { manifest, proofs }, auth: { account } });
+      // 6) Bootstrap обычной device-сессии нового устройства (sessionless challenge).
+      onStep('bootstrap');
+      const devOp = await digest('device-session');
+      const { nonce: deviceNonce } = await api('/api/v2/challenge',
+        { account, id: session.id, operation: devOp });
+      await api('/api/v2/session/device', { account, id: session.id, nonce: deviceNonce,
+        proof: await sign(requestText(account, session.id, deviceNonce, devOp), session.signing) });
+      // 7) Каталог уже device-сессией: полная проверка цепочки, genesis и ростера.
+      this.vault = vault; this.session = session;
+      const fresh = await this.operation('directory', account);
+      check(await hash(genesisText(fresh.genesis)) === await hash(genesisText(genesis)),
+        'Каталог сервера не совпадает с recovery-пакетом');
+      const own = await this.verifyDirectory(fresh, null);
+      check(own.history.at(-1).devices.some(d => d.id === session.id),
+        'Устройство отсутствует в каталоге сервера');
+      // 8) Локальная фиксация после успеха: ключи + состояние. Recovery-пакет
+      // сохраняется в состоянии — он по-прежнему действует (genesis неизменяем).
+      await c.saveVault(vault);
+      this.revision = 0;
+      await this.save({ own, contacts: {}, messages: [], outbox: [], pendingAck: [],
+        registered: true, backup });
+      return { account, revision: own.checkpoint.revision };
+    });
+  }
   // Unlock for both normal and pending-pairing sessions: a vault without a
   // committed state is a pairing in progress, not a lost identity.
   async loadForPairing(vault, passphrase) {
