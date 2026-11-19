@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shade v2 STAGING — переключение на релиз 20261119-142613 (фото P1 + профиль + email).
+# Shade v2 STAGING — переключение на релиз 20261119-170951 (новый разговор + TOFU).
 # ВЫПОЛНЯЕТ ВЛАДЕЛЕЦ через root SSH. Production v1 НЕ затрагивается:
 # скрипт пишет только в /opt/shade-staging и рестартует shade-staging.
 # Запуск: bash /opt/shade-staging/admin-update-challenge.sh
@@ -17,7 +17,7 @@
 # ПРОВЕРКИ (после переключения, провал = АВТОМАТИЧЕСКИЙ откат):
 #   - restart/is-active shade-staging; health loopback:3101 и домена;
 #   - googleConfigured:true (именно true, не наличие поля);
-#   - фактическая SW-версия 1b2a9189664f394f7dc3 в cache-files.js;
+#   - фактическая SW-версия ae7538939211eb096c75 в cache-files.js;
 #   - предыдущий релиз остался на диске.
 # PRODUCTION (до и после): is-active shade caddy, health :3000, ExecStart и
 #   EnvironmentFile юнита shade неизменны; деградация = CRITICAL + exit 1
@@ -26,9 +26,9 @@
 #   post-switch проверок; ручной — команда печатается всегда; прежние релизы
 #   не удаляются; данные staging совместимы в обе стороны.
 set -euo pipefail
-NEW=/opt/shade-staging/releases/20261119-142613
+NEW=/opt/shade-staging/releases/20261119-170951
 EXPECTED_COMMIT=__SET_AT_PACK_TIME__
-EXPECTED_SW=1b2a9189664f394f7dc3
+EXPECTED_SW=ae7538939211eb096c75
 OLD=$(readlink -f /opt/shade-staging/current)
 export PATH=/opt/node/bin:$PATH
 echo "current: $OLD"

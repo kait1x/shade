@@ -27,7 +27,10 @@ def git(*args):
 
 commit = git('rev-parse', 'HEAD')
 branch = git('rev-parse', '--abbrev-ref', 'HEAD')
-dirty = git('status', '--porcelain')
+dirty = '\n'.join(l for l in git('status', '--porcelain').splitlines()
+                  if 'client/windows/flutter/generated_' not in l)
+# Generated plugin registrants are rewritten by any flutter build and are not
+# part of the staging runtime; they must not block the manifest (rake 19.11).
 if dirty:
     raise SystemExit('worktree dirty; commit release changes before packaging:\n' + dirty)
 
