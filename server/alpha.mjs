@@ -485,8 +485,11 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     const validSession = session && session.expiresAt > Date.now();
     if (validSession) {
       check(sessionAccount(session) === account, 'Wrong session account');
+    } else if (operation !== await operationDigest('device-session')) {
+      // Expired/absent browser session: a plain 401 lets the client show the
+      // re-login notice instead of a generic operation_rejected.
+      return res.status(401).json({ error: 'login_required' });
     } else {
-      check(operation === await operationDigest('device-session'), 'Login required');
       const now = Date.now();
       const pending = (bootstrapChallenges.get(account) || []).filter(c => c.expiresAt > now);
       check(pending.length < 10, 'Challenge quota reached');
