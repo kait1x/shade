@@ -163,6 +163,11 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   const io = new Server(server, { maxHttpBufferSize: 512 * 1024,
     allowRequest: (req, done) => done(null, !req.headers.origin || originAllowed(req.headers.origin)) });
   app.disable('x-powered-by');
+  // Single trusted proxy hop: Caddy terminates TLS on loopback and OVERWRITES
+  // (never appends) X-Forwarded-For with {remote_host} — verified in the
+  // staging Caddyfile — so clients cannot spoof their address. Without this
+  // every user shares one limiter bucket keyed on the proxy IP.
+  app.set('trust proxy', 1);
   app.use((req, res, next) => {
     res.set({ 'Content-Security-Policy': "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; worker-src 'self' blob:",
       'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
@@ -696,7 +701,9 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   app.use((err, _req, res, _next) => {
     const message = typeof err.message === 'string' ? err.message : '';
     const code = /already|Stale|capacity|queue full|history limit/.test(message) ? 409 : 400;
-    // No tokens, public/private keys or OAuth provider diagnostics in responses/logs.
+    // No tokens, public/private keys, request content or OAuth provider
+    // diagnostics in responses/logs; static failure reason strings only.
+    console.error(`[alpha] rejected (${code}): ${message.slice(0, 120)}`);
     res.status(code).json({ error: /Google OAuth is not configured/.test(message) ? 'google_not_configured' :
       /Push is not configured/.test(message) ? 'push_not_configured' :
       /already registered/.test(message) ? 'account_requires_linking' : 'operation_rejected' });

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shade v2 STAGING — переключение на релиз 20261119-2218 (presence + last-seen).
+# Shade v2 STAGING — переключение на релиз 20261119-2250 (trust proxy + reject logging).
 # ВЫПОЛНЯЕТ ВЛАДЕЛЕЦ через root SSH. Production v1 НЕ затрагивается:
 # скрипт пишет только в /opt/shade-staging и рестартует shade-staging.
 # Запуск: bash /opt/shade-staging/admin-update-challenge.sh
@@ -26,7 +26,7 @@
 #   post-switch проверок; ручной — команда печатается всегда; прежние релизы
 #   не удаляются; данные staging совместимы в обе стороны.
 set -euo pipefail
-NEW=/opt/shade-staging/releases/20261119-2218
+NEW=/opt/shade-staging/releases/20261119-2250
 EXPECTED_COMMIT=__SET_AT_PACK_TIME__
 EXPECTED_SW=da7f49d5e071ef55af96
 OLD=$(readlink -f /opt/shade-staging/current)
