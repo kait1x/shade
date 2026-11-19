@@ -1,17 +1,28 @@
+// alpha-client.mjs — веб-клиент Shade (PWA): связывает шифрованный vault
+// (IndexedDB, WebCrypto) с сервером протокола device-v2. Сообщения шифруются
+// только на устройстве: сервер видит лишь подписанные протокольные структуры
+// и конверты, ключи и расшифрованная история не покидают браузер.
 import * as c from './device_crypto.mjs';
 import { check, hash, sign, requestText, messageText, verifyHistory, genesisText } from './protocol/device-v2.mjs';
 import { readState, writeState } from './alpha-storage.mjs';
 
+// ref — уникальный ключ сообщения в локальной истории; digest — хэш операции
+// (имя + тело), который подписывается при доказательстве запроса.
 export const ref = m => `${m.from}:${m.deviceId}:${m.id}`;
 export const digest = (op, body = null) => hash(JSON.stringify([op, body]));
+// Доступ к закреплённой директории контакта в локальном состоянии.
 const contact = (state, account) => Object.hasOwn(state.contacts, account) ? state.contacts[account] : null;
 const putContact = (state, account, value) => Object.defineProperty(state.contacts, account,
   { value, enumerable: true, configurable: true, writable: true });
+// pageController отменяет все сетевые запросы при закрытии/перезагрузке вкладки,
+// чтобы синхронизация не мешала выгрузке страницы.
 let pageController = new AbortController();
 const departing = () => pageController.abort();
 window.addEventListener('beforeunload', departing);
 window.addEventListener('pagehide', departing);
 window.addEventListener('pageshow', event => { if (event.persisted) pageController = new AbortController(); });
+// Единственная точка HTTP-доступа: same-origin куки, запрет кэша,
+// таймаут 20 с и отмена запроса при закрытии страницы.
 export async function api(route, body) {
   if (!navigator.onLine) throw Error('Нет сети');
   if (pageController.signal.aborted) throw Error('Страница закрывается');
@@ -32,7 +43,12 @@ export async function api(route, body) {
     clearTimeout(timeout); pageController.signal.removeEventListener('abort',abort);
   }
 }
+// Основной клиент: владеет vault (ключи) и локальным состоянием (контакты,
+// сообщения, outbox). Все мутации состояния сериализуются через exclusive(),
+// поэтому параллельные sync не конкурируют за запись в IndexedDB.
 export class AlphaClient extends EventTarget {
+  // Состояние появляется позже — через prepare()/load(), конструктор только
+  // готовит обработчики жизненного цикла страницы и сети.
   constructor() {
     super(); this.tail = Promise.resolve(); this.connected = false; this.stopped = false;
     this.foreground = () => { if (!document.hidden) this.sync().catch(() => {}); };
@@ -40,13 +56,18 @@ export class AlphaClient extends EventTarget {
     this.offline = () => { this.socket?.disconnect(); this.connected = false; this.changed(); };
   }
   changed() { this.dispatchEvent(new Event('change')); }
+  // Очередь критических секций: операция стартует только после завершения
+  // предыдущей; ошибка не рвёт цепочку последующих операций.
   exclusive(work) {
     const task = this.tail.then(work); this.tail = task.catch(() => {}); return task;
   }
+  // Запись состояния в шифрованный vault с текущей ревизией, затем уведомление UI.
   async save(next) {
     this.revision = await writeState(this.session, next, this.revision);
     this.state = next; this.changed();
   }
+  // Разблокировка существующего vault: ключи расшифровываются в памяти по
+  // passphrase, история устройства проверяется, но не пересоздаётся.
   async load(vault, passphrase) {
     this.vault = vault; this.session = await c.unlockVault(vault, passphrase);
     const saved = await readState(this.session);
@@ -54,6 +75,9 @@ export class AlphaClient extends EventTarget {
     check(this.state, 'История устройства отсутствует. Новые ключи не созданы; нужно восстановление.');
     this.changed();
   }
+  // Создание нового устройства: vault, genesis аккаунта и recovery-backup
+  // (шифруется recovery-фразой). Identity сохраняется локально до каких-либо
+  // HTTP-запросов — регистрация на сервере отдельный шаг register().
   async prepare(account, passphrase, recoveryPhrase) {
     check(!(await c.listVaults()).some(v => v.account === account), 'На этом устройстве уже есть ключи аккаунта. Разблокируйте их.');
     const vault = await c.createVault(account, passphrase);
@@ -69,6 +93,8 @@ export class AlphaClient extends EventTarget {
       contacts: {}, messages: [], outbox: [], pendingAck: [], backup, registered: false });
     return backup;
   }
+  // Регистрация genesis на сервере. Genesis должен быть свежим (окно 4 минуты):
+  // похищенный пакет нельзя зарегистрировать задним числом.
   async register() {
     return this.exclusive(async () => {
       check(this.state && !this.state.registered, 'Регистрация уже завершена');
@@ -85,6 +111,8 @@ export class AlphaClient extends EventTarget {
       await this.save(next);
     });
   }
+  // Пересоздание ещё не зарегистрированного genesis (например, после истечения
+  // окна регистрации) с перепривязкой backup к той же recovery-фразе.
   async renewPending(recoveryPhrase) {
     return this.exclusive(async () => {
       check(!this.state.registered && !(await api('/api/session')).account, 'Аккаунт уже существует; genesis неизменяем');
@@ -95,15 +123,22 @@ export class AlphaClient extends EventTarget {
       next.backup = backup; await this.save(next);
     });
   }
+  // Challenge-response: сервер выдаёт одноразовый nonce, устройство подписывает
+  // его вместе с хэшем операции. Сервер убеждается, что запрос идёт от владельца
+  // ключа, а повторное использование запроса невозможно.
   async proof(op, body = null) {
     const operation = await digest(op, op === 'send' ? await hash(messageText(body)) : body);
     const { account, id } = this.session;
     const { nonce } = await api('/api/v2/challenge', { account, id, operation });
     return { account, id, nonce, proof: await sign(requestText(account, id, nonce, operation), this.session.signing) };
   }
+  // Любая операция с сервером сопровождается доказательством владения ключом.
   async operation(op, body = null) {
     return api('/api/v2/operation', { op, body, auth: await this.proof(op, body) });
   }
+  // Проверка директории устройств: если для контакта уже закреплён отпечаток
+  // (pin), любое изменение genesis/root блокирует работу — защита от подмены
+  // ключей, в том числе со стороны скомпрометированного сервера.
   async verifyDirectory(directory, pinned) {
     check(directory?.genesis, 'Аккаунт ещё не поддерживает device-v2');
     if (pinned) check(await hash(genesisText(directory.genesis)) === pinned.checkpoint.genesisDigest &&
@@ -111,6 +146,8 @@ export class AlphaClient extends EventTarget {
     const checkpoint = await verifyHistory(directory.history, directory.root, pinned?.checkpoint, Date.now(), directory.genesis);
     return { ...directory, checkpoint };
   }
+  // Сверка собственной директории с сервером: полная проверка цепочки
+  // манифестов, продление lease при скором истечении, отказ при отзыве устройства.
   async refreshOwn() {
     const server = await api('/api/session');
     check(server.authenticated && server.account === this.session.account, 'google_login_required');
@@ -131,11 +168,15 @@ export class AlphaClient extends EventTarget {
     await this.save(next);
   }
   async users() { return this.operation('users'); }
+  // Запрос и проверка директории контакта; сервер обязан вернуть ровно
+  // запрошенный аккаунт.
   async inspectContact(account) {
     const directory = await this.verifyDirectory(await this.operation('directory', account), contact(this.state, account));
     check(directory.genesis.account === account, 'Сервер вернул другой аккаунт');
     return directory;
   }
+  // Закрепление контакта (TOFU): директория сохраняется только если её
+  // genesis-отпечаток совпал с тем, что сверил пользователь.
   async pinContact(account, expectedDigest) {
     return this.exclusive(async () => {
       const directory = await this.inspectContact(account);
@@ -143,6 +184,8 @@ export class AlphaClient extends EventTarget {
       const next = structuredClone(this.state); putContact(next, account, directory); await this.save(next);
     });
   }
+  // Снимки директорий обеих сторон для шифрования и расшифровки: sealMessage/
+  // openMessage сверяют ключи только с этими закреплёнными корнями.
   trust(from, to, state = this.state) {
     const directory = account => account === this.session.account ? state.own : contact(state, account);
     const sender = directory(from), recipient = directory(to);
@@ -151,6 +194,9 @@ export class AlphaClient extends EventTarget {
       senderGenesis: sender.genesis, recipientGenesis: recipient.genesis,
       senderCheckpoint: sender.checkpoint, recipientCheckpoint: recipient.checkpoint };
   }
+  // Отправка: sealMessage шифрует текст отдельно для каждого устройства
+  // получателя (fanout конвертов) и подписывает от имени нашего устройства.
+  // Сообщение сначала коммитится в локальный outbox — сетевой сбой его не теряет.
   async send(account, text) {
     return this.exclusive(async () => {
       check(text.trim().length > 0, 'Введите сообщение');
@@ -172,6 +218,9 @@ export class AlphaClient extends EventTarget {
       return m.id; // Local commit succeeded; keep retrying the exact ciphertext.
     });
   }
+  // Доставка outbox на сервер. 400/409 (конфликт/откат) переводят сообщение
+  // в 'blocked'; прочие ошибки прерывают цикл: после неоднозначной отправки
+  // ciphertext никогда не пересоздаётся, чтобы не задвоить сообщение.
   async flush() {
     let rejection;
     for (const message of [...this.state.outbox]) {
@@ -192,6 +241,10 @@ export class AlphaClient extends EventTarget {
     }
     if (rejection) throw rejection;
   }
+  // Полный цикл синхронизации: продление своей директории, доставка outbox,
+  // разбор входящих пакетов (проверка подписей и цепочек обеих сторон),
+  // коммит состояния ДО отправки ACK (иначе сбой потерял бы сообщения),
+  // затем пачки ACK и запрос статусов доставки.
   sync() {
     return this.exclusive(async () => {
       if (this.stopped || !this.session || !this.state.registered || !navigator.onLine) return;
@@ -236,6 +289,9 @@ export class AlphaClient extends EventTarget {
       } catch (error) { this.lastError = error.message; this.changed(); throw error; }
     });
   }
+  // Запуск клиента: первичная синхронизация, Socket.IO с доказательством
+  // владения ключом в auth, переподключение с нарастающей задержкой,
+  // периодический sync и реакции на visibility/online/offline.
   async start() {
     this.stopped = false;
     // Install reconnect handlers even when the first HTTP request cannot run.
@@ -255,6 +311,7 @@ export class AlphaClient extends EventTarget {
     window.addEventListener('offline', this.offline);
     await this.sync();
   }
+  // Остановка: сокет, таймер и обработчики окна снимаются.
   stop() {
     this.stopped = true; this.socket?.disconnect(); clearInterval(this.timer);
     document.removeEventListener('visibilitychange', this.foreground); window.removeEventListener('online', this.online);

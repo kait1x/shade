@@ -1,13 +1,24 @@
+// device-v2.mjs — протокол устройств Shade v2 (веб-клиент).
+// Аккаунт = genesis + цепочка подписанных манифестов (директория устройств);
+// у каждого устройства пара RSA-4096 ключей (шифрование/подпись), манифесты
+// подписаны RSA-PSS и живут ограниченное время (lease). Корень доверия
+// закрепляется отпечатком при первом контакте — подмена ключей выявляется.
 // Local protocol candidate. Not wired to production auth or messaging.
 const utf8 = new TextEncoder();
+// Лимиты и форматы протокола: максимум устройств, срок аренды манифеста (24 ч),
+// имя аккаунта и допустимые идентификаторы устройств ('primary' или хэш ключей).
 export const MAX_DEVICES = 8;
 export const MAX_LEASE_MS = 24 * 60 * 60 * 1000;
 export const ACCOUNT = /^[a-z0-9_]{3,32}$/;
 export const DEVICE = /^(primary|[a-f0-9]{64})$/;
 const B64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+// Инвариант протокола: неверные данные на границе доверия — исключение,
+// а не «мягкая» деградация.
 export function check(value, reason = 'Invalid protocol data') {
   if (!value) throw new Error(reason);
 }
+// Base64-кодирование и декодирование: unb64 проверяет формат и размер,
+// отклоняя пустые и слишком длинные значения.
 export function b64(bytes) {
   return btoa(Array.from(new Uint8Array(bytes), b => String.fromCharCode(b)).join(''));
 }
@@ -15,39 +26,54 @@ export function unb64(value, max = 1024 * 1024) {
   check(typeof value === 'string' && value.length > 0 && value.length <= max && B64.test(value));
   return Uint8Array.from(atob(value), c => c.charCodeAt(0));
 }
+// Текст → байты UTF-8 для хэширования.
 export const textBytes = value => utf8.encode(value);
 // Same pre-encoding convention as existing CryptoService.signData/verifySignature.
 export const signatureBytes = value => utf8.encode(b64(utf8.encode(value)));
+// SHA-256 строки в hex — базовый примитив для digest'ов структур протокола.
 export async function hash(value) {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', utf8.encode(value))),
     b => b.toString(16).padStart(2, '0')).join('');
 }
+// Отпечаток ключа (SHA-256 от SPKI-байтов): им закрепляют корень доверия.
 export async function fingerprint(spki) {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', unb64(spki, 2048))),
     b => b.toString(16).padStart(2, '0')).join('');
 }
+// id устройства = SHA-256 пары его ключей: идентификатор нельзя подделать,
+// не сменив ключи.
 export async function deviceId(encryptionKey, signingKey) {
   return hash(JSON.stringify([encryptionKey, signingKey]));
 }
+// Импорт SPKI-ключа с жёсткой проверкой: только RSA-4096, экспонента 65537
+// и ровно одно разрешённое использование.
 export async function publicKey(spki, algorithm, usage) {
   const key = await crypto.subtle.importKey('spki', unb64(spki, 2048),
     { name: algorithm, hash: 'SHA-256' }, false, [usage]);
   check(key.algorithm.modulusLength === 4096 && b64(key.algorithm.publicExponent) === 'AQAB', 'Unsupported RSA key');
   return key;
 }
+// Проверка подписи RSA-PSS (SHA-256, соль 32 байта). Ошибка формата/импорта
+// трактуется как «подпись неверна», а не как аварийное исключение.
 export async function verify(text, signature, spki) {
   try {
     return await crypto.subtle.verify({ name: 'RSA-PSS', saltLength: 32 },
       await publicKey(spki, 'RSA-PSS', 'verify'), unb64(signature, 1024), signatureBytes(text));
   } catch { return false; }
 }
+// Подпись RSA-PSS приватным ключом устройства (SHA-256, соль 32 байта) —
+// параметры совпадают с verify() и мобильным клиентом.
 export async function sign(text, key) {
   return b64(await crypto.subtle.sign({ name: 'RSA-PSS', saltLength: 32 }, key, signatureBytes(text)));
 }
+// Строгая форма структуры: ровно ожидаемый набор полей — лишние поля
+// запрещены, чтобы подписанный текст нельзя было «дополнить».
 function fields(value, names) {
   check(value && typeof value === 'object' && !Array.isArray(value));
   check(Object.keys(value).sort().join(',') === [...names].sort().join(','), 'Unexpected fields');
 }
+// Список устройств: 1..MAX_DEVICES, строго по возрастанию id, без дублей.
+// Канонический порядок делает текст манифеста воспроизводимым для подписи.
 function devicesShape(devices) {
   check(Array.isArray(devices) && devices.length >= 1 && devices.length <= MAX_DEVICES);
   let previous = '';
@@ -58,6 +84,9 @@ function devicesShape(devices) {
     previous = d.id;
   }
 }
+// Канонический текст манифеста устройств: именно эта строка подписывается
+// и хэшируется. Поля сначала строго валидируются — изменение формы
+// сломало бы подпись и было бы замечено.
 export function manifestText(m) {
   fields(m, ['account', 'rootFingerprint', 'revision', 'previous', 'issuedAt', 'expiresAt', 'devices', 'signer', 'signature']);
   check(typeof m.account === 'string' && ACCOUNT.test(m.account) &&
@@ -70,6 +99,10 @@ export function manifestText(m) {
   return JSON.stringify(['shade-devices:v2', m.account, m.rootFingerprint, m.revision,
     m.previous, m.issuedAt, m.expiresAt, m.signer, m.devices.map(d => [d.id, d.encryptionKey, d.signingKey])]);
 }
+// Проверка одного манифеста: соответствие корню доверия, срок аренды,
+// неизменность primary-идентичности, уникальность ключей устройств,
+// корректность RSA-ключей и подпись авторитета (корень, устройство или
+// recovery-ключ). Возвращает digest — звено цепочки истории.
 export async function verifyManifest(m, trustedRoot, now = Date.now(), authority = trustedRoot) {
   const text = manifestText(m);
   check(m.rootFingerprint === await fingerprint(trustedRoot), 'Root identity changed');
@@ -91,6 +124,8 @@ export async function verifyManifest(m, trustedRoot, now = Date.now(), authority
   return hash(text);
 }
 // Pin the root out of band on first contact. Persist this checkpoint encrypted.
+// Принятие манифеста: сверка с закреплённым checkpoint запрещает откат
+// истории (rollback) и развилку (fork) при одинаковой ревизии.
 export async function acceptManifest(m, trustedRoot, checkpoint, now = Date.now()) {
   const digest = await verifyManifest(m, trustedRoot, now);
   if (checkpoint) {
@@ -101,6 +136,10 @@ export async function acceptManifest(m, trustedRoot, checkpoint, now = Date.now(
   }
   return { account: m.account, rootFingerprint: m.rootFingerprint, revision: m.revision, digest };
 }
+// Проверка всей истории манифестов: непрерывность цепочки (revision, previous,
+// монотонность issuedAt), права подписанта каждого шага (устройство из
+// предыдущего манифеста либо recovery-ключ), запрет «воскрешения» отозванных
+// устройств и сверка с закреплённым checkpoint.
 export async function verifyHistory(history, trustedRoot, checkpoint, now = Date.now(), genesis = null) {
   const genesisDigest = genesis ? await verifyGenesis(genesis, trustedRoot) : null;
   check(Array.isArray(history) && history.length >= 1 && history.length <= 4096, 'Invalid directory history');
@@ -142,6 +181,8 @@ export async function verifyHistory(history, trustedRoot, checkpoint, now = Date
   }
   return { account: latest.account, rootFingerprint: latest.rootFingerprint, revision: latest.revision, digest: previous, genesisDigest };
 }
+// Канонический текст genesis — первичной записи аккаунта: первое устройство,
+// независимый recovery-ключ, nonce и время создания.
 export function genesisText(g) {
   fields(g, ['version', 'account', 'nonce', 'createdAt', 'legacy', 'firstDevice', 'recoveryKey', 'signature']);
   check(g.version === 2 && typeof g.account === 'string' && ACCOUNT.test(g.account) &&
@@ -150,6 +191,9 @@ export function genesisText(g) {
   return JSON.stringify(['shade-account:v2', g.account, g.nonce, g.createdAt, g.legacy,
     [g.firstDevice.id, g.firstDevice.encryptionKey, g.firstDevice.signingKey], g.recoveryKey]);
 }
+// Проверка genesis: подпись обязана стоять корневым ключом; первый ключ —
+// либо legacy-идентичность, либо пара независимых ключей; recovery-ключ
+// не совпадает с ключами устройства. Возвращает digest genesis.
 export async function verifyGenesis(g, trustedRoot) {
   const text = genesisText(g), d = g.firstDevice;
   check(d.signingKey === trustedRoot, 'Genesis anchor substitution');
@@ -161,17 +205,24 @@ export async function verifyGenesis(g, trustedRoot) {
   check(await verify(text, g.signature, trustedRoot), 'Invalid genesis signature');
   return hash(text);
 }
+// Канонический текст pairing-заявки нового устройства: id и пара ключей,
+// nonce и срок. Заявка ограничена по времени — переиграть её позже нельзя.
 export function pairingText(account, d, nonce, expiresAt) {
   check(typeof account === 'string' && ACCOUNT.test(account) && typeof nonce === 'string' &&
     /^[a-f0-9]{64}$/.test(nonce) && Number.isSafeInteger(expiresAt));
   check(DEVICE.test(d.id) && d.id !== 'primary');
   return JSON.stringify(['shade-pair:v2', account, d.id, d.encryptionKey, d.signingKey, nonce, expiresAt]);
 }
+// Канонический текст запроса операции: подписывается устройством вместе
+// с nonce, выданным сервером как challenge, — повтор запроса невозможен.
 export function requestText(account, id, nonce, operation) {
   check(typeof account === 'string' && ACCOUNT.test(account) && typeof id === 'string' && DEVICE.test(id) &&
     typeof nonce === 'string' && /^[a-f0-9]{64}$/.test(nonce) && typeof operation === 'string' && /^[a-f0-9]{64}$/.test(operation));
   return JSON.stringify(['shade-request:v2', account, id, nonce, operation]);
 }
+// Канонический текст сообщения. Оно фиксирует ревизии и digest'ы директорий
+// обеих сторон и несёт конверты для ВСЕХ устройств отправителя и получателя:
+// полноту fanout можно проверить по подписанным директориям.
 export function messageText(m) {
   fields(m, ['version', 'id', 'from', 'deviceId', 'to', 'fromRevision', 'toRevision',
     'fromDigest', 'toDigest', 'createdAt', 'envelopes', 'signature']);
@@ -195,6 +246,9 @@ export function messageText(m) {
     m.fromRevision, m.toRevision, m.fromDigest, m.toDigest, m.createdAt,
     m.envelopes.map(e => [e.account, e.deviceId, e.payload.k, e.payload.d])]);
 }
+// Проверка входящего сообщения: совпадение аккаунтов, актуальность директорий
+// (ревизии и digest'ы), свежесть метки времени, существование устройства
+// отправителя, полный fanout конвертов и подпись ключом устройства.
 export async function verifyMessage(m, sender, recipient, now = Date.now()) {
   const text = messageText(m);
   check(m.from === sender.account && m.to === recipient.account, 'Wrong accounts');
