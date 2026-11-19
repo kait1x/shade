@@ -237,19 +237,36 @@ export class AlphaClient extends EventTarget {
   }
   async users() { return this.operation('users'); }
   // Запрос и проверка директории контакта; сервер обязан вернуть ровно
-  // запрошенный аккаунт.
+  // запрошенный аккаунт. Отметка доверия trust — локальное аддитивное поле:
+  // сервер её не передаёт, поэтому переносим из закреплённого контакта.
   async inspectContact(account) {
-    const directory = await this.verifyDirectory(await this.operation('directory', account), contact(this.state, account));
+    const pinned = contact(this.state, account);
+    const directory = await this.verifyDirectory(await this.operation('directory', account), pinned);
     check(directory.genesis.account === account, 'Сервер вернул другой аккаунт');
+    if (pinned?.trust) directory.trust = pinned.trust;
     return directory;
   }
-  // Закрепление контакта (TOFU): директория сохраняется только если её
-  // genesis-отпечаток совпал с тем, что сверил пользователь.
+  // Ручная сверка: директория сохраняется только если её genesis-отпечаток
+  // совпал с введённым пользователем; доверие повышается до 'verified'.
   async pinContact(account, expectedDigest) {
     return this.exclusive(async () => {
       const directory = await this.inspectContact(account);
       check(directory.checkpoint.genesisDigest === expectedDigest, 'Отпечаток изменился');
-      const next = structuredClone(this.state); putContact(next, account, directory); await this.save(next);
+      const next = structuredClone(this.state);
+      putContact(next, account, { ...directory, trust: 'verified' });
+      await this.save(next);
+    });
+  }
+  // TOFU-закрепление при первом контакте: цепочка манифестов проверяется от
+  // genesis, pin не требуется. Расхождение с уже закреплённым genesis/root
+  // по-прежнему блокирует verifyDirectory — fail-closed защита не ослабляется.
+  async tofuContact(account) {
+    return this.exclusive(async () => {
+      const directory = await this.inspectContact(account);
+      const next = structuredClone(this.state);
+      putContact(next, account, { ...directory, trust: directory.trust || 'tofu' });
+      await this.save(next);
+      return directory;
     });
   }
   // Снимки директорий обеих сторон для шифрования и расшифровки: sealMessage/
@@ -257,7 +274,7 @@ export class AlphaClient extends EventTarget {
   trust(from, to, state = this.state) {
     const directory = account => account === this.session.account ? state.own : contact(state, account);
     const sender = directory(from), recipient = directory(to);
-    check(sender && recipient, 'Сначала сверьте отпечаток контакта');
+    check(sender && recipient, 'Контакт не закреплён. Найдите собеседника по никнейму или сверьте отпечаток.');
     return { senderRoot: sender.root, recipientRoot: recipient.root,
       senderGenesis: sender.genesis, recipientGenesis: recipient.genesis,
       senderCheckpoint: sender.checkpoint, recipientCheckpoint: recipient.checkpoint };
@@ -686,7 +703,16 @@ export class AlphaClient extends EventTarget {
         next.parts ??= {};
         for (const bundle of bundles) {
           const m = bundle.message, peer = m.from === this.session.account ? m.to : m.from;
-          if (!contact(next, peer) && m.from !== m.to) { this.unverified.push(peer); continue; }
+          if (!contact(next, peer) && m.from !== m.to) {
+            // TOFU для входящих: неизвестный отправитель закрепляется автоматически
+            // (цепь проверяется от genesis), чтобы ответ не требовал ручной сверки.
+            // Сбой проверки — честный пропуск сообщения, как раньше.
+            try {
+              const directory = await this.verifyDirectory(await this.operation('directory', peer), null);
+              check(directory.genesis.account === peer, 'Сервер вернул другой аккаунт');
+              putContact(next, peer, { ...directory, trust: 'tofu' });
+            } catch { this.unverified.push(peer); continue; }
+          }
           for (const [account, history] of [[m.from, bundle.senderHistory], [m.to, bundle.recipientHistory]]) {
             const own = account === this.session.account, pinned = own ? next.own : contact(next, account);
             const verified = await this.verifyDirectory({ ...pinned, history }, pinned);

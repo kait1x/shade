@@ -110,6 +110,9 @@ class AlphaController extends ChangeNotifier {
       .length;
   bool pinned(String peer) =>
       peers.any((p) => p['account'] == peer && p['pinned'] == true);
+  // TOFU-контакт закреплён автоматически, но отпечаток ещё не сверен вручную.
+  bool unverified(String peer) =>
+      peers.any((p) => p['account'] == peer && p['unverified'] == true);
   static int acknowledgements(Map<String, dynamic> m) =>
       _maps(m['devices']).where((d) => d['acknowledgedAt'] != null).length;
   static int reads(Map<String, dynamic> m) =>

@@ -426,9 +426,9 @@ void main() {
     expect(find.text('Здесь начнётся общение'), findsOneWidget);
     await tester.tap(find.text('Найти собеседника'));
     await tester.pumpAndSettle();
-    expect(actions, contains('refresh'));
-    // Directory mode replaces the empty headline.
-    expect(find.text('Новый диалог'), findsOneWidget);
+    // Empty-state action opens the «Новый разговор» screen (directory removed).
+    expect(find.text('Новый разговор'), findsOneWidget);
+    expect(find.text('Найдите своих'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     c.dispose();
@@ -588,6 +588,52 @@ void main() {
     expect(payload.containsKey('avatar'), false);
     // The editor closes after a successful save.
     expect(find.text('Ваш образ в Shade'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
+  testWidgets('Alpha profile rename saves displayName via dialog',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final actions = <Map<String, dynamic>>[];
+    final c = AlphaController((action, payload) async {
+      actions.add({'action': action, 'payload': payload});
+      return null;
+    });
+    c.apply(<String, dynamic>{
+      'account': 'alice',
+      'connected': true,
+      'peers': <Map<String, dynamic>>[],
+      'messages': <Map<String, dynamic>>[],
+      'profile': {
+        'displayName': 'Старое Имя',
+        'frame': 'none',
+        'digest': '',
+        'revision': 0
+      },
+    });
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Профиль'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Имя'));
+    await tester.pumpAndSettle();
+    expect(find.text('Отображаемое имя'), findsOneWidget);
+    await tester.enterText(
+        find.descendant(
+            of: find.byType(AlertDialog), matching: find.byType(TextField)),
+        'Новое Имя');
+    await tester.tap(find.text('Сохранить'));
+    await tester.pumpAndSettle();
+    final save = actions.lastWhere((entry) => entry['action'] == 'profile.save');
+    expect((save['payload'] as Map)['displayName'], 'Новое Имя');
+    expect(find.text('Отображаемое имя'), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     c.dispose();

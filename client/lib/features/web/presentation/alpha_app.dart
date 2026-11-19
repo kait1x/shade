@@ -42,29 +42,41 @@ class _Shell extends StatefulWidget {
 class _ShellState extends State<_Shell> {
   bool profile = false;
   bool peerProfile = false;
+  // Экран «Новый разговор» живёт в той же оболочке, что и профили.
+  bool newChat = false;
+  void openNewChat() => setState(() {
+        profile = false;
+        peerProfile = false;
+        newChat = true;
+      });
   @override
   Widget build(BuildContext context) {
     final c = widget.controller;
     return LayoutBuilder(builder: (context, bounds) {
       final wide = bounds.maxWidth >= 900;
-      final right = profile
-          ? _Profile(
-              controller: c, close: () => setState(() => profile = false))
-          : peerProfile && c.selected != null
-              ? _PeerProfile(
-                  controller: c,
-                  peer: c.selected!,
-                  openChat: () => setState(() => peerProfile = false))
-              : _Conversation(
-                  key: ValueKey(c.selected),
-                  controller: c,
-                  back: () => c.act('back'),
-                  openPeer: () => setState(() => peerProfile = true));
+      final right = newChat
+          ? _NewChat(
+              controller: c, close: () => setState(() => newChat = false))
+          : profile
+              ? _Profile(
+                  controller: c, close: () => setState(() => profile = false))
+              : peerProfile && c.selected != null
+                  ? _PeerProfile(
+                      controller: c,
+                      peer: c.selected!,
+                      openChat: () => setState(() => peerProfile = false))
+                  : _Conversation(
+                      key: ValueKey(c.selected),
+                      controller: c,
+                      back: () => c.act('back'),
+                      openPeer: () => setState(() => peerProfile = true));
       return PopScope(
-          canPop: c.selected == null && !profile && !peerProfile,
+          canPop: c.selected == null && !profile && !peerProfile && !newChat,
           onPopInvokedWithResult: (didPop, _) {
             if (!didPop) {
-              if (peerProfile) {
+              if (newChat) {
+                setState(() => newChat = false);
+              } else if (peerProfile) {
                 setState(() => peerProfile = false);
               } else if (profile) {
                 setState(() => profile = false);
@@ -85,9 +97,11 @@ class _ShellState extends State<_Shell> {
                                       width: bounds.maxWidth < 1200 ? 340 : 380,
                                       child: _Chats(
                                           controller: c,
+                                          newChat: openNewChat,
                                           openChat: () => setState(() {
                                                 profile = false;
                                                 peerProfile = false;
+                                                newChat = false;
                                               }),
                                           profile: () => setState(
                                               () => profile = !profile))),
@@ -96,15 +110,18 @@ class _ShellState extends State<_Shell> {
                                 ])
                               : AnimatedSwitcher(
                                   duration: ShadeMotion.duration(context),
-                                  child: profile ||
+                                  child: newChat ||
+                                          profile ||
                                           peerProfile && c.selected != null ||
                                           c.selected != null
                                       ? right
                                       : _Chats(
                                           controller: c,
+                                          newChat: openNewChat,
                                           openChat: () => setState(() {
                                                 profile = false;
                                                 peerProfile = false;
+                                                newChat = false;
                                               }),
                                           profile: () => setState(
                                               () => profile = true))))))));
@@ -116,9 +133,10 @@ class _Chats extends StatefulWidget {
   const _Chats(
       {required this.controller,
       required this.profile,
+      required this.newChat,
       required this.openChat});
   final AlphaController controller;
-  final VoidCallback profile, openChat;
+  final VoidCallback profile, newChat, openChat;
   @override
   State<_Chats> createState() => _ChatsState();
 }
@@ -126,7 +144,6 @@ class _Chats extends StatefulWidget {
 class _ChatsState extends State<_Chats> {
   final search = TextEditingController();
   final seenAccounts = <String>{};
-  bool directory = false;
   bool savedOnly = false;
   @override
   void dispose() {
@@ -138,12 +155,15 @@ class _ChatsState extends State<_Chats> {
   Widget build(BuildContext context) {
     final c = widget.controller;
     final query = search.text.trim().toLowerCase();
+    // Список чатов: только контакты с перепиской или закреплением. Каталог
+    // всех пользователей убран — поиск идёт по точному никнейму на экране
+    // «Новый разговор».
     final peers = c.peers.where((p) {
       final account = p['account'] as String;
       final items = c.conversation(account);
       final hasChat =
           items.isNotEmpty || p['pinned'] == true || p['unverified'] == true;
-      return (directory || hasChat) &&
+      return hasChat &&
           (!savedOnly || p['favorites'] == true) &&
           (account.contains(query) ||
               (items.lastOrNull?['text'] as String? ?? '')
@@ -189,20 +209,18 @@ class _ChatsState extends State<_Chats> {
                 IconButton(
                     tooltip: 'Найти собеседника',
                     onPressed: () {
-                      setState(() => directory = !directory);
+                      widget.newChat();
                       c.act('refresh');
                     },
-                    icon: Icon(
-                        directory ? Icons.close_rounded : Icons.edit_square,
-                        size: 22)),
+                    icon: const Icon(Icons.edit_square, size: 22)),
               ])),
           Padding(
               padding: const EdgeInsets.fromLTRB(24, 28, 24, 18),
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(directory ? 'Новый диалог' : 'Сообщения',
-                        style: const TextStyle(
+                    const Text('Сообщения',
+                        style: TextStyle(
                             fontSize: 34,
                             height: 1.15,
                             fontWeight: FontWeight.w700,
@@ -225,9 +243,7 @@ class _ChatsState extends State<_Chats> {
                         onChanged: (_) => setState(() {}),
                         style: const TextStyle(fontSize: 16),
                         decoration: InputDecoration(
-                            hintText: directory
-                                ? 'Найти пользователя'
-                                : 'Поиск в переписках',
+                            hintText: 'Поиск в переписках',
                             prefixIcon:
                                 const Icon(Icons.search_rounded, size: 21),
                             suffixIcon: query.isEmpty
@@ -241,29 +257,12 @@ class _ChatsState extends State<_Chats> {
                                     icon: const Icon(Icons.close_rounded,
                                         size: 18)))),
                   ])),
-          if (directory)
-            Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Row(children: [
-                  const Expanded(
-                      child: Text('ПОЛЬЗОВАТЕЛИ SHADE',
-                          style: TextStyle(
-                              fontSize: 10,
-                              letterSpacing: 1.5,
-                              color: ShadeColors.textMuted,
-                              fontWeight: FontWeight.w700))),
-                  IconButton(
-                      tooltip: 'Обновить список',
-                      onPressed: () => c.act('refresh'),
-                      icon: const Icon(Icons.refresh_rounded, size: 18)),
-                ]))
-          else
-            Padding(
-                padding: const EdgeInsets.fromLTRB(24, 14, 24, 0),
-                child: Wrap(spacing: 8, children: [
-                  _homeFilter('Все чаты', false),
-                  _homeFilter('Избранное', true),
-                ])),
+          Padding(
+              padding: const EdgeInsets.fromLTRB(24, 14, 24, 0),
+              child: Wrap(spacing: 8, children: [
+                _homeFilter('Все чаты', false),
+                _homeFilter('Избранное', true),
+              ])),
         ])),
         if (peers.isEmpty)
           SliverToBoxAdapter(
@@ -285,7 +284,7 @@ class _ChatsState extends State<_Chats> {
                           padding: const EdgeInsets.only(top: 8),
                           child: OutlinedButton.icon(
                               onPressed: () {
-                                setState(() => directory = true);
+                                widget.newChat();
                                 c.act('refresh');
                               },
                               icon: const Icon(Icons.person_search_rounded),
@@ -419,24 +418,25 @@ class _ChatsState extends State<_Chats> {
                               child: const Text('Повторить')))),
               ]))),
       ]),
-      if (!directory)
-        Positioned(
-            right: 16,
-            bottom: 58,
-            child: FloatingActionButton.extended(
-                elevation: 0,
-                heroTag: 'alpha-compose',
-                backgroundColor: const Color(0xFFF5F5F7),
-                foregroundColor: Colors.black,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20)),
-                onPressed: () {
-                  setState(() => directory = true);
-                  c.act('refresh');
-                },
-                icon: const Icon(Icons.edit_outlined, size: 20),
-                label: const Text('Написать',
-                    style: TextStyle(fontWeight: FontWeight.w700)))),
+      // FAB открывает экран «Новый разговор»: поиск по никнейму и TOFU-старт
+      // переписки вместо каталога всех пользователей.
+      Positioned(
+          right: 16,
+          bottom: 58,
+          child: FloatingActionButton.extended(
+              elevation: 0,
+              heroTag: 'alpha-compose',
+              backgroundColor: const Color(0xFFF5F5F7),
+              foregroundColor: Colors.black,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20)),
+              onPressed: () {
+                widget.newChat();
+                c.act('refresh');
+              },
+              icon: const Icon(Icons.edit_outlined, size: 20),
+              label: const Text('Написать',
+                  style: TextStyle(fontWeight: FontWeight.w700)))),
     ]);
   }
 
@@ -806,11 +806,31 @@ class _ConversationState extends State<_Conversation>
                 tooltip: 'Проверить ключ контакта',
                 onPressed: () => c.act('verify', {'account': peer}),
                 icon: Icon(
-                    c.pinned(peer)
+                    c.pinned(peer) && !c.unverified(peer)
                         ? Icons.verified_user_outlined
                         : Icons.shield_outlined,
                     size: 21)),
           ])),
+      // TOFU-бейдж: ключ закреплён автоматически, ручная сверка доступна.
+      if (c.unverified(peer) && peer != c.account)
+        Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            color: ShadeColors.surfaceCard,
+            child: Row(children: [
+              const Icon(Icons.shield_outlined,
+                  size: 16, color: ShadeColors.textSecondary),
+              const SizedBox(width: 8),
+              const Expanded(
+                  child: Text('Ключ не сверен',
+                      style: TextStyle(
+                          fontSize: 12, color: ShadeColors.textSecondary))),
+              TextButton(
+                  onPressed: () => c.act('verify', {'account': peer}),
+                  child: const Text('Сверить',
+                      style: TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.w700))),
+            ])),
       AnimatedSize(
           duration: ShadeMotion.duration(context),
           child: !c.connected
@@ -1021,6 +1041,212 @@ class _ConversationState extends State<_Conversation>
       ],
     ]);
   }
+}
+
+// Экран «Новый разговор»: поиск по точному никнейму вместо каталога всех
+// пользователей. Найденный контакт закрепляется автоматически (TOFU) —
+// переписка начинается без ручного обмена ключами.
+class _NewChat extends StatefulWidget {
+  const _NewChat({required this.controller, required this.close});
+  final AlphaController controller;
+  final VoidCallback close;
+  @override
+  State<_NewChat> createState() => _NewChatState();
+}
+
+class _NewChatState extends State<_NewChat> {
+  final field = TextEditingController();
+  bool busy = false;
+  String error = '';
+  // Правила регистрации: 3–32 символа, латинские буквы, цифры и _.
+  static final _nickname = RegExp(r'^[a-zA-Z0-9_]{3,32}$');
+  String get value => field.text.trim().replaceFirst(RegExp(r'^@'), '').trim();
+  bool get valid => _nickname.hasMatch(value);
+  @override
+  void dispose() {
+    field.dispose();
+    super.dispose();
+  }
+
+  Future<void> _find() async {
+    if (!valid || busy) return;
+    setState(() {
+      busy = true;
+      error = '';
+    });
+    try {
+      await widget.controller.act('find', {'account': value.toLowerCase()});
+      // Мост уже открыл чат (selected): закрываем экран поиска.
+      if (mounted) widget.close();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          busy = false;
+          error = e is StateError
+              ? e.message
+              : 'Не удалось найти собеседника. Проверьте сеть и повторите.';
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Column(children: [
+        Row(children: [
+          IconButton(
+              tooltip: 'Назад',
+              onPressed: widget.close,
+              icon: const Icon(Icons.chevron_left_rounded)),
+          const Text('Новый разговор',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+        ]),
+        Expanded(
+            child: Center(
+                child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 560),
+                    child: ListView(
+                        padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
+                        children: [
+                          const Text('Найдите своих',
+                              style: TextStyle(
+                                  fontSize: 32,
+                                  height: 1.15,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: -1)),
+                          const SizedBox(height: 10),
+                          const Text(
+                              'Введите точный никнейм друга в Shade. Имена аккаунтов состоят из латинских букв, цифр и _.',
+                              style: TextStyle(
+                                  fontSize: 14,
+                                  height: 1.5,
+                                  color: ShadeColors.textSecondary)),
+                          const SizedBox(height: 24),
+                          Semantics(
+                              label: 'Никнейм собеседника',
+                              textField: true,
+                              child: TextField(
+                                  key: const Key('new-chat-field'),
+                                  controller: field,
+                                  autofocus: true,
+                                  enabled: !busy,
+                                  maxLength: 32,
+                                  autocorrect: false,
+                                  enableSuggestions: false,
+                                  textInputAction: TextInputAction.search,
+                                  onSubmitted: (_) => _find(),
+                                  onChanged: (_) => setState(() => error = ''),
+                                  style: const TextStyle(fontSize: 16),
+                                  decoration: InputDecoration(
+                                      hintText: 'Никнейм собеседника',
+                                      counterText: '',
+                                      prefixText: '@ ',
+                                      prefixStyle: const TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.w600,
+                                          color: ShadeColors.textMuted),
+                                      suffixIcon: value.isEmpty
+                                          ? null
+                                          : IconButton(
+                                              tooltip: 'Очистить поле',
+                                              onPressed: () {
+                                                field.clear();
+                                                setState(() {});
+                                              },
+                                              icon: const Icon(
+                                                  Icons.close_rounded,
+                                                  size: 18))))),
+                          if (value.isNotEmpty && !valid)
+                            const Padding(
+                                padding: EdgeInsets.only(top: 8),
+                                child: Text(
+                                    'От 3 до 32 символов: латинские буквы, цифры и _',
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        color: ShadeColors.textMuted))),
+                          if (error.isNotEmpty)
+                            Padding(
+                                padding: const EdgeInsets.only(top: 8),
+                                child: Semantics(
+                                    liveRegion: true,
+                                    child: Row(children: [
+                                      const Icon(Icons.error_outline_rounded,
+                                          size: 16, color: Color(0xFFEF4444)),
+                                      const SizedBox(width: 6),
+                                      Expanded(
+                                          child: Text(error,
+                                              style: const TextStyle(
+                                                  fontSize: 13,
+                                                  height: 1.4,
+                                                  color: Color(0xFFEF4444)))),
+                                    ]))),
+                          const SizedBox(height: 16),
+                          SizedBox(
+                              width: double.infinity,
+                              height: 52,
+                              child: FilledButton(
+                                  key: const Key('new-chat-find'),
+                                  onPressed: valid && !busy ? _find : null,
+                                  style: FilledButton.styleFrom(
+                                      shape: RoundedRectangleBorder(
+                                          borderRadius:
+                                              BorderRadius.circular(18))),
+                                  child: busy
+                                      ? const Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                              SizedBox(
+                                                  width: 18,
+                                                  height: 18,
+                                                  child:
+                                                      CircularProgressIndicator(
+                                                          strokeWidth: 2,
+                                                          color: Colors.black)),
+                                              SizedBox(width: 10),
+                                              Text('Ищем…'),
+                                            ])
+                                      : const Text('Найти собеседника',
+                                          style: TextStyle(
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.w700)))),
+                          const SizedBox(height: 28),
+                          // Подсказка под формой: что делать, если никнейм неизвестен.
+                          Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Container(
+                                    width: 56,
+                                    height: 56,
+                                    decoration: BoxDecoration(
+                                        color: ShadeColors.surfaceCard,
+                                        borderRadius:
+                                            BorderRadius.circular(18),
+                                        border: Border.all(
+                                            color: ShadeColors.greyBorder)),
+                                    child: const Icon(
+                                        Icons.alternate_email_rounded,
+                                        size: 26,
+                                        color: ShadeColors.textSecondary)),
+                                const SizedBox(width: 14),
+                                const Expanded(
+                                    child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                      Text('Одно имя — и вы на связи',
+                                          style: TextStyle(
+                                              fontSize: 15,
+                                              fontWeight: FontWeight.w700)),
+                                      SizedBox(height: 4),
+                                      Text(
+                                          'Попросите друга поделиться никнеймом. Ваш собственный никнейм есть в профиле.',
+                                          style: TextStyle(
+                                              fontSize: 13,
+                                              height: 1.5,
+                                              color: ShadeColors.textMuted)),
+                                    ])),
+                              ]),
+                        ])))),
+      ]);
 }
 
 class _Profile extends StatelessWidget {
@@ -1540,6 +1766,7 @@ class _PeerProfile extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = controller;
     final pinned = c.pinned(peer);
+    final tofu = c.unverified(peer);
     final messages = c.conversation(peer).length;
     final note = c.notes[peer] as String? ?? '';
     return Column(children: [
@@ -1581,21 +1808,31 @@ class _PeerProfile extends StatelessWidget {
                     const SizedBox(height: 12),
                       Card(
                         child: Column(children: [
+                      // Три состояния доверия: сверен вручную, TOFU, не закреплён.
                       ListTile(
                           leading: Icon(
-                              pinned
+                              pinned && !tofu
                                   ? Icons.verified_user_outlined
                                   : Icons.shield_outlined,
-                              color: pinned
+                              color: pinned && !tofu
                                   ? ShadeColors.cyan
                                   : ShadeColors.textSecondary),
-                          title: Text(pinned
+                          title: Text(pinned && !tofu
                               ? 'Ключ собеседника проверен'
-                              : 'Ключ ещё не проверен'),
-                          subtitle: Text(pinned
+                              : tofu
+                                  ? 'Ключ не сверен'
+                                  : 'Ключ ещё не проверен'),
+                          subtitle: Text(pinned && !tofu
                               ? 'Отпечаток закреплён за этим аккаунтом'
-                              : 'Сверьте отпечатки через независимый доверенный канал'),
-                          trailing: const Icon(Icons.chevron_right_rounded),
+                              : tofu
+                                  ? 'Закреплён автоматически при первом контакте. Сверьте отпечаток через доверенный канал.'
+                                  : 'Сверьте отпечатки через независимый доверенный канал'),
+                          trailing: tofu
+                              ? TextButton(
+                                  onPressed: () =>
+                                      c.act('verify', {'account': peer}),
+                                  child: const Text('Сверить'))
+                              : const Icon(Icons.chevron_right_rounded),
                           onTap: () => c.act('verify', {'account': peer})),
                       const Divider(height: 1, indent: 56),
                       ListTile(

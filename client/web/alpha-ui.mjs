@@ -47,7 +47,9 @@ function announceIncoming() {
 const errors = { google_login_required: 'Сессия Google истекла. Войдите снова; ключи сохранены.',
   login_required: 'Сессия истекла. Войдите снова; ключи сохранены.',
   operation_rejected: 'Операция отклонена. Проверьте сеть, срок каталога и доступ устройства. Сообщение не отмечено доставленным.',
-  account_requires_linking: 'Аккаунт уже существует. Нужна привязка доверенным устройством; новые ключи не назначены.' };
+  account_requires_linking: 'Аккаунт уже существует. Нужна привязка доверенным устройством; новые ключи не назначены.',
+  // Ответ реестра на запрос директории несуществующего аккаунта.
+  'Unknown account': 'Никнейм не найден' };
 function action(work) {
   actionTail = actionTail.then(async () => {
     const buttons = [...root.querySelectorAll('button[type=submit]')]; buttons.forEach(b => b.disabled = true);
@@ -612,7 +614,10 @@ function render() {
       { account: client.session.account, favorites: true, pinned: true,
         name: 'Избранное', avatarDigest: client.state.profile?.avatarDigest || '' },
       ...accounts.map(account => ({ account, pinned: !!contact(account),
-        unverified: (client.unverified || []).includes(account), ...meta(account) })),
+        // TOFU-контакты (trust='tofu') получают бейдж «Ключ не сверен»;
+        // старые контакты без поля trust считаются сверенными.
+        unverified: (client.unverified || []).includes(account) || contact(account)?.trust === 'tofu',
+        ...meta(account) })),
     ],
     messages: client.state.messages.map(({ref,from,to,text,reply,createdAt,status,devices,media,readAt,chunkRefs}) =>
       ({ref,from,to,text,reply,createdAt,status,devices,media,readAt,
@@ -683,6 +688,18 @@ async function openApp() {
           client.watchPeer(selected, true);
           client.loadProfile().catch(() => {});
           if (!contact(selected) && selected !== client.session.account) verifyContact(selected); break;
+        case 'find': {
+          // Новый разговор: цепь манифестов проверяется от genesis, контакт
+          // закрепляется автоматически (TOFU); чат открыт, отправлять можно сразу.
+          const account = String(data.account ?? '').trim().replace(/^@/, '').toLowerCase();
+          if (!/^[a-z0-9_]{3,32}$/.test(account)) throw Error('Некорректный никнейм');
+          if (account !== client.session.account) await client.tofuContact(account);
+          selected = account; ui.selected = selected; saveUi(); render();
+          client.watchPeer(selected, true);
+          client.loadProfile().catch(() => {});
+          client.sync().catch(() => {});
+          break;
+        }
         case 'back': selected = null; ui.selected = null; saveUi(); render();
           if (data.account) client.watchPeer(data.account, false); break;
         case 'typing': client.sendTyping(data.account); break;
@@ -781,7 +798,8 @@ function verifyContact(account) {
     const field = node('input'); field.placeholder = '64 символа отпечатка собеседника'; field.autocomplete = 'off'; field.setAttribute('aria-label', 'Отпечаток собеседника');
     const button = node('button', 'Закрепить проверенный отпечаток'); button.type = 'button';
     button.onclick = () => action(async () => { if (field.value.replace(/\s/g, '').toLowerCase() !== fingerprint) throw Error('Отпечатки не совпадают');
-      await client.pinContact(account, fingerprint); dialog.close(); render(); await client.sync(); });
+      await client.pinContact(account, fingerprint); dialog.close(); render();
+      notice('Ключ собеседника сверен.', 3500); await client.sync(); });
     showDialog('@' + account, [instructions, code, field, button]);
   });
 }

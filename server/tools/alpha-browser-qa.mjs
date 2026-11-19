@@ -109,9 +109,13 @@ async function fingerprint(page) {
   await page.getByRole('button',{name:'Назад',exact:true}).click(); return value;
 }
 async function pin(page, account, code) {
-  // Both the header toggle and the new empty-state action open the directory.
+  // New-chat screen: find by nickname (TOFU pin, chat opens immediately),
+  // then manual verification upgrades trust via «Сверить» in the chat header.
   await page.getByRole('button',{name:'Найти собеседника',exact:true}).first().click();
-  await page.getByRole('button',{name:new RegExp(account)}).click();
+  await page.getByLabel('Никнейм собеседника').fill(account);
+  await page.getByRole('button',{name:'Найти собеседника',exact:true}).click();
+  await page.getByText('Ключ не сверен').first().waitFor({timeout:30000});
+  await page.getByRole('button',{name:'Сверить',exact:true}).first().click();
   await page.getByLabel('Отпечаток собеседника').fill(code);
   await page.getByRole('button',{name:'Закрепить проверенный отпечаток'}).click();
   try {
