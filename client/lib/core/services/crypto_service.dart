@@ -1,3 +1,8 @@
+// crypto_service.dart — криптографическое ядро Flutter-клиента Shade.
+// Приватные ключи RSA-4096 генерируются и хранятся только на устройстве
+// (flutter_secure_storage поверх OS-keystore); серверу уходит лишь публичный ключ.
+// Шифрование гибридное: данные — AES-256-GCM, ключ сессии — RSA-OAEP,
+// подписи — RSA-PSS-SHA256. Сервер никогда не видит открытый текст сообщений.
 import 'dart:convert';
 import 'dart:math' show Random;
 import 'package:flutter/foundation.dart';
@@ -25,6 +30,7 @@ class _SecureRandom {
     final entropy =
         Uint8List.fromList(List.generate(32, (_) => random.nextInt(256)));
     _fortuna.seed(pc.KeyParameter(entropy));
+    // Буфер энтропии затирается в памяти сразу после посева.
     entropy.fillRange(0, entropy.length, 0);
     _seeded = true;
   }
@@ -38,12 +44,16 @@ class _SecureRandom {
   // HIGH-04: Wipe password with Uint8List
 }
 
+/// Статус доверия к публичному ключу сервера: проверен, новый ключ
+/// (нужно подтверждение пользователя) или несовпадение отпечатка (возможна MitM).
 enum ServerKeyTrustStatus {
   trusted,
   newKeyRequiresConfirmation,
   mismatchDetected,
 }
 
+/// Результат проверки ключа сервера: статус, вычисленный отпечаток и
+/// сохранённый ранее отпечаток (для показа расхождения в диалоге подтверждения).
 class ServerKeyFingerprintResult {
   final ServerKeyTrustStatus status;
   final String fingerprint;
@@ -67,6 +77,8 @@ class ServerKeyFingerprintResult {
 class CryptoService {
   final FlutterSecureStorage _secureStorage;
 
+  // Алиасы ключей в защищённом хранилище. Приватный ключ никогда не покидает
+  // устройство; публичный — единственное, что уходит на сервер и контактам.
   static const String _privKeyAlias = 'rsa_private_key';
   static const String _pubKeyAlias = 'rsa_public_key';
 
@@ -86,6 +98,7 @@ class CryptoService {
 
   /// Генерирует пару RSA-4096 ключей и сохраняет обе части.
   Future<Map<String, String>> generateIdentityKeys() async {
+    // RSA-4096: запас стойкости для долгоживущей идентичности аккаунта.
     final kp = await RSA.generate(4096);
 
     await Future.wait([
@@ -121,6 +134,8 @@ class CryptoService {
   /// 3. Шифрует конверт (ключ+nonce) с помощью RSA-OAEP-SHA256.
   /// 4. Возвращает `{"k":"<зашифрованный ключ>","d":"<зашифрованные данные+тег>"}`.
   Future<String> encryptData(String plainText, String publicKey) async {
+    // Свежий AES-ключ и nonce на каждое сообщение: компрометация одного
+    // сообщения не раскрывает остальные (схема «конверта»).
     final aesKey = _randomBytes(_aesKeyLen);
     final nonce = _randomBytes(_aesNonceLen);
 
@@ -190,6 +205,8 @@ class CryptoService {
             'Unknown envelope format - CBC mode no longer supported');
       }
     } catch (e) {
+      // Несовпадение тега GCM — данные подменены или повреждены: сообщаем
+      // об этом явно, а не как об обычном сбое расшифровки.
       if (e.toString().contains('AEADBadTagException') ||
           e.toString().contains('Tag')) {
         throw Exception('Message authentication failed. Data may be tampered.');
@@ -243,6 +260,7 @@ class CryptoService {
   // ══════════════════════════════════════════════════════════════
 
   /// Подписывает сохранённый публичный ключ для регистрации на сервере.
+  /// Подпись собственного ключа доказывает владение приватным без его передачи.
   Future<String> signPublicKey() async {
     final priv = await _readKey(_privKeyAlias);
     final pub = await _readKey(_pubKeyAlias);
@@ -441,14 +459,19 @@ class CryptoService {
   //  KEY ACCESSORS
   // ══════════════════════════════════════════════════════════════
 
+  /// Публичный ключ читается свободно — он уходит на сервер и контактам.
   Future<String?> getPublicKey() => _readKey(_pubKeyAlias);
+  /// Приватный ключ нужен только локально: расшифровка конвертов и подписи.
   Future<String?> getPrivateKey() => _readKey(_privKeyAlias);
 
+  /// Есть ли на устройстве идентичность (публичный ключ).
   Future<bool> hasIdentityKeys() async {
     final pub = await _readKey(_pubKeyAlias);
     return pub != null && pub.isNotEmpty;
   }
 
+  /// Принудительная очистка ключей. Ошибки удаления игнорируются сознательно:
+  /// выход из аккаунта не должен блокироваться сбоем хранилища.
   Future<void> clearKeys() async {
     try {
       await Future.wait([
@@ -536,5 +559,6 @@ class CryptoService {
     }
   }
 
+  /// Все случайные байты — только из Fortuna PRNG, посеянного от CSPRNG платформы.
   static Uint8List _randomBytes(int length) => _SecureRandom.nextBytes(length);
 }
