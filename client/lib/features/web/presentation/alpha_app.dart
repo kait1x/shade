@@ -1052,6 +1052,12 @@ class _ConversationState extends State<_Conversation>
                         if (reply != null) 'reply': reply,
                       });
                       if (mounted) setState(() => replyTo = null);
+                      // Samsung GBoard keeps the field focused with a phantom
+                      // shrunken visual viewport after send; the engine misses
+                      // the final resize and the composer strands mid-screen.
+                      // Closing the keyboard deterministically settles the
+                      // metrics instead of racing them mid-transition.
+                      FocusManager.instance.primaryFocus?.unfocus();
                     }))),
       ],
     ]);
