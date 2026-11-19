@@ -119,3 +119,12 @@ code { font:13px/1.7 ui-monospace,monospace; }
 .flutter-loading { position: absolute; inset: 35% 24px auto; text-align: center; pointer-events: none; }
 /* Native text editing stays >=16px, preventing Safari focus zoom. */
 flt-glass-pane input, flt-glass-pane textarea { font-size: 16px; }
+/* The Flutter web engine can leave an empty full-screen semantics leaf (no
+   role, label, action or tabindex) stacked above the app after focus changes
+   in the avatar editor; its pointer-events:auto then swallows every real tap.
+   Such nodes carry no accessibility meaning, so make them pointer-transparent
+   and let taps reach the controls below. Interactive/labeled/focusable nodes
+   are untouched. */
+flt-semantics-host flt-semantics:empty:not([role]):not([aria-label]):not([flt-tappable]):not([tabindex]) {
+  pointer-events: none !important;
+}

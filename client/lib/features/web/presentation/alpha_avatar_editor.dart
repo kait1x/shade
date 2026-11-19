@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'dart:ui' as ui;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
@@ -68,14 +69,20 @@ class _AlphaAvatarEditorState extends State<AlphaAvatarEditor> {
       _error = null;
     });
     try {
+      // On web ShadeWebImagePicker returns a bytes-backed XFile, so the read
+      // below never touches the blob-URL XHR that dies on Android Chrome PWA
+      // ('Could not load Blob from its URL. Has it been revoked?'). The stock
+      // plugin's imageQuality/canvas path does NOT fix that: its output is
+      // another blob-URL XFile and resize errors fall back to the original.
       final file = await (widget.pickImage?.call() ??
           ImagePicker().pickImage(
               source: ImageSource.gallery, requestFullMetadata: false));
       if (file == null || !mounted) return;
-      if (await file.length() > 10 * 1024 * 1024) {
+      final bytes = await file.readAsBytes();
+      if (bytes.length > 10 * 1024 * 1024) {
         throw const FormatException('Выберите фотографию до 10 МБ');
       }
-      final source = await decodeAvatarSource(await file.readAsBytes());
+      final source = await decodeAvatarSource(bytes);
       if (!mounted) {
         source.dispose();
         return;
@@ -92,10 +99,13 @@ class _AlphaAvatarEditorState extends State<AlphaAvatarEditor> {
       WidgetsBinding.instance.addPostFrameCallback((_) => previous?.dispose());
     } on FormatException catch (e) {
       if (mounted) setState(() => _error = e.message);
-    } catch (_) {
+    } catch (e) {
+      // Honest diagnostics: the real exception reaches the console; the user
+      // text stays neutral about the cause (read, decode or gallery failure).
+      debugPrint('shade: avatar photo pick failed: $e');
       if (mounted) {
         setState(() => _error =
-            'Не удалось открыть фото. Проверьте доступ к галерее и попробуйте ещё раз.');
+            'Не удалось открыть фото. Попробуйте ещё раз или выберите другой файл.');
       }
     } finally {
       if (mounted) setState(() => _picking = false);
@@ -129,7 +139,10 @@ class _AlphaAvatarEditorState extends State<AlphaAvatarEditor> {
       Navigator.pop(context, true);
     } on FormatException catch (e) {
       if (mounted) setState(() => _error = e.message);
-    } catch (_) {
+    } catch (e) {
+      // Honest diagnostics: transient relay throttling or storage failures
+      // reach the console; the user keeps the editor and can retry the save.
+      debugPrint('shade: avatar save failed: $e');
       if (mounted) {
         setState(
             () => _error = 'Не удалось сохранить. Проверьте сеть и повторите.');
@@ -249,29 +262,52 @@ class _AlphaAvatarEditorState extends State<AlphaAvatarEditor> {
                                                 !_removed) ...[
                                               const SizedBox(height: 12),
                                               Row(children: [
-                                                const Icon(Icons.remove_rounded,
+                                                IconButton(
+                                                    tooltip: 'Уменьшить масштаб',
+                                                    iconSize: 18,
+                                                    padding: EdgeInsets.zero,
+                                                    constraints:
+                                                        const BoxConstraints.tightFor(
+                                                            width: 32,
+                                                            height: 32),
                                                     color: _secondary,
-                                                    size: 18),
+                                                    onPressed: _locked ||
+                                                            _preview
+                                                        ? null
+                                                        : () => setState(() =>
+                                                            _crop!.setZoom(
+                                                                _crop!.zoom -
+                                                                    0.25)),
+                                                    icon: const Icon(
+                                                        Icons.remove_rounded)),
                                                 Expanded(
-                                                    child: Slider(
-                                                        value: _crop!.zoom,
-                                                        min: 1,
-                                                        max: 4,
-                                                        label:
-                                                            '${_crop!.zoom.toStringAsFixed(1)}×',
-                                                        onChanged: _locked ||
-                                                                _preview
-                                                            ? null
-                                                            : (v) => setState(
-                                                                () => _crop!
-                                                                    .setZoom(
-                                                                        v)),
-                                                        activeColor: _text,
-                                                        inactiveColor:
-                                                            _border)),
-                                                const Icon(Icons.add_rounded,
+                                                    child: kIsWeb
+                                                        ? Semantics(
+                                                            label:
+                                                                'Масштаб кадрирования ${_crop!.zoom.toStringAsFixed(1)}×',
+                                                            child:
+                                                                ExcludeSemantics(
+                                                                    child:
+                                                                        _zoomSlider()))
+                                                        : _zoomSlider()),
+                                                IconButton(
+                                                    tooltip: 'Увеличить масштаб',
+                                                    iconSize: 18,
+                                                    padding: EdgeInsets.zero,
+                                                    constraints:
+                                                        const BoxConstraints.tightFor(
+                                                            width: 32,
+                                                            height: 32),
                                                     color: _secondary,
-                                                    size: 18)
+                                                    onPressed: _locked ||
+                                                            _preview
+                                                        ? null
+                                                        : () => setState(() =>
+                                                            _crop!.setZoom(
+                                                                _crop!.zoom +
+                                                                    0.25)),
+                                                    icon: const Icon(
+                                                        Icons.add_rounded)),
                                               ]),
                                               Wrap(
                                                   alignment:
@@ -426,6 +462,22 @@ class _AlphaAvatarEditorState extends State<AlphaAvatarEditor> {
                                                           FontWeight.w600))))),
                             ])))))));
   }
+
+  // On web the engine renders the Slider as an <input type=range> whose
+  // semantics placeholder can cover the whole viewport and swallow every tap
+  // (semantics is always on in the PWA). The slider stays visual there; the
+  // zoom buttons and the row's Semantics label keep zoom accessible. Native
+  // platforms keep the full slider semantics.
+  Widget _zoomSlider() => Slider(
+      value: _crop!.zoom,
+      min: 1,
+      max: 4,
+      label: '${_crop!.zoom.toStringAsFixed(1)}×',
+      onChanged: _locked || _preview
+          ? null
+          : (v) => setState(() => _crop!.setZoom(v)),
+      activeColor: _text,
+      inactiveColor: _border);
 
   Widget _avatarPreview(double side) => SizedBox.square(
       dimension: side,

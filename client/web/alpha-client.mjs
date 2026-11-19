@@ -267,17 +267,22 @@ export class AlphaClient extends EventTarget {
           uploadId = Array.from(crypto.getRandomValues(new Uint8Array(16)),
             b => b.toString(16).padStart(2, '0')).join('');
           // Chunked staging: <=65536 base64 chars per request, strict order,
-          // tail replay is idempotent (server contract B1).
+          // tail replay is idempotent (server contract B1). The FINAL chunk
+          // commits server-side and returns the receipt; a PUT confirm with
+          // the same uploadId but no image would trip the server's replay
+          // digest guard (409), so the receipt is the commit result here.
+          let receipt = null;
           for (let offset = 0; offset < data.avatar.length; offset += 65536) {
-            await this.adapterRequest('POST', '/profile/avatar/chunk', {
+            receipt = await this.adapterRequest('POST', '/profile/avatar/chunk', {
               uploadId, offset, total: data.avatar.length,
               chunk: data.avatar.slice(offset, offset + 65536), frame, revision });
           }
+          if (receipt?.profile?.revision) revision = receipt.profile.revision;
+        } else {
+          // Frame-only change or avatar removal: no staging, direct commit.
+          await this.adapterRequest('PUT', '/profile/avatar', {
+            image: data.avatar === undefined ? undefined : data.avatar, frame, revision });
         }
-        const committed = await this.adapterRequest('PUT', '/profile/avatar', {
-          ...(uploadId ? { uploadId } : { image: data.avatar === undefined ? undefined : data.avatar }),
-          frame, revision });
-        revision = committed.revision;
       }
       const next = structuredClone(this.state);
       const committed = await this.adapterRequest('GET', `/user/${encodeURIComponent(this.session.account)}/avatar`);
@@ -586,14 +591,23 @@ export class AlphaClient extends EventTarget {
         const next = structuredClone(this.state);
         next.outbox = next.outbox.filter(m => m.id !== message.id);
         // Media chunk messages have no text record; the assembled display
-        // record aggregates their statuses instead.
+        // record aggregates their statuses instead: it turns accepted once
+        // every chunk left the outbox (relay acceptance, same as text).
         const record = next.messages.find(m => m.ref === ref(message));
         if (record) record.status = 'accepted';
+        else {
+          const display = next.messages.find(m => m.chunkRefs?.includes(ref(message)));
+          if (display && display.status !== 'blocked' &&
+            display.chunkRefs.every(r => !next.outbox.some(o => ref(o) === r))) {
+            display.status = 'accepted';
+          }
+        }
         await this.save(next);
       } catch (error) {
         if (error.status === 400 || error.status === 409) {
           const next = structuredClone(this.state);
-          const record = next.messages.find(m => m.ref === ref(message));
+          const record = next.messages.find(m => m.ref === ref(message))
+            || next.messages.find(m => m.chunkRefs?.includes(ref(message)));
           if (record) record.status = 'blocked'; await this.save(next);
           rejection = error; continue;
         }

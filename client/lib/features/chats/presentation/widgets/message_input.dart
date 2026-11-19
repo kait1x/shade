@@ -148,16 +148,25 @@ class _MessageInputState extends State<MessageInput> {
 
       final rawBytes = await file.readAsBytes();
       if (rawBytes.length > 20 * 1024 * 1024) {
-        throw const FormatException('Image too large');
+        throw const FormatException('Выберите фото до 20 МБ');
       }
       final cleanJpeg = await compute(prepareMessageImage, rawBytes);
       if (!mounted) return;
       await widget.onImageSelected!(cleanJpeg);
-    } catch (_) {
+    } catch (e) {
+      // Honest diagnostics: the real exception reaches the console; the user
+      // text matches the source (camera permission vs a bad gallery file).
+      debugPrint('shade: chat photo pick failed: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text(
-                'Не удалось открыть фото. Проверьте разрешения камеры или выберите другое изображение.')));
+        final message = e is FormatException
+            ? (e.message == 'Invalid image'
+                ? 'Формат не поддерживается. Выберите JPEG, PNG или WebP.'
+                : e.message)
+            : source == ImageSource.camera
+                ? 'Не удалось сделать снимок. Проверьте разрешения камеры и попробуйте снова.'
+                : 'Не удалось открыть изображение. Попробуйте другой файл.';
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(message)));
       }
     } finally {
       if (mounted) setState(() => _picking = false);

@@ -41,7 +41,36 @@ async function browser(name) {
     ignoreHTTPSErrors:true,
   });
   contexts.push(context);
+  if (process.env.SHADE_QA_HOSTILE_BLOB === '1') {
+    // Reproduce the Android Chrome PWA failure mode deterministically: XHR
+    // against blob: URLs dies ('Could not load Blob from its URL. Has it been
+    // revoked?') while <img>, canvas and download anchors keep working. The
+    // stock image_picker web path re-reads the picked file through such an
+    // XHR; a bytes-backed pick must survive this mode on every engine.
+    await context.addInitScript(() => {
+      const open = XMLHttpRequest.prototype.open;
+      const send = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+        this.__shadeBlobUrl =
+          typeof url === 'string' && url.startsWith('blob:') ? url : null;
+        return open.call(this, method, url, ...rest);
+      };
+      XMLHttpRequest.prototype.send = function (...args) {
+        if (this.__shadeBlobUrl) {
+          console.log('[hostile-blob] XHR blocked:', this.__shadeBlobUrl);
+          setTimeout(() => this.dispatchEvent(new ProgressEvent('error')), 0);
+          return;
+        }
+        return send.apply(this, args);
+      };
+    });
+    results.hostileBlobXhr = true;
+  }
   const page = await context.newPage(); page.setDefaultTimeout(30000);
+  page.on('console', msg => {
+    const t = msg.text();
+    if (t.includes('[hostile-blob]') || t.includes('shade:')) console.log('CONSOLE', t);
+  });
   page.on('pageerror', e => errors.push({message:e.message,stack:e.stack,name:e.name}));
   page.on('response', response => { if (response.status() === 429 && response.url().includes('/api/')) throttledRequests++; });
   page.on('websocket', ws => { frames.push(ws.url()); });
@@ -93,6 +122,21 @@ async function pin(page, account, code) {
   }
 }
 const textMarker = t => t.length > 40 ? t.slice(-40) : t;
+// waitForFunction treats an async predicate's returned Promise as truthy and
+// passes instantly (verified: async () => false "passes" in ~20ms). Async
+// conditions must therefore be polled through page.evaluate, which awaits the
+// Promise, inside a bounded loop. Never use waitForFunction(async () => ...).
+async function pollEvaluate(page, fn, { timeout = 60000, polling = 1000 } = {}) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const ok = await page.evaluate(fn).catch(() => false);
+    if (ok) return;
+    if (Date.now() >= deadline) {
+      throw Error(`pollEvaluate: condition not met within ${timeout}ms`);
+    }
+    await new Promise(r => setTimeout(r, polling));
+  }
+}
 async function send(page, text) {
   // A scrolled-away user taps «К последним» first; the jump button otherwise
   // overlaps the composer send button in the 390px viewport.
@@ -295,7 +339,7 @@ try {
   // Then a documented platform flush settle (WebKit only) and an immediate
   // reload: the journal must still hide the message. If WebKit's flush window
   // exceeds this, the failure is recorded honestly as a residual platform risk.
-  await b.page.waitForFunction(async () => {
+  await pollEvaluate(b.page, async () => {
     const { listVaults } = await import('/device_crypto.mjs');
     const vault = (await listVaults())[0];
     try {
@@ -394,20 +438,20 @@ try {
   await chooser.setFiles({name:'photo.png',mimeType:'image/png',buffer:photoBuffer});
   // Sender side: the assembled media record reaches accepted with per-chunk
   // ACKs; the visible label can scroll out of the semantics viewport.
-  await a.page.waitForFunction(async () => {
+  await pollEvaluate(a.page, () => {
     const client = window.__shadeClient;
     const media = (client?.state?.messages || []).find(m => m.media);
     return Boolean(media && media.status === 'accepted' &&
       (media.chunkRefs || []).length >= 1);
-  }, undefined, {timeout:60000, polling: 1000});
-  await b.page.waitForFunction(async () => {
+  }, {timeout:60000, polling: 1000});
+  await pollEvaluate(b.page, async () => {
     const { listVaults, unlockVault } = await import('/device_crypto.mjs');
     const vault = (await listVaults())[0];
     const s = await unlockVault(vault,'browser QA independent device phrase');
     const { readState } = await import('/alpha-storage.mjs');
     const state = await readState(s);
     return (state.value.messages || []).some(m => m.media && m.media.data && m.media.data.length > 100);
-  }, undefined, {timeout:60000, polling: 1000});
+  }, {timeout:60000, polling: 1000});
   results.mediaChunkRoundTrip = true; console.log('PASS media chunk E2EE round-trip');
   // Favorites (B3): self-chat through the single-roster fanout.
   await a.page.getByRole('button',{name:'Назад к чатам',exact:true}).click();
@@ -435,6 +479,79 @@ try {
   }
   if (!nameSaved) await a.page.getByText('Алиса Тест',{exact:false}).first().waitFor({timeout:30000});
   results.profileNameV2 = true; console.log('PASS profile name via v2 adapter');
+  // Avatar upload through the REAL web file chooser (P1 regression guard):
+  // the picked file must decode through the crop pipeline and reach the v2
+  // profile adapter as bytes. A 96×96 PNG is generated without PIL (zlib).
+  const pngFixture = (() => {
+    const zlib = createRequire(import.meta.url)('zlib');
+    const crcTable = Array.from({length: 256}, (_, n) => {
+      let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+      return c >>> 0;
+    });
+    const crc32 = data => { let c = 0xFFFFFFFF;
+      for (const byte of data) c = crcTable[(c ^ byte) & 0xFF] ^ (c >>> 8);
+      return (c ^ 0xFFFFFFFF) >>> 0; };
+    const chunk = (type, data) => {
+      const head = Buffer.alloc(4); head.writeUInt32BE(data.length);
+      const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+      const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body));
+      return Buffer.concat([head, body, crc]);
+    };
+    const side = 96, rows = [];
+    for (let y = 0; y < side; y++) {
+      const row = Buffer.alloc(1 + side * 3); row[0] = 0;
+      for (let x = 0; x < side; x++) {
+        row[1 + x * 3] = 30 + (x * 2) % 200;
+        row[2 + x * 3] = 30 + (y * 2) % 200;
+        row[3 + x * 3] = 120;
+      }
+      rows.push(row);
+    }
+    const ihdr = Buffer.alloc(13);
+    ihdr.writeUInt32BE(side, 0); ihdr.writeUInt32BE(side, 4);
+    ihdr[8] = 8; ihdr[9] = 2; // 8-bit RGB
+    return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(Buffer.concat(rows))),
+      chunk('IEND', Buffer.alloc(0))]);
+  })();
+  {
+    await a.page.getByText('Изменить аватар',{exact:true}).click();
+    const avatarChooser = a.page.waitForEvent('filechooser', {timeout: 30000});
+    avatarChooser.catch(() => {}); // handled at the await below
+    await a.page.getByText('Выбрать фото',{exact:true}).click();
+    const avatar = await avatarChooser;
+    await avatar.setFiles({name:'avatar.png', mimeType:'image/png', buffer: pngFixture});
+    // Headless engines only produce BeginFrames for the focused page, and the
+    // downloads page stole focus at registration; setFiles dispatches no input
+    // event, so the decode's setState would never reach the semantics DOM.
+    // Real devices always run frames for a visible page. Focus + input nudge
+    // restore frame production; then wait for the decoded crop state.
+    await a.page.bringToFront();
+    await a.page.mouse.move(180, 400);
+    await a.page.getByText('Выбрать другое фото',{exact:true}).waitFor({timeout:30000});
+    // The decoded source enters the crop editor; save runs the real pipeline.
+    // The rapid QA run can hit the relay's 300 req/min limit inside the avatar
+    // commit chain; the client then shows an honest save error and keeps the
+    // editor open. Retry exactly like a user would (same pattern as the
+    // profile-name scenario); success is the editor route popping.
+    let avatarSaved = false;
+    for (let attempt = 0; attempt < 3 && !avatarSaved; attempt++) {
+      await a.page.getByText('Сохранить',{exact:true}).click();
+      const outcome = await Promise.any([
+        a.page.getByRole('button',{name:'Назад',exact:true}).waitFor({timeout:30000})
+          .then(() => 'saved').catch(() => null),
+        a.page.getByText('Не удалось сохранить',{exact:false}).waitFor({timeout:30000})
+          .then(() => 'error').catch(() => null),
+      ]).catch(() => null);
+      if (outcome === 'saved') avatarSaved = true;
+      else if (outcome === 'error') await a.page.waitForTimeout(3000);
+      else throw Error('avatar save: neither pop nor honest error within 30s');
+    }
+    if (!avatarSaved) throw Error('avatar save failed after 3 user retries');
+    await a.page.waitForFunction(() => ((window.__shadeClient?.state?.profile?.avatarImage) || '').length > 100,
+      undefined, {timeout:60000, polling: 1000});
+    results.avatarUploadWeb = true; console.log('PASS avatar upload through the web file chooser');
+  }
   // Stickers v2 (B2): a real gift with a note lands in the peer's book.
   await a.page.getByRole('button',{name:'Назад',exact:true}).click();
   await a.page.getByText('browser_bob',{exact:false}).first().click();
@@ -705,14 +822,14 @@ try {
   // viewport boundary, so visibility-based waits are unreliable here.
   await a.page.waitForFunction(() => (window.__shadeClient?.state?.messages || [])
     .some(m => (m.text || '').includes('безпробеловбезпробелов')), undefined, {timeout:120000, polling:1000});
-  await b.page.waitForFunction(async () => {
+  await pollEvaluate(b.page, async () => {
     const { listVaults, unlockVault } = await import('/device_crypto.mjs');
     const vault = (await listVaults())[0];
     const s2 = await unlockVault(vault, 'browser QA independent device phrase');
     const { readState } = await import('/alpha-storage.mjs');
     const state = await readState(s2);
     return (state.value.messages || []).some(m => (m.text || '').includes('безпробеловбезпробелов'));
-  }, undefined, {timeout:120000, polling:1000});
+  }, {timeout:120000, polling:1000});
   await send(a.page,'Проверка позиции прокрутки.');
   await a.page.mouse.move(180,400);
   if (engineName === 'webkit') {

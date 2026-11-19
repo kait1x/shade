@@ -1,6 +1,9 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'package:shade/features/stickers/aluminium.dart';
 import 'package:shade/features/web/presentation/alpha_app.dart';
 import 'package:shade/features/web/presentation/alpha_controller.dart';
@@ -590,6 +593,97 @@ void main() {
     c.dispose();
   });
 
+  // P1 regression: the photo-pick path must surface honest errors and a
+  // working preview through the real editor pipeline (bytes-backed XFile,
+  // no editor internals mocked).
+  testWidgets('Alpha avatar editor surfaces the honest size limit',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    final previous = ImagePickerPlatform.instance;
+    addTearDown(() => ImagePickerPlatform.instance = previous);
+    ImagePickerPlatform.instance = _StaticPhotoPlatform(
+        Uint8List(11 * 1024 * 1024)); // over the 10 MB avatar limit
+    final c = AlphaController((action, payload) async {
+      if (action == 'profile.avatar') return {'image': null};
+      return null;
+    });
+    c.apply(<String, dynamic>{
+      'account': 'alice',
+      'selected': null,
+      'connected': true,
+      'peers': <Map<String, dynamic>>[],
+      'messages': <Map<String, dynamic>>[],
+    });
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Профиль'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Изменить аватар'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Выбрать фото'));
+    await tester.pumpAndSettle();
+    expect(find.text('Выберите фотографию до 10 МБ'), findsOneWidget);
+    expect(find.textContaining('Галерея недоступна'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
+  testWidgets('Alpha avatar editor shows a decoded pick and honest errors',
+      (tester) async {
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+    // Static 64×64 PNG fixture (solid #3366AA). Runtime Picture.toImage +
+    // Image.toByteData(png) can hang the flutter_tester engine, so the pick
+    // bytes are a deterministic constant instead of an engine round-trip.
+    final pngBytes = base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAgElEQVR4nNXOQREAIAzAsFJLeEIcKhGxB9coyNrnUiZxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEidxEufvwNQDIkoBwwp8+ZgAAAAASUVORK5CYII=');
+    final previous = ImagePickerPlatform.instance;
+    addTearDown(() => ImagePickerPlatform.instance = previous);
+    ImagePickerPlatform.instance = _StaticPhotoPlatform(pngBytes);
+    final c = AlphaController((action, payload) async {
+      if (action == 'profile.avatar') return {'image': null};
+      return null;
+    });
+    c.apply(<String, dynamic>{
+      'account': 'alice',
+      'selected': null,
+      'connected': true,
+      'peers': <Map<String, dynamic>>[],
+      'messages': <Map<String, dynamic>>[],
+    });
+    await tester.pumpWidget(ShadeAlphaApp(controller: c));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Профиль'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Изменить аватар'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Выбрать фото'));
+    // The editor decodes through the real engine (ImageDescriptor/codec);
+    // those callbacks only run outside FakeAsync, so give them real time
+    // before settling (same pattern as avatar_system_test's runAsync capture).
+    await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 500)));
+    await tester.pumpAndSettle();
+    // The decoded pick lands in the editor: the pick button switches to
+    // 'Выбрать другое фото' and no error is shown.
+    expect(find.text('Выбрать другое фото'), findsOneWidget);
+    expect(find.textContaining('Галерея недоступна'), findsNothing);
+    expect(find.textContaining('Не удалось открыть фото'), findsNothing);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    c.dispose();
+  });
+
   testWidgets('Alpha profile name dialog round-trips the adapter',
       (tester) async {
     tester.view.physicalSize = const Size(390, 844);
@@ -1012,4 +1106,17 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     c.dispose();
   });
+}
+
+// Fake platform for the photo-pick regression tests: returns a self-contained
+// XFile (bytes-backed) without touching the real gallery or the DOM input.
+class _StaticPhotoPlatform extends ImagePickerPlatform {
+  final Uint8List bytes;
+  _StaticPhotoPlatform(this.bytes);
+  @override
+  Future<XFile?> getImageFromSource({
+    required ImageSource source,
+    ImagePickerOptions options = const ImagePickerOptions(),
+  }) =>
+      Future.value(XFile.fromData(bytes, name: 'avatar.png', mimeType: 'image/png'));
 }

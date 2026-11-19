@@ -1002,7 +1002,9 @@ class _ConversationState extends State<_Conversation>
                         'image': base64Encode(bytes),
                         'mime': 'image/jpeg',
                       });
-                      await c.act('sync', const {});
+                      // The bridge already fires a fire-and-forget sync after
+                      // sendMedia; awaiting a second sync here would surface
+                      // its transient 429s as a false "photo failed" error.
                     },
                     onSend: (text) async {
                       atBottom = true;
