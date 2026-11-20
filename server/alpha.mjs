@@ -22,7 +22,7 @@ import { createV2Stickers } from './multidevice/v2-stickers.mjs';
 import { check, ACCOUNT, verify, requestText, hash, manifestText, genesisText, verifyRotation, publicKey } from '../client/web/protocol/device-v2.mjs';
 import { alphaStore } from './multidevice/alpha-store.mjs';
 import { openV1Source, validateLegacyUser } from './multidevice/v1-source.mjs';
-import { createMigration } from './multidevice/migration.mjs';
+import { createMigration, DIALOG_ERROR_CODES } from './multidevice/migration.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const token = () => randomBytes(32).toString('hex');
@@ -38,7 +38,7 @@ const RECOVERY_WINDOW_MS = 60 * 60 * 1000, RECOVERY_LIMIT = 5;
 export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   clientId = '', clientSecret = '', oauthProvider, verifyGoogle, legacyUsers = new Map(), tls,
   vapidKeys = null, pushSender = null, pushAllowedHosts = null,
-  legacySource = null, guardFile = null, bridgeAckFile = null, checkpointDir = null, checkpointKeep = 20,
+  legacySource = null, guardFile = null, bridgeAckFile = null, reverseReplayFile = null, checkpointDir = null, checkpointKeep = 20,
   allowedOrigins = [], oauthAllowlist = [], handoffTtlMs = 60000,
   recoverySessionMs = RECOVERY_SESSION_MS_MAX } = {}) {
   check(dataDir && publicOrigin, 'Explicit alpha dataDir and publicOrigin required');
@@ -165,6 +165,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   if (migration) {
     exportGuard().catch(e => console.error('[alpha] guard re-export failed:', e.message));
     exportBridgeAck().catch(e => console.error('[alpha] bridge-ack re-export failed:', e.message));
+    exportReverseReplay().catch(e => console.error('[alpha] reverse-replay re-export failed:', e.message));
   }
   // Guard file consumed by the v1 server (opt-in SHADE_V2_GUARD_FILE): enrolled
   // accounts must no longer authenticate/send on v1. Atomic, additive write.
@@ -183,6 +184,16 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     const tmp = `${bridgeAckFile}.${randomBytes(6).toString('hex')}.tmp`;
     await fs.writeFile(tmp, JSON.stringify(payload), { mode: 0o600 });
     await fs.rename(tmp, bridgeAckFile);
+  }
+  // Reverse-replay export (D1 rollback): v2-origine конверты диалога для
+  // v1-очередей legacy-устройств. Аддитивный файл принадлежит v2-процессу;
+  // ingestion на стороне v1 — отдельная проводка моста (формат v1 не меняется).
+  async function exportReverseReplay() {
+    if (!reverseReplayFile || !migration) return;
+    const payload = migration.reverseReplay();
+    const tmp = `${reverseReplayFile}.${randomBytes(6).toString('hex')}.tmp`;
+    await fs.writeFile(tmp, JSON.stringify(payload), { mode: 0o600 });
+    await fs.rename(tmp, reverseReplayFile);
   }
   const app = express(), server = tls ? https.createServer(tls, app) : http.createServer(app);
   const io = new Server(server, { maxHttpBufferSize: 512 * 1024,
@@ -619,6 +630,17 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     }
     let result;
     if (op === 'send') {
+      // Когортная маршрутизация (D1): состояние диалога проверяется ДО приёма.
+      // Никакой тихой отправки в несовместимое окружение: pending/transferring →
+      // HOLD 'migration_pending' (клиент показывает «Диалог переносится…» и
+      // держит ciphertext в outbox); v1_active после rollback → честный отказ.
+      const routing = migration ? migration.dialogRoutingFor(body?.from, body?.to) : null;
+      if (routing && (routing.state === 'migration_pending' || routing.state === 'transferring')) {
+        return res.status(409).json({ error: 'migration_pending' });
+      }
+      if (routing && routing.state === 'v1_active' && routing.rolledBackAt) {
+        return res.status(409).json({ error: 'migration_rolled_back' });
+      }
       try {
         result = await registry.send(body, auth);
       } catch (e) {
@@ -629,8 +651,12 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
             !registry.exportSnapshot().accounts[body.to]?.history?.length) {
           return res.status(409).json({ error: 'peer_upgrade_required' });
         }
+        if (DIALOG_ERROR_CODES.has(e?.message)) return res.status(409).json({ error: e.message });
         throw e;
       }
+      // v2-origine пакет фиксируется в journal диалога для reverse-replay.
+      // Вызов идемпотентен и на duplicate-ретрае: потерянный ответ лечит journal.
+      if (migration && routing?.state === 'v2_active') await migration.journalV2Send(body);
       relations.add(pairKey(body.from, body.to));
       for (const e of body.envelopes) io.to(room(e.account, e.deviceId)).emit('inbox');
       if (pushEnabled) {
@@ -651,6 +677,8 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     else if (op === 'ack') {
       const pending = registry.exportSnapshot().queues[room(auth.account, auth.id)] || [];
       result = await registry.acknowledge(body, auth);
+      // Ack отмечается и в per-dialog journal (D1, аддитивно).
+      if (migration) await migration.ackDialogRefs(auth.account, body);
       for (const m of pending) if (body.includes(`${m.from}:${m.deviceId}:${m.id}`)) {
         const dir = registry.directory(m.from).history.at(-1);
         for (const d of dir.devices) io.to(room(m.from, d.id)).emit('receipts');
@@ -693,6 +721,41 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
         ? await migration.syncInbox(auth.account)
         : await migration.ackInbox(auth.account, body);
       if (op === 'legacy.ack') await exportBridgeAck();
+    } else if (op === 'dialog.migration.start' || op === 'dialog.migration.ready' ||
+      op === 'dialog.migration.status' || op === 'dialog.migration.abort' ||
+      op === 'dialog.migration.rollback' || op === 'dialog.migration.outbox-empty') {
+      // Когортная миграция целым диалогом (D1): device-proof участника пары;
+      // операция действует только на диалог auth.account с peer (не на чужой).
+      check(migration, 'Legacy bridge not configured');
+      const peer = body?.peer;
+      check(typeof peer === 'string' && ACCOUNT.test(peer) && peer !== auth.account, 'Invalid dialog peer');
+      await registry.authorize(auth, await operationDigest(op, body));
+      try {
+        if (op === 'dialog.migration.start') result = await migration.startDialog({ account: auth.account, peer });
+        else if (op === 'dialog.migration.ready') result = await migration.readyDialog({ account: auth.account, peer, devices: body?.devices });
+        else if (op === 'dialog.migration.status') result = await migration.statusDialog({ account: auth.account, peer });
+        else if (op === 'dialog.migration.abort') result = await migration.abortDialog({ account: auth.account, peer });
+        else if (op === 'dialog.migration.outbox-empty') result = await migration.outboxEmptyDialog({ account: auth.account, peer, device: auth.id });
+        else {
+          result = await migration.rollbackDialog({ account: auth.account, peer });
+          await exportReverseReplay();
+        }
+      } catch (e) {
+        // Честные статические коды отказов вместо общего operation_rejected.
+        if (DIALOG_ERROR_CODES.has(e?.message)) return res.status(409).json({ error: e.message });
+        throw e;
+      }
+      // Guard несёт per-dialog routing-флаг через мост (аддитивная секция).
+      await exportGuard();
+      // Wake-подсказка обоим участникам; авторитет — подписанный status-fetch.
+      const routingSnap = registry.exportSnapshot();
+      for (const account of [auth.account, peer]) {
+        for (const d of routingSnap.accounts[account]?.history.at(-1)?.devices || []) {
+          io.to(room(account, d.id)).emit('dialogRouting', {
+            peer: account === auth.account ? peer : auth.account,
+            state: result.state, revision: result.revision });
+        }
+      }
     } else if (op === 'push.subscribe' || op === 'push.unsubscribe') {
       check(pushEnabled, 'Push is not configured');
       await registry.authorize(auth, await operationDigest(op, body));
@@ -870,6 +933,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     oauthAllowlist: process.env.ALPHA_OAUTH_ALLOWLIST
       ? process.env.ALPHA_OAUTH_ALLOWLIST.split(',').map(v => v.trim()).filter(Boolean) : [],
     bridgeAckFile: process.env.ALPHA_V2_BRIDGE_ACK_FILE || null,
+    reverseReplayFile: process.env.ALPHA_V2_REVERSE_REPLAY_FILE || null,
     // Durable rolling checkpoints for lossless rollback (opt-in).
     checkpointDir: process.env.ALPHA_CHECKPOINT_DIR || null,
     checkpointKeep: Number(process.env.ALPHA_CHECKPOINT_KEEP || 20),

@@ -262,6 +262,27 @@ export class AlphaClient extends EventTarget {
   }
   async fetchHistory(since = 0) { return this.operation('history.fetch', { since }); }
   async ackHistory(ids) { return this.operation('history.ack', { ids }); }
+  // ── Когортная миграция диалога (D1, V2_COHORT_MIGRATION.md) ──────────────
+  // Серверный per-dialog journal ведёт состояние v1_active → migration_pending
+  // → transferring → v2_active; flip только после готовности ВСЕХ устройств
+  // обеих сторон, переноса очередей и пустых outbox. UI-проводка (баннеры,
+  // HOLD-очередь) — отдельная задача; здесь только подписанные операции.
+  // Старт миграции диалога с собеседником (оба аккаунта должны быть enrolled).
+  async dialogMigrationStart(peer) { return this.operation('dialog.migration.start', { peer }); }
+  // Подтверждение готовности ВСЕХ устройств своего аккаунта по каталогу.
+  // По умолчанию берётся полный текущий ростер своей директории.
+  async dialogMigrationReady(peer, devices = null) {
+    const roster = devices || this.state.own.history.at(-1).devices.map(d => d.id);
+    return this.operation('dialog.migration.ready', { peer, devices: roster });
+  }
+  // Проекция состояния диалога для UI (ожидание собеседника/устройств, gate).
+  async dialogMigrationStatus(peer) { return this.operation('dialog.migration.status', { peer }); }
+  // Отмена до переключения: диалог возвращается в v1, journal сохраняется.
+  async dialogMigrationAbort(peer) { return this.operation('dialog.migration.abort', { peer }); }
+  // Откат после переключения (grace 14 дней): reverse-replay v2-сообщений в v1.
+  async dialogMigrationRollback(peer) { return this.operation('dialog.migration.rollback', { peer }); }
+  // Подписанный ack пустого outbox диалога — обязательное условие flip.
+  async dialogMigrationOutboxEmpty(peer) { return this.operation('dialog.migration.outbox-empty', { peer }); }
   // Расшифровка принятого пакета истории локальным ключом устройства.
   async openHistoryPayload(payload) {
     return JSON.parse(await c.decryptLegacy(JSON.parse(payload), this.session.encryption));

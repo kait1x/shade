@@ -19,7 +19,10 @@ export function legacyRoot(pem) {
 export async function createDeviceRegistry({ users, persist, snapshot, clock = Date.now, verifyGoogle, pairingV1 = true }) {
   check(users instanceof Map && typeof persist === 'function');
   // Additive snapshot: never rewrite users, legacy messages, tokens or keys.
-  let state = { format: 2, accounts: {}, queues: {}, receipts: {}, receiptAt: {}, delivery: {}, stickers: {}, retractions: {}, pushSubscriptions: {}, historyStaging: {} };
+  let state = { format: 2, accounts: {}, queues: {}, receipts: {}, receiptAt: {}, delivery: {}, stickers: {}, retractions: {}, pushSubscriptions: {}, historyStaging: {},
+    // Когортная миграция (D1): per-dialog routing journal. Аддитивная секция;
+    // содержимым управляет migration.mjs через сериализованные транзакции.
+    dialogRouting: { format: 1, dialogs: {} } };
   const initialAccounts = [];
   for (const [account, user] of users) {
     check(/^[a-z0-9_]{3,32}$/.test(account), 'Invalid legacy account');
@@ -61,6 +64,8 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     state.pushSubscriptions ||= {};
     state.receiptAt ||= {};
     state.historyStaging ||= {};
+    // Когортный routing journal (D1): аддитивная секция, старые снапшоты без неё.
+    state.dialogRouting ||= { format: 1, dialogs: {} };
     // Legacy-снапшоты без меток времени receipt: консервативно stamps временем
     // загрузки (старые квитанции живут ещё TTL от загрузки, не исчезают сразу).
     for (const key of Object.keys(state.receipts)) {
