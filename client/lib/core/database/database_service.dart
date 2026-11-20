@@ -32,7 +32,7 @@ bool get _isMobile => Platform.isAndroid || Platform.isIOS;
 /// Desktop production storage is unsupported; tests inject their own factory.
 class DatabaseService {
   static const String _dbName = 'shade.db';
-  static const int _dbVersion = 11;
+  static const int _dbVersion = 12;
   static const String _dbKeyStorageKey = 'sqlcipher_db_key';
 
   final FlutterSecureStorage _secureStorage;
@@ -68,6 +68,7 @@ class DatabaseService {
               if (version >= 9) await service._createSchemaV9(db);
             if (version >= 10) await service._createSchemaV10(db);
             if (version >= 11) await service._createSchemaV11(db);
+            if (version >= 12) await service._createSchemaV12(db);
             },
             onUpgrade: service._onUpgrade));
     return service;
@@ -190,6 +191,7 @@ class DatabaseService {
     await _createSchemaV9(db);
     await _createSchemaV10(db);
     await _createSchemaV11(db);
+    await _createSchemaV12(db);
   }
 
   Future<void> _createSchemaV1(Database db) async {
@@ -309,6 +311,57 @@ class DatabaseService {
     if (oldVersion < 9 && newVersion >= 9) await _createSchemaV9(db);
     if (oldVersion < 10 && newVersion >= 10) await _createSchemaV10(db);
     if (oldVersion < 11 && newVersion >= 11) await _createSchemaV11(db);
+    if (oldVersion < 12 && newVersion >= 12) await _createSchemaV12(db);
+  }
+
+  /// Аддитивная v12: pairing второго устройства. Журнал хранит долговечные
+  /// ключи НОВОГО устройства и проверенные артефакты (offer/манифест/
+  /// подтверждение) ДО сетевых вызовов — сбой после серверного коммита не
+  /// теряет идентичность и не создаёт второй манифест (образец enrollLegacy).
+  /// v2_device_keys — приватные ключи подключённого вторичного устройства
+  /// (SQLCipher at-rest, тот же класс защиты, что anchor_key rotation).
+  /// v2_contacts.history — последняя онлайн-проверенная цепочка каталога
+  /// контакта для offline-seal; отсутствие (старые записи) = offline-seal
+  /// недоступен до первой онлайн-верификации.
+  /// Существующие таблицы, ключи и история не переписываются.
+  Future<void> _createSchemaV12(Database db) async {
+    final contactCols = await db.rawQuery('PRAGMA table_info(v2_contacts)');
+    if (!contactCols.any((c) => c['name'] == 'history')) {
+      await db.execute('ALTER TABLE v2_contacts ADD COLUMN history TEXT');
+    }
+    await db.execute('''
+      CREATE TABLE v2_pairing_journal (
+        account            TEXT PRIMARY KEY,
+        role               TEXT NOT NULL,
+        phase              TEXT NOT NULL,
+        device_id          TEXT NOT NULL,
+        encryption_key     TEXT,
+        signing_key        TEXT,
+        encryption_private TEXT,
+        signing_private    TEXT,
+        offer_text         TEXT,
+        offer              TEXT,
+        manifest           TEXT,
+        proofs             TEXT,
+        confirmation_text  TEXT,
+        confirmation       TEXT,
+        root               TEXT,
+        genesis            TEXT,
+        created_at         INTEGER NOT NULL,
+        updated_at         INTEGER NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE v2_device_keys (
+        account            TEXT PRIMARY KEY,
+        device_id          TEXT NOT NULL,
+        encryption_key     TEXT NOT NULL,
+        signing_key        TEXT NOT NULL,
+        encryption_private TEXT NOT NULL,
+        signing_private    TEXT NOT NULL,
+        created_at         INTEGER NOT NULL
+      )
+    ''');
   }
 
   /// Аддитивная v11: RSA-rotation (v1 RSA-2048 → v2 RSA-4096).

@@ -11,6 +11,7 @@ import 'dart:typed_data';
 
 import '../crypto_service.dart';
 import 'crypto.dart';
+import 'pairing.dart';
 import 'payload.dart';
 import 'protocol.dart';
 import 'store.dart';
@@ -29,6 +30,18 @@ class V2ChatRepository {
   String? legacyPrivateKey;
   bool _syncing = false;
 
+  /// Pairing второго устройства: криптография контракта pairing.mjs.
+  final DeviceV2Pairing _pairing;
+
+  /// Сессия НОВОГО устройства (startPairing/completePairing) либо сессия
+  /// подключённого вторичного устройства, восстановленная из долговечных
+  /// ключей. Чат от вторичного устройства проводится отдельно (D2).
+  DeviceV2Session? _pairingSession;
+
+  /// Одноразовый challenge доверенной стороны; живёт только в памяти и
+  /// потребляется успешным подтверждением (украденный экран не переиспользовать).
+  Map<String, dynamic>? _pairingChallenge;
+
   V2ChatRepository({
     required this.transport,
     required this.crypto,
@@ -36,7 +49,21 @@ class V2ChatRepository {
     required this.account,
     required this.root,
     required this.privateKey,
-  }) : v2 = DeviceV2Crypto(crypto);
+  })  : v2 = DeviceV2Crypto(crypto),
+        _pairing = DeviceV2Pairing(crypto);
+
+  /// Репозиторий НОВОГО устройства до enrollment: якорь аккаунта ещё не
+  /// известен — он будет закреплён из проверенного genesis в completePairing.
+  /// Ключи устройства создаются в startPairing и журналируются долговечно.
+  V2ChatRepository.pairing({
+    required this.transport,
+    required this.crypto,
+    required this.store,
+    required this.account,
+  })  : root = '',
+        privateKey = '',
+        v2 = DeviceV2Crypto(crypto),
+        _pairing = DeviceV2Pairing(crypto);
 
   DeviceV2Session get _session => DeviceV2Session(
       account: account,
@@ -62,8 +89,25 @@ class V2ChatRepository {
       final anchor = acc['anchorKey'] as String?;
       if (anchor != null && anchor.isNotEmpty) privateKey = anchor;
       legacyPrivateKey = acc['legacyKey'] as String?;
+      // Вторичное устройство: собственная сессия из долговечных ключей,
+      // сохранённых completePairing (перезапуск не теряет идентичность).
+      if (acc['sessionId'] != 'primary') {
+        final keys = await store.loadDeviceKeys(account);
+        if (keys != null) {
+          _pairingSession = DeviceV2Session(
+              account: account,
+              id: keys['deviceId'] as String,
+              encryptionKey: keys['encryptionKey'] as String,
+              signingKey: keys['signingKey'] as String,
+              encryptionPrivateKey: keys['encryptionPrivate'] as String,
+              signingPrivateKey: keys['signingPrivate'] as String);
+        }
+      }
     }
   }
+
+  /// Сессия подключённого вторичного устройства (null у primary/до pairing).
+  DeviceV2Session? get pairedSession => _pairingSession;
 
   bool get enrolled => _accountCache != null;
 
@@ -375,6 +419,340 @@ class V2ChatRepository {
     };
   }
 
+  // ── Pairing второго устройства (контракт client/web/pairing.mjs) ───────
+  //
+  // Доверенная сторона: pairingChallenge → reviewPairingOffer → approvePairing
+  // (подписанный манифест + challenge-bound proof нового устройства → install).
+  // Новая сторона: startPairing (долговечные ключи + подписанный offer с эхом
+  // challenge) → completePairing (проверка подтверждения → device-сессия →
+  // авторитетный каталог сервера → локальная фиксация).
+  // Crash-safe по образцу enrollLegacy: долговечный журнал v2_pairing_journal
+  // хранит ключи/артефакты ДО сетевых вызовов; повтор после любого сбоя
+  // перенимает серверное состояние, не создавая вторых манифестов/ключей.
+
+  /// Доверенное устройство: свежий одноразовый код (5 минут) для экрана
+  /// подтверждения. Offer нового устройства обязан эхом подтвердить его.
+  Map<String, dynamic> pairingChallenge({int? now}) {
+    final challenge = createPairingChallenge(now: now);
+    _pairingChallenge = challenge;
+    return {'code': challenge['code'], 'expiresAt': challenge['expiresAt']};
+  }
+
+  /// Доверенное устройство: проверка вставленного offer без изменения
+  /// состояния. Возвращает {deviceId, offer, expiresAt} для экрана сверки.
+  Future<Map<String, dynamic>> reviewPairingOffer(String text) async {
+    final challenge = _pairingChallenge;
+    check(challenge != null &&
+        (challenge['expiresAt'] as int) > DateTime.now().millisecondsSinceEpoch,
+        'Код подключения истёк. Сгенерируйте новый и создайте запрос заново.');
+    final offer = decodeOffer(text);
+    final device = await _pairing.verifyPairingOffer(offer,
+        account: account, challenge: challenge!['nonce'] as String);
+    return {'deviceId': device['id'], 'offer': offer, 'expiresAt': offer['expiresAt']};
+  }
+
+  /// Доверенное устройство: явное подтверждение = манифест, подписанный ЭТИМ
+  /// устройством, с новым устройством в ростере; сервер перепроверяет
+  /// challenge-bound proof из offer. Возвращает текст подтверждения для
+  /// нового устройства. Повтор после сбоя перенимает зафиксированный каталог.
+  Future<String> approvePairing(String text) async {
+    final acc = _requireAccount();
+    final genesis = acc['genesis'] as Map<String, dynamic>;
+    final journal = await store.loadPairingJournal(account);
+    // Повтор того же offer после сбоя: манифест уже подписан и проверен —
+    // challenge мог истечь, но подпись offer неизменна и была проверена до журнала.
+    final resume = journal != null &&
+        journal['role'] == 'trusted' &&
+        journal['offerText'] == text;
+    Map<String, dynamic> offer;
+    Map<String, dynamic>? manifest;
+    List<dynamic>? proofs;
+    if (resume) {
+      offer = Map<String, dynamic>.from(journal['offer'] as Map);
+      manifest = Map<String, dynamic>.from(journal['manifest'] as Map);
+      proofs = journal['proofs'] as List;
+    } else {
+      final review = await reviewPairingOffer(text);
+      offer = review['offer'] as Map<String, dynamic>;
+    }
+    final offerDevice = offer['device'] as Map<String, dynamic>;
+    // Свежий каталог сервера: ростер мог измениться другим устройством.
+    final dir = await transport.directory(account,
+        account: account, id: _session.id, privateKey: privateKey);
+    final history = (dir['history'] as List).cast<Map<String, dynamic>>();
+    await v2.verifier.verifyHistory(history, root,
+        acc['checkpoint'] as Map<String, dynamic>, genesis: genesis);
+    final tip = history.last;
+    if (resume &&
+        (tip['revision'] as int) >= (manifest!['revision'] as int) &&
+        (tip['devices'] as List).any((d) => d['id'] == offerDevice['id'])) {
+      // Сервер уже зафиксировал манифест до сбоя клиента — перенимаем.
+      return _finishApproval(acc, genesis, history);
+    }
+    check(!(tip['devices'] as List).any((d) => d['id'] == offerDevice['id']),
+        'Это устройство уже подключено');
+    check((tip['devices'] as List).length < maxDevices,
+        'Достигнут лимит 8 устройств');
+    if (!resume) {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final devices = [
+        ...(tip['devices'] as List).cast<Map<String, dynamic>>(),
+        offerDevice
+      ]..sort((a, b) => (a['id'] as String).compareTo(b['id'] as String));
+      manifest = <String, dynamic>{
+        'account': account,
+        'rootFingerprint': spkiFingerprint(root),
+        'revision': (tip['revision'] as int) + 1,
+        'previous': sha256Hex(manifestText(tip)),
+        'issuedAt': now,
+        'expiresAt': now + maxLeaseMs,
+        'devices': devices,
+        'signer': _session.id,
+        'signature': ''
+      };
+      manifest['signature'] =
+          await crypto.signData(manifestText(manifest), privateKey);
+      // Полная проверка расширенной цепочки ДО отправки (как approveDevices).
+      await v2.verifier.verifyHistory([...history, manifest], root, null,
+          now: now, genesis: genesis);
+      // Только поля, которые потребляет registry: v2 несёт challenge внутри
+      // подписанного proof; v1 сохраняет legacy-форму на переходный период.
+      proofs = [
+        {
+          'id': offerDevice['id'],
+          'nonce': offer['nonce'],
+          'expiresAt': offer['expiresAt'],
+          'signature': offer['signature'],
+          if (offer['v'] == 2) 'challenge': offer['challenge'],
+          if (offer['v'] == 2) 'pairingVersion': 2
+        }
+      ];
+      await store.savePairingJournal(account, {
+        'role': 'trusted',
+        'phase': 'installing',
+        'deviceId': offerDevice['id'],
+        'offerText': text,
+        'offer': offer,
+        'manifest': manifest,
+        'proofs': proofs
+      });
+    }
+    final signedManifest = manifest!;
+    final signedProofs = proofs!;
+    try {
+      await transport.install(signedManifest,
+          proofs: signedProofs, account: account, id: _session.id, privateKey: privateKey);
+    } on AlphaTransportException {
+      // Сервер мог уже зафиксировать манифест (сбой клиента после коммита) —
+      // перенимаем проверенный каталог, а не устанавливаем повторно.
+      final retryDir = await transport.directory(account,
+          account: account, id: _session.id, privateKey: privateKey);
+      final retryHistory =
+          (retryDir['history'] as List).cast<Map<String, dynamic>>();
+      await v2.verifier.verifyHistory(retryHistory, root, null, genesis: genesis);
+      final retryTip = retryHistory.last;
+      if ((retryTip['revision'] as int) < (signedManifest['revision'] as int) ||
+          !(retryTip['devices'] as List).any((d) => d['id'] == offerDevice['id'])) {
+        rethrow;
+      }
+      return _finishApproval(acc, genesis, retryHistory);
+    }
+    final fresh = await transport.directory(account,
+        account: account, id: _session.id, privateKey: privateKey);
+    final freshHistory = (fresh['history'] as List).cast<Map<String, dynamic>>();
+    return _finishApproval(acc, genesis, freshHistory);
+  }
+
+  /// Локальная фиксация подтверждённого каталога + одноразовое подтверждение.
+  Future<String> _finishApproval(Map<String, dynamic> acc,
+      Map<String, dynamic> genesis, List<Map<String, dynamic>> history) async {
+    final verified =
+        await v2.verifier.verifyHistory(history, root, null, genesis: genesis);
+    final checkpoint = {
+      'account': account,
+      'rootFingerprint': verified['rootFingerprint'],
+      'revision': verified['revision'],
+      'digest': verified['digest'],
+      'genesisDigest': sha256Hex(genesisText(genesis))
+    };
+    await store.saveAccount(
+        account: account,
+        root: root,
+        genesis: genesis,
+        history: history,
+        checkpoint: checkpoint,
+        sessionId: acc['sessionId'] as String,
+        recovery: acc['recovery'] as Map<String, dynamic>?,
+        anchorKey: acc['anchorKey'] as String?,
+        legacyKey: acc['legacyKey'] as String?);
+    await store.deletePairingJournal(account);
+    // Одноразовый challenge потреблён: повторное подтверждение тем же кодом невозможно.
+    _pairingChallenge = null;
+    await load();
+    return encodeConfirmation(buildPairingConfirmation(
+        account: account, genesis: genesis, tip: history.last));
+  }
+
+  /// Новое устройство: долговечные ключи + подписанный offer с эхом свежего
+  /// challenge (≤5 минут). Ключи журналируются ДО offer: прерванная попытка
+  /// не теряет идентичность, повтор создаёт свежий offer тем же ключом.
+  /// Возвращает {offerText, offer, deviceId, expiresAt, challengeEcho}.
+  Future<Map<String, dynamic>> startPairing(
+      {required String challengeCode, int? now}) async {
+    // Валидация кода — до любого I/O: честная ошибка ввода сразу.
+    final challenge = decodeChallenge(challengeCode);
+    final existing = await store.loadAccount(account);
+    check(existing == null,
+        'На этом устройстве уже есть ключи аккаунта. Разблокируйте их.');
+    final journal = await store.loadPairingJournal(account);
+    DeviceV2Session session;
+    Map<String, dynamic> entry;
+    if (journal != null &&
+        journal['role'] == 'new' &&
+        journal['encryptionPrivate'] != null) {
+      session = _sessionFromJournal(journal);
+      entry = Map<String, dynamic>.from(journal);
+    } else {
+      session = await _pairing.generateDeviceSession(account);
+      entry = {
+        'role': 'new',
+        'phase': 'keys',
+        'deviceId': session.id,
+        'encryptionKey': session.encryptionKey,
+        'signingKey': session.signingKey,
+        'encryptionPrivate': session.encryptionPrivateKey,
+        'signingPrivate': session.signingPrivateKey
+      };
+      // Приватные ключи — в SQLCipher (at-rest) ДО любых сетевых шагов.
+      await store.savePairingJournal(account, entry);
+    }
+    _pairingSession = session;
+    final offer = await _pairing.buildPairingOffer(
+        account: account,
+        device: session.descriptor,
+        signingPrivateKey: session.signingPrivateKey,
+        challenge: challenge,
+        now: now);
+    final offerText = encodeOffer(offer);
+    entry = {
+      ...entry,
+      'phase': 'offered',
+      'offerText': offerText,
+      'offer': offer
+    };
+    await store.savePairingJournal(account, entry);
+    return {
+      'offerText': offerText,
+      'offer': offer,
+      'deviceId': session.id,
+      'expiresAt': offer['expiresAt'],
+      'challengeEcho': challengeCodeOf(challenge)
+    };
+  }
+
+  DeviceV2Session _sessionFromJournal(Map<String, dynamic> journal) =>
+      DeviceV2Session(
+          account: account,
+          id: journal['deviceId'] as String,
+          encryptionKey: journal['encryptionKey'] as String,
+          signingKey: journal['signingKey'] as String,
+          encryptionPrivateKey: journal['encryptionPrivate'] as String,
+          signingPrivateKey: journal['signingPrivate'] as String);
+
+  /// Новое устройство: завершение подключения. Подтверждение — только
+  /// подсказка маршрута: доверие строится из ПОЛНОГО каталога сервера,
+  /// проверенного против закреплённого genesis после открытия device-сессии.
+  /// Crash-safe: проверенное подтверждение журналируется до сети; повтор
+  /// после любого сбоя продолжает с журнала, ключи не пересоздаются.
+  Future<Map<String, dynamic>> completePairing(String text, {int? now}) async {
+    now ??= DateTime.now().millisecondsSinceEpoch;
+    // Идемпотентность: уже подключено — ничего не пересоздаём.
+    final existing = await store.loadAccount(account);
+    if (existing != null) {
+      final orphan = await store.loadPairingJournal(account);
+      if (orphan != null && orphan['role'] == 'new') {
+        await store.deletePairingJournal(account);
+      }
+      return {
+        'revision': (existing['checkpoint'] as Map)['revision'],
+        'alreadyPaired': true
+      };
+    }
+    final journal = await store.loadPairingJournal(account);
+    check(journal != null &&
+        journal['role'] == 'new' &&
+        journal['encryptionPrivate'] != null,
+        'Ключи устройства не созданы. Сначала создайте запрос подключения.');
+    final session = _sessionFromJournal(journal!);
+    _pairingSession = session;
+    Map<String, dynamic> genesis;
+    String root;
+    String genesisDigest;
+    if (journal['confirmation'] != null && journal['confirmationText'] == text) {
+      // Повтор после сбоя: подтверждение уже проверено и записано до сети.
+      genesis = Map<String, dynamic>.from(journal['genesis'] as Map);
+      root = journal['root'] as String;
+      genesisDigest = sha256Hex(genesisText(genesis));
+    } else {
+      final confirmation = decodeConfirmation(text);
+      final verified = await _pairing.verifyPairingConfirmation(confirmation,
+          account: account, deviceId: session.id, now: now);
+      genesis = verified['genesis'] as Map<String, dynamic>;
+      root = verified['root'] as String;
+      genesisDigest = verified['genesisDigest'] as String;
+      await store.savePairingJournal(account, {
+        ...journal,
+        'phase': 'confirming',
+        'confirmationText': text,
+        'confirmation': confirmation,
+        'root': root,
+        'genesis': genesis
+      });
+    }
+    // Bootstrap device-сессии: relay разрешает sessionless challenge только
+    // для device-session; устройство уже в ростере (install доверенной стороны).
+    await transport.deviceSession(account, session.id, session.signingPrivateKey);
+    // Авторитетный каталог сервера через подписанную операцию directory.
+    final dir = await transport.directory(account,
+        account: account, id: session.id, privateKey: session.signingPrivateKey);
+    final serverGenesis = Map<String, dynamic>.from(dir['genesis'] as Map);
+    final serverRoot = dir['root'] as String;
+    check(serverRoot == root &&
+        sha256Hex(genesisText(serverGenesis)) == genesisDigest,
+        'Каталог сервера не совпадает с подтверждённым аккаунтом');
+    final history = (dir['history'] as List).cast<Map<String, dynamic>>();
+    final own = await v2.verifier
+        .verifyHistory(history, serverRoot, null, now: now, genesis: serverGenesis);
+    check((history.last['devices'] as List).any((d) => d['id'] == session.id),
+        'Устройство отсутствует в каталоге сервера');
+    final checkpoint = {
+      'account': account,
+      'rootFingerprint': own['rootFingerprint'],
+      'revision': own['revision'],
+      'digest': own['digest'],
+      'genesisDigest': own['genesisDigest']
+    };
+    // Ключи устройства фиксируются долговечно до состояния аккаунта; журнал
+    // удаляется последним — сбой между шагами оставляет возобновляемый журнал.
+    await store.saveDeviceKeys(
+        account: account,
+        deviceId: session.id,
+        encryptionKey: session.encryptionKey,
+        signingKey: session.signingKey,
+        encryptionPrivate: session.encryptionPrivateKey,
+        signingPrivate: session.signingPrivateKey);
+    await store.saveAccount(
+        account: account,
+        root: serverRoot,
+        genesis: serverGenesis,
+        history: history,
+        checkpoint: checkpoint,
+        sessionId: session.id);
+    await store.deletePairingJournal(account);
+    await load();
+    return {'account': account, 'revision': own['revision'], 'deviceId': session.id};
+  }
+
   /// Продление lease каталога тем же устройством (без смены ключей).
   Future<void> renewLease({bool force = false}) async {
     final acc = _requireAccount();
@@ -436,7 +814,9 @@ class V2ChatRepository {
           'genesisDigest': digest
         },
         genesisDigest: digest,
-        confirmed: true);
+        confirmed: true,
+        // Долговечная проверенная цепочка: offline-seal нового peer-сообщения.
+        history: dir['history'] as List);
   }
 
   Future<Map<String, dynamic>> _peerDirectory(String peer) async {
@@ -460,7 +840,10 @@ class V2ChatRepository {
         genesis: contact['genesis'] as Map<String, dynamic>,
         checkpoint: checkpoint,
         genesisDigest: contact['genesisDigest'] as String,
-        confirmed: true);
+        confirmed: true,
+        // Обновление ТОЛЬКО после успешной проверки цепочки против
+        // закреплённого checkpoint (fail-closed выше по стеку).
+        history: dir['history'] as List);
     return {
       'root': contact['root'],
       'genesis': contact['genesis'],
@@ -468,6 +851,21 @@ class V2ChatRepository {
       'checkpoint': checkpoint
     };
   }
+
+  /// Последняя онлайн-проверенная цепочка каталога контакта для offline-seal
+  /// (sync.dart). null — контакт не подтверждён либо старая запись без
+  /// history: offline-отправка недоступна до первой онлайн-верификации.
+  /// Подмена chain при онлайн-верификации отклоняется verifyHistory против
+  /// checkpoint, и сохранённая history не обновляется (fail-closed).
+  Future<List<dynamic>?> contactHistory(String peer) async {
+    final contact = await store.loadContact(peer);
+    if (contact == null || contact['confirmed'] != true) return null;
+    return contact['history'] as List<dynamic>?;
+  }
+
+  /// Собственный проверенный каталог: обновляется при каждом успешном
+  /// enrollment/renewLease/approvePairing (saveAccount) — offline self-seal.
+  List<dynamic>? get ownHistory => _accountCache?['history'] as List<dynamic>?;
 
   /// Отправка: seal → долговечный outbox → подписанный send. Retry повторяет
   /// тот же ciphertext/ID; очередь не перешифровывается молча.

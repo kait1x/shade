@@ -95,6 +95,24 @@ class AlphaTransport {
           body: {'account': account, 'nonce': nonce, 'proof': proof})
           as Map<String, dynamic>;
 
+  /// Bootstrap device-сессии подключённого устройства (контракт
+  /// /api/v2/session/device): sessionless challenge сервер разрешает только
+  /// для operationDigest('device-session'); одноразовый nonce привязан к
+  /// account+id+operation, proof подписан ключом устройства из ростера.
+  Future<Map<String, dynamic>> deviceSession(
+      String account, String id, String privateKey) async {
+    final operation = operationDigest('device-session', null);
+    final challenge = await _send('POST', '/api/v2/challenge',
+        body: {'account': account, 'id': id, 'operation': operation})
+        as Map<String, dynamic>;
+    final nonce = challenge['nonce'] as String;
+    final proof =
+        await crypto.signData(requestText(account, id, nonce, operation), privateKey);
+    return await _send('POST', '/api/v2/session/device',
+        body: {'account': account, 'id': id, 'nonce': nonce, 'proof': proof})
+        as Map<String, dynamic>;
+  }
+
   /// Одноразовый nonce для входа через Google ID token (защита от replay):
   /// клиент передаёт его в google_sign_in initialize(nonce:), сервер сверяет
   /// claim nonce в токене и потребляет nonce безвозвратно.

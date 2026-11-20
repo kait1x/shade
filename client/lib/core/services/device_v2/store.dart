@@ -73,6 +73,7 @@ class V2Store {
     required Map<String, dynamic> checkpoint,
     required String genesisDigest,
     required bool confirmed,
+    List<dynamic>? history,
   }) async {
     await (await _db).insert(
         'v2_contacts',
@@ -83,6 +84,9 @@ class V2Store {
           'checkpoint': jsonEncode(checkpoint),
           'genesis_digest': genesisDigest,
           'confirmed': confirmed ? 1 : 0,
+          // Проверенная цепочка каталога для offline-seal (schema v12).
+          // null у старых записей: offline-seal недоступен до онлайн-верификации.
+          'history': history == null ? null : jsonEncode(history),
           'updated_at': DateTime.now().millisecondsSinceEpoch
         },
         conflictAlgorithm: ConflictAlgorithm.replace);
@@ -99,7 +103,10 @@ class V2Store {
       'genesis': jsonDecode(row['genesis'] as String),
       'checkpoint': jsonDecode(row['checkpoint'] as String),
       'genesisDigest': row['genesis_digest'],
-      'confirmed': row['confirmed'] == 1
+      'confirmed': row['confirmed'] == 1,
+      'history': row['history'] == null
+          ? null
+          : jsonDecode(row['history'] as String)
     };
   }
 
@@ -343,4 +350,114 @@ class V2Store {
   Future<void> deleteEnrollmentJournal(String account) async =>
       (await _db).delete('v2_enrollment_journal',
           where: 'account=?', whereArgs: [account]);
+
+  // ── Журнал pairing (v12): crash-safe подключение второго устройства ────
+  //
+  // Образец enrollLegacy: долговечные артефакты пишутся ДО сетевых вызовов.
+  // role 'new': ключи устройства создаются до offer и переживают любой сбой;
+  // проверенное подтверждение журналируется до bootstrap device-сессии.
+  // role 'trusted': подписанный манифест и proofs журналируются до install;
+  // повтор после серверного коммита перенимает каталог, а не плодит манифесты.
+  // Приватные ключи хранятся только в SQLCipher (at-rest), как anchor_key.
+
+  Future<void> savePairingJournal(
+      String account, Map<String, dynamic> entry) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    String? encode(Object? value) => value == null ? null : jsonEncode(value);
+    await (await _db).insert(
+        'v2_pairing_journal',
+        {
+          'account': account,
+          'role': entry['role'],
+          'phase': entry['phase'],
+          'device_id': entry['deviceId'],
+          'encryption_key': entry['encryptionKey'],
+          'signing_key': entry['signingKey'],
+          'encryption_private': entry['encryptionPrivate'],
+          'signing_private': entry['signingPrivate'],
+          'offer_text': entry['offerText'],
+          'offer': encode(entry['offer']),
+          'manifest': encode(entry['manifest']),
+          'proofs': encode(entry['proofs']),
+          'confirmation_text': entry['confirmationText'],
+          'confirmation': encode(entry['confirmation']),
+          'root': entry['root'],
+          'genesis': encode(entry['genesis']),
+          'created_at': entry['createdAt'] ?? now,
+          'updated_at': now
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<Map<String, dynamic>?> loadPairingJournal(String account) async {
+    final rows = await (await _db).query('v2_pairing_journal',
+        where: 'account=?', whereArgs: [account], limit: 1);
+    if (rows.isEmpty) return null;
+    final row = rows.first;
+    Object? decode(Object? value) =>
+        value == null ? null : jsonDecode(value as String);
+    return {
+      'account': row['account'],
+      'role': row['role'],
+      'phase': row['phase'],
+      'deviceId': row['device_id'],
+      'encryptionKey': row['encryption_key'],
+      'signingKey': row['signing_key'],
+      'encryptionPrivate': row['encryption_private'],
+      'signingPrivate': row['signing_private'],
+      'offerText': row['offer_text'],
+      'offer': decode(row['offer']),
+      'manifest': decode(row['manifest']),
+      'proofs': decode(row['proofs']),
+      'confirmationText': row['confirmation_text'],
+      'confirmation': decode(row['confirmation']),
+      'root': row['root'],
+      'genesis': decode(row['genesis']),
+      'createdAt': row['created_at']
+    };
+  }
+
+  Future<void> deletePairingJournal(String account) async =>
+      (await _db).delete('v2_pairing_journal',
+          where: 'account=?', whereArgs: [account]);
+
+  /// Долговечные ключи подключённого вторичного устройства: без них сессия
+  /// устройства не переживёт перезапуск приложения. Пишутся в completePairing
+  /// до фиксации состояния аккаунта; журнал pairing удаляется последним.
+  Future<void> saveDeviceKeys({
+    required String account,
+    required String deviceId,
+    required String encryptionKey,
+    required String signingKey,
+    required String encryptionPrivate,
+    required String signingPrivate,
+  }) async {
+    await (await _db).insert(
+        'v2_device_keys',
+        {
+          'account': account,
+          'device_id': deviceId,
+          'encryption_key': encryptionKey,
+          'signing_key': signingKey,
+          'encryption_private': encryptionPrivate,
+          'signing_private': signingPrivate,
+          'created_at': DateTime.now().millisecondsSinceEpoch
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  Future<Map<String, dynamic>?> loadDeviceKeys(String account) async {
+    final rows = await (await _db).query('v2_device_keys',
+        where: 'account=?', whereArgs: [account], limit: 1);
+    if (rows.isEmpty) return null;
+    final row = rows.first;
+    return {
+      'account': row['account'],
+      'deviceId': row['device_id'],
+      'encryptionKey': row['encryption_key'],
+      'signingKey': row['signing_key'],
+      'encryptionPrivate': row['encryption_private'],
+      'signingPrivate': row['signing_private']
+    };
+  }
 }
