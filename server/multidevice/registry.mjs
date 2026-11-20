@@ -19,7 +19,7 @@ export function legacyRoot(pem) {
 export async function createDeviceRegistry({ users, persist, snapshot, clock = Date.now, verifyGoogle, pairingV1 = true }) {
   check(users instanceof Map && typeof persist === 'function');
   // Additive snapshot: never rewrite users, legacy messages, tokens or keys.
-  let state = { format: 2, accounts: {}, queues: {}, receipts: {}, receiptAt: {}, delivery: {}, stickers: {}, retractions: {}, pushSubscriptions: {} };
+  let state = { format: 2, accounts: {}, queues: {}, receipts: {}, receiptAt: {}, delivery: {}, stickers: {}, retractions: {}, pushSubscriptions: {}, historyStaging: {} };
   const initialAccounts = [];
   for (const [account, user] of users) {
     check(/^[a-z0-9_]{3,32}$/.test(account), 'Invalid legacy account');
@@ -60,6 +60,7 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     state.retractions ||= {};
     state.pushSubscriptions ||= {};
     state.receiptAt ||= {};
+    state.historyStaging ||= {};
     // Legacy-снапшоты без меток времени receipt: консервативно stamps временем
     // загрузки (старые квитанции живут ещё TTL от загрузки, не исчезают сразу).
     for (const key of Object.keys(state.receipts)) {
@@ -172,6 +173,53 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
         return { accepted: true, duplicate: false };
       });
     }),
+    // history.transfer (SYNC_PLAN §5.2): per-device staging E2EE-пакетов истории
+    // между устройствами ОДНОГО аккаунта. Сервер хранит ciphertext как есть и
+    // никогда не расшифровывает; в receipts/очереди сообщений не учитывается.
+    historyTransfer: (body, auth) => serial(() => transaction(async next => {
+      await authenticate(auth, await operationDigest('history.transfer', body));
+      check(body && typeof body.to === 'string' && Array.isArray(body.packages) && body.packages.length <= 50, 'Invalid transfer body');
+      check(active(next, auth.account, auth.id), 'Revoked or unknown sender device');
+      check(active(next, auth.account, body.to), 'Revoked or unknown target device');
+      const key = `${auth.account}:${body.to}`;
+      const staging = next.historyStaging[key] ||= { packages: [], bytes: 0 };
+      check(staging.packages.length < 2000, 'History staging capacity reached');
+      let added = 0;
+      for (const p of body.packages) {
+        check(p && typeof p.id === 'string' && /^[a-f0-9]{64}$/.test(p.id) &&
+          Number.isSafeInteger(p.seq) && p.seq >= 1 &&
+          typeof p.payload === 'string' && p.payload.length <= 87384, 'Invalid history package');
+        if (staging.packages.some(q => q.id === p.id)) continue; // идемпотентный ретрай
+        check(staging.bytes + p.payload.length <= 64 * 1024 * 1024, 'History staging volume reached');
+        staging.packages.push({ id: p.id, seq: p.seq, payload: p.payload });
+        staging.bytes += p.payload.length;
+        added++;
+      }
+      staging.packages.sort((a, b) => a.seq - b.seq);
+      return { added, duplicate: body.packages.length - added };
+    })),
+    historyFetch: (body, auth) => serial(async () => {
+      await authenticate(auth, await operationDigest('history.fetch', body));
+      const since = Number.isSafeInteger(body?.since) ? body.since : 0;
+      const staging = state.historyStaging[`${auth.account}:${auth.id}`];
+      const packages = (staging?.packages || []).filter(p => p.seq > since).slice(0, 50);
+      return { packages: structuredClone(packages), cursor: packages.at(-1)?.seq ?? since };
+    }),
+    historyAck: (body, auth) => serial(() => transaction(async next => {
+      await authenticate(auth, await operationDigest('history.ack', body));
+      check(Array.isArray(body?.ids) && body.ids.length <= 200, 'Invalid ack body');
+      const key = `${auth.account}:${auth.id}`;
+      const staging = next.historyStaging[key];
+      if (!staging) return { acked: 0 };
+      const ids = new Set(body.ids);
+      const kept = staging.packages.filter(p => !ids.has(p.id));
+      const acked = staging.packages.length - kept.length;
+      if (kept.length) {
+        staging.packages = kept;
+        staging.bytes = kept.reduce((s, p) => s + p.payload.length, 0);
+      } else delete next.historyStaging[key];
+      return { acked };
+    })),
     // Pruning старых квитанций: окно дедупа = TTL очередей (7 дней); иначе
     // глобальный cap 10000 исчерпывается навсегда (SYNC_PLAN §5.3).
     pruneReceipts: () => serial(() => transaction(async next => {

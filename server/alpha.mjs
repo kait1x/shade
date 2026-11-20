@@ -664,6 +664,12 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
         const dir = from ? snap.accounts[from]?.history.at(-1) : null;
         if (dir) for (const d of dir.devices) io.to(room(from, d.id)).emit('receipts');
       }
+    } else if (op === 'history.transfer') {
+      result = await registry.historyTransfer(body, auth);
+    } else if (op === 'history.fetch') {
+      result = await registry.historyFetch(body, auth);
+    } else if (op === 'history.ack') {
+      result = await registry.historyAck(body, auth);
     } else if (op === 'retract') {
       result = await registry.retract(body, auth);
       const snap = registry.exportSnapshot();

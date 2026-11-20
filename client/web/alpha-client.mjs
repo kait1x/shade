@@ -236,6 +236,36 @@ export class AlphaClient extends EventTarget {
     await this.save(next);
   }
   async users() { return this.operation('users'); }
+  // history.transfer (SYNC_PLAN §5.2): записи истории шифруются ключом ЦЕЛЕВОГО
+  // устройства (OAEP-конверт), сервер видит только ciphertext и не учитывает
+  // пакеты в receipts/очередях. Id пакета детерминирован (record id + seq) —
+  // повторная отправка идемпотентна; курсор и ack — на принимающей стороне.
+  async transferHistory(toDevice, records, onProgress = () => {}) {
+    const directory = await this.operation('directory', this.session.account);
+    const target = directory.history.at(-1).devices.find(d => d.id === toDevice);
+    check(target, 'Целевое устройство отсутствует в каталоге');
+    let sent = 0;
+    for (let start = 0; start < records.length; start += 50) {
+      const batch = records.slice(start, start + 50);
+      const packages = [];
+      for (let i = 0; i < batch.length; i++) {
+        const seq = start + i + 1;
+        const payload = JSON.stringify(await c.encryptLegacy(JSON.stringify(batch[i]), target.encryptionKey));
+        check(payload.length <= 87384, 'Запись истории слишком велика для переноса');
+        packages.push({ id: await hash(JSON.stringify([batch[i].id ?? batch[i].ref, seq])), seq, payload });
+      }
+      await this.operation('history.transfer', { to: toDevice, packages });
+      sent += batch.length;
+      onProgress(sent, records.length);
+    }
+    return { sent };
+  }
+  async fetchHistory(since = 0) { return this.operation('history.fetch', { since }); }
+  async ackHistory(ids) { return this.operation('history.ack', { ids }); }
+  // Расшифровка принятого пакета истории локальным ключом устройства.
+  async openHistoryPayload(payload) {
+    return JSON.parse(await c.decryptLegacy(JSON.parse(payload), this.session.encryption));
+  }
   // Запрос и проверка директории контакта; сервер обязан вернуть ровно
   // запрошенный аккаунт. Отметка доверия trust — локальное аддитивное поле:
   // сервер её не передаёт, поэтому переносим из закреплённого контакта.
