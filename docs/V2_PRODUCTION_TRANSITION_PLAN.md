@@ -147,23 +147,44 @@ native pairing + enrollment-UI + history.transfer + receipts pruning +
 миграционные тесты. Артефакты: MANIFEST, логи server/flutter/browser-QA,
 чек-лист физического QA, отчёты backup-restore и rollback-репетиции.
 
-## 6.1 Переключение клиентов и applicationId (D3, ожидает решения владельца)
-- PWA: origin зашит в сборку/SW; переключение клиентов = новый релиз оболочки,
-  не DNS-трюки. Beta-PWA остаётся на alpha.shadechat.ru до cutover; prod-PWA
-  (shadechat.ru) поднимается вместе с v2-prod unit и новым Caddy-блоком.
-- Натив: v1 APK (com.example.shade) живёт на v1 endpoint до баннера принудительного
-  обновления и cutoff. v2 APK для закрытой беты — ОТДЕЛЬНЫЙ applicationId
-  (предложение: ru.shadechat.app), чтобы сосуществовать с v1 на одном телефоне
-  и не ломать апгрейды v1; ключ подписи у владельца (key.properties).
-- Открытая бета/Play: com.example.* Play не примет → финальный applicationId
-  утверждается владельцем до публикации; смена id после закрытой беты = потеря
-  апгрейд-пути тестеров (документированный trade-off, решаем на cutover).
-- DNS: TTL 300 с заранее (48 ч до cutover); Caddy-блок shadechat.ru→v2 добавляется
-  только на шаге переключения после caddy validate; sslip и alpha не меняются
-  до retirement; rollback = возврат блока из бэкапа + reload.
-- Баннер в v1-клиенте: «Диалог перенесён в Shade v2 / обновите приложение» при
-  upgrade_required/migration_rolled_back (серверные коды уже есть); тихой
-  отправки в несовместимое окружение нет (gate когортной миграции).
+## 6.1 Переключение клиентов и applicationId (D3, решение владельца 21.11: сохранить production applicationId v1)
+
+Проверено lead лично 21.11 (артефакты + keytool):
+- applicationId v1 = `com.example.shade`; v2 entry (main_native_v2.dart) — тот же
+  модуль → тот же applicationId по умолчанию ✓.
+- Установленные v1 APK (artifacts/ui-ux-2/installed.apk, home-redesign/Shade-Home-A31.apk)
+  подписаны CN=Android Debug, SHA-256 отпечаток
+  D7:D8:87:67:FB:B4:D1:26:9A:9B:CB:5A:22:F7:2B:93:CF:B3:D6:AE:AD:59:65:15:84:53:07:E7:56:3F:9D:49
+  = ~/.android/debug.keystore этой машины ✓.
+- key.properties/release-ключа на машине НЕТ → release-сборка сейчас невозможна;
+  установленная база v1 — debug-подпись.
+- Бесшовное обновление APK требует: same package ✓ + same signing cert ✓ (QA v2
+  собирается тем же debug keystore) + versionCode выше (QA --build-number 300 против
+  базы ≤2) ✓. Данные переживают обновление: SQLCipher-БД в app-data ✓; passphrase
+  SQLCipher и ключи — в flutter_secure_storage/EncryptedSharedPreferences, master-key
+  Android Keystore привязан к UID (=applicationId) ✓ сохраняется при том же package.
+- QA-сборка v2: SAME applicationId + debug cert (бесшовно поверх v1); отдельный
+  applicationId допустим только для изолированных тестов сосуществования (не нужен сейчас).
+- БЛОКЕР открытой беты/Play: нужен release-сертификат; смена сертификата ломает
+  обновление поверх debug-базы. Варианты и последствия:
+  (a) РЕКОМЕНДУЕТСЯ: закрытая бета на debug-cert бесшовно; до открытой беты —
+      release-ключ + in-app экспорт зашифрованного бэкапа (история+ключи) и
+      restore после reinstall release-сборки (задача portable vault export);
+  (b) debug-cert в Play — технически возможно, плохо практически (ключ не защищён),
+      не рекомендуется;
+  (c) release-cert сейчас + uninstall QA — теряет локальную историю A31, не принимается.
+- Подтверждение владельца: на A31 установлен именно debug-signed v1 (проверить на
+  устройстве: adb shell dumpsys package com.example.shade | grep version, либо
+  настройки приложения); если база окажется release-подписи иным ключом — бесшовный
+  путь требует тот же ключ, иначе вариант (a).
+- PWA: origin зашит в сборку/SW; переключение клиентов = новый релиз оболочки.
+  Beta-PWA на alpha.shadechat.ru до cutover; prod-PWA (shadechat.ru) вместе с v2-prod
+  unit и новым Caddy-блоком.
+- DNS: TTL 300 с за 48 ч до cutover; Caddy-блок shadechat.ru→v2 только на шаге
+  переключения после caddy validate; sslip/alpha не меняются до retirement;
+  rollback = возврат блока из бэкапа + reload.
+- Баннер в v1-клиенте при upgrade_required/migration_rolled_back; тихой отправки
+  в несовместимое окружение нет (gate когортной миграции).
 
 ## 7. Что можно делать СЕЙЧАС vs что блокирует переключение
 
