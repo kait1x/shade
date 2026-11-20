@@ -809,6 +809,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   const cleanup = setInterval(() => {
     for (const [sid, s] of sessions) if (s.expiresAt <= Date.now()) sessions.delete(sid);
     const recoveryCutoff = Date.now() - RECOVERY_WINDOW_MS;
+    registry.pruneReceipts().catch(() => {});
     for (const [account, list] of recoveryAttempts) {
       const fresh = list.filter(t => t > recoveryCutoff);
       if (fresh.length) recoveryAttempts.set(account, fresh); else recoveryAttempts.delete(account);

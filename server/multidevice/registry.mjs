@@ -19,7 +19,7 @@ export function legacyRoot(pem) {
 export async function createDeviceRegistry({ users, persist, snapshot, clock = Date.now, verifyGoogle, pairingV1 = true }) {
   check(users instanceof Map && typeof persist === 'function');
   // Additive snapshot: never rewrite users, legacy messages, tokens or keys.
-  let state = { format: 2, accounts: {}, queues: {}, receipts: {}, delivery: {}, stickers: {}, retractions: {}, pushSubscriptions: {} };
+  let state = { format: 2, accounts: {}, queues: {}, receipts: {}, receiptAt: {}, delivery: {}, stickers: {}, retractions: {}, pushSubscriptions: {} };
   const initialAccounts = [];
   for (const [account, user] of users) {
     check(/^[a-z0-9_]{3,32}$/.test(account), 'Invalid legacy account');
@@ -59,6 +59,12 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     state.stickers ||= {};
     state.retractions ||= {};
     state.pushSubscriptions ||= {};
+    state.receiptAt ||= {};
+    // Legacy-снапшоты без меток времени receipt: консервативно stamps временем
+    // загрузки (старые квитанции живут ещё TTL от загрузки, не исчезают сразу).
+    for (const key of Object.keys(state.receipts)) {
+      if (!Object.hasOwn(state.receiptAt, key)) state.receiptAt[key] = clock();
+    }
   }
   const challenges = new Map();
   let tail = Promise.resolve();
@@ -155,14 +161,30 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
           const key = `${e.account}:${e.deviceId}`;
           const queue = next.queues[key] ||= [];
           check(queue.length < 200 && JSON.stringify(queue).length + JSON.stringify(message).length <= 8 * 1024 * 1024, 'Device queue full');
-          queue.push(structuredClone(message));
+          // Повторная доставка того же id не плодит копии в очереди (дедуп на
+          // сервере, независимо от окна receipts).
+          if (!queue.some(q => q.id === message.id)) queue.push(structuredClone(message));
         }
         next.receipts[receiptKey] = digest;
+        next.receiptAt[receiptKey] = clock();
         next.delivery[receiptKey] = { from: message.from, devices: message.envelopes
           .filter(e => e.account === message.to).map(e => ({ account: e.account, id: e.deviceId, acknowledgedAt: null })) };
         return { accepted: true, duplicate: false };
       });
     }),
+    // Pruning старых квитанций: окно дедупа = TTL очередей (7 дней); иначе
+    // глобальный cap 10000 исчерпывается навсегда (SYNC_PLAN §5.3).
+    pruneReceipts: () => serial(() => transaction(async next => {
+      const cutoff = clock() - 7 * 24 * 60 * 60 * 1000;
+      let pruned = 0;
+      for (const [key, at] of Object.entries(next.receiptAt || {})) {
+        if (at <= cutoff) {
+          delete next.receipts[key]; delete next.receiptAt[key]; delete next.delivery[key];
+          pruned++;
+        }
+      }
+      return pruned;
+    })),
     fetch: auth => serial(async () => {
       await authenticate(auth, await operationDigest('fetch'));
       const own = current(state, auth.account);
