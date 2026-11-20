@@ -232,7 +232,11 @@ class _V2SyncService implements V2SyncService {
 
   V2Store get _store => _repository.store;
   AlphaTransport get _transport => _repository.transport;
-  String get _sessionId => _repository.pairedSession?.id ?? 'primary';
+
+  /// Текущая сессия устройства (primary-якорь либо вторичное устройство из
+  /// completePairing/recoverWithBackup): id и ключи для auth/расшифровки.
+  DeviceV2Session get _session => _repository.session;
+  String get _sessionId => _session.id;
 
   @override
   String get account => _repository.account;
@@ -264,9 +268,13 @@ class _V2SyncService implements V2SyncService {
     };
     _transport.startPolling();
     // Socket — только hints; сбой подключения чинится периодическим fetch.
+    // Auth сокета — текущим устройством (не якорем): proof подписывается
+    // ключом сессии, nonce одноразовый при каждом reconnect.
     unawaited(_transport
         .connectSocket(
-            account: account, id: 'primary', privateKey: _repository.privateKey)
+            account: account,
+            id: _sessionId,
+            privateKey: _session.signingPrivateKey)
         .catchError((Object _) {}));
     unawaited(syncNow());
   }
@@ -333,7 +341,8 @@ class _V2SyncService implements V2SyncService {
     return [for (final row in rows) row['ref'] as String];
   }
 
-  /// Расшифровка собственного конверта запечатанного outbox-сообщения.
+  /// Расшифровка собственного конверта запечатанного outbox-сообщения:
+  /// конверт адресован текущему устройству и шифровался его публичным ключом.
   Future<Map<String, dynamic>> _decodeOutboxMessage(
       Map<String, dynamic> message) async {
     final own = (message['envelopes'] as List)
@@ -341,15 +350,19 @@ class _V2SyncService implements V2SyncService {
         .firstWhere((e) =>
             e['account'] == account && e['deviceId'] == _sessionId);
     final plain = await _repository.crypto
-        .decryptData(jsonEncode(own['payload']), _repository.privateKey);
+        .decryptData(jsonEncode(own['payload']), _session.encryptionPrivateKey);
     return decodePayload(plain);
   }
 
-  /// Ключ расшифровки строки истории: bridged v1 — исходный RSA.
+  /// Ключ расшифровки строки истории: bridged v1 — исходный RSA;
+  /// v2 — ключ ТЕКУЩЕГО устройства (у primary совпадает с якорем).
   String _rowKey(String ref) => ref.startsWith('v1:')
       ? (_repository.legacyPrivateKey ?? _repository.privateKey)
-      : _repository.privateKey;
+      : _session.encryptionPrivateKey;
 
+  /// Статус исходящего по подписанной проекции сервера (refreshDelivery
+  /// запрашивает её auth-ом текущего устройства). Агрегация как в web:
+  /// read любого устройства получателя → read, ACK любого → delivered.
   Future<String> _deliveryStatus(String ref) async {
     final devices = await _store.deliveryFor(ref);
     if (devices.any((d) => d['readAt'] != null)) return 'read';
@@ -592,15 +605,9 @@ class _V2SyncService implements V2SyncService {
         payload,
         ownHistory,
         peerHistory,
-        // Сессия как в repository._session: flushOutbox ищет свой конверт
-        // по тому же deviceId.
-        DeviceV2Session(
-            account: account,
-            id: 'primary',
-            encryptionKey: _repository.root,
-            signingKey: _repository.root,
-            encryptionPrivateKey: _repository.privateKey,
-            signingPrivateKey: _repository.privateKey),
+        // Текущая сессия устройства: flushOutbox ищет свой конверт по тому
+        // же deviceId, retry подписывается тем же ключом сессии.
+        _session,
         AccountTrust(
             root: _repository.root,
             genesis: acc['genesis'] as Map<String, dynamic>,
@@ -684,8 +691,11 @@ class _V2SyncService implements V2SyncService {
     if (refresh) {
       // Read-only сверка с сервером: цепочка проверяется от genesis против
       // закреплённого checkpoint; локальное состояние не перезаписывается.
+      // Auth — текущим устройством.
       final dir = await _transport.directory(account,
-          account: account, id: 'primary', privateKey: _repository.privateKey);
+          account: account,
+          id: _sessionId,
+          privateKey: _session.signingPrivateKey);
       await _repository.v2.verifier.verifyHistory(dir['history'] as List,
           dir['root'] as String, acc['checkpoint'] as Map<String, dynamic>,
           genesis: dir['genesis'] as Map<String, dynamic>);

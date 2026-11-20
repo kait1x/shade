@@ -1,7 +1,9 @@
 /// Riverpod-состояние native v2 поверх device-v2 стека.
 ///
-/// Сессия восстанавливается из тех же долговечных ключей, что и существующий
-/// alpha-экран (SharedPreferences + Keystore cookie): подключение и enrollment
+/// Сессия восстанавливается из долговечных ключей: prefs origin/account +
+/// Keystore cookie и зафиксированное v2-состояние (v2_accounts/v2_device_keys).
+/// v2-only устройство (pairing/recovery) поднимается без v1-профиля; primary
+/// использует якорь rotation либо исходный v1-ключ. Подключение и enrollment
 /// переиспользуют проверенный AlphaV2Screen, чат/профиль/устройства работают
 /// через V2SyncService. v1-поток (main_native.dart) не затрагивается.
 library;
@@ -14,6 +16,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:shade/core/services/crypto_service.dart';
 import 'package:shade/core/services/device_v2/crypto.dart';
 import 'package:shade/core/services/device_v2/protocol.dart';
 import 'package:shade/core/services/device_v2/repository.dart';
@@ -76,11 +79,20 @@ class V2SessionNotifier extends StateNotifier<V2SessionState> {
   V2SyncService? get sync => _sync;
   V2ChatRepository? get repository => _repository;
 
-  /// Восстановление сессии из долговечного хранилища (те же ключи, что у
-  /// RealAlphaV2Backend.initialize). Повторный вызов пересоздаёт стек.
+  /// Восстановление сессии из долговечного хранилища. Источник ключей —
+  /// зафиксированное v2-состояние, а не обязательный v1-профиль:
+  ///  - вторичное/recovery-устройство (sessionId != 'primary'): сессия из
+  ///    долговечных ключей v2_device_keys, как их фиксируют completePairing/
+  ///    recoverWithBackup; v1-профиль не требуется (v2-only устройство);
+  ///  - primary после rotation: приватный якорь из v2_accounts.anchor_key;
+  ///  - primary без rotation: исходный v1-ключ (SecureStorage/Keystore);
+  ///  - v2-состояния нет: enrollment требует v1-профиля, без него — честный
+  ///    disconnected.
+  /// Повторный вызов пересоздаёт стек.
   Future<void> restore() async {
     _teardown();
     state = const V2SessionState();
+    AlphaTransport? transport;
     try {
       final prefs = await SharedPreferences.getInstance();
       final origin = prefs.getString('alpha_v2_origin');
@@ -93,23 +105,66 @@ class V2SessionNotifier extends StateNotifier<V2SessionState> {
         return;
       }
       final crypto = _ref.read(cryptoServiceProvider);
-      final publicKey = await crypto.getPublicKey();
-      final privateKey = await crypto.getPrivateKey();
-      if (publicKey == null || privateKey == null) {
-        state = const V2SessionState(
-            status: V2SessionStatus.disconnected,
-            error: 'Сначала создайте профиль Shade на этом устройстве.');
-        return;
-      }
       final database = _ref.read(databaseServiceProvider);
-      final transport = AlphaTransport(origin, crypto);
+      final store = V2Store(database);
+      final acc = await store.loadAccount(account);
+      transport = _ref.read(v2TransportFactoryProvider)(origin, crypto);
       transport.sessionCookie = cookie;
+      final String root;
+      final String privateKey;
+      if (acc != null && acc['sessionId'] != 'primary') {
+        // v2-only устройство: идентичность — долговечные ключи устройства.
+        final keys = await store.loadDeviceKeys(account);
+        if (keys == null) {
+          transport.dispose();
+          transport = null;
+          state = const V2SessionState(
+              status: V2SessionStatus.error,
+              error: 'Ключи устройства v2 не найдены. '
+                  'Подключите устройство заново.');
+          return;
+        }
+        root = acc['root'] as String;
+        // Приватная часть якоря вторичному устройству не нужна: все операции
+        // подписываются ключом сессии (load() поднимет её из v2_device_keys).
+        privateKey = (acc['anchorKey'] as String?) ?? '';
+      } else if (acc != null) {
+        // Primary: якорь rotation из зашифрованного хранилища, иначе v1-ключ.
+        root = acc['root'] as String;
+        final anchor = acc['anchorKey'] as String?;
+        final v1Private = await crypto.getPrivateKey();
+        final effective =
+            (anchor != null && anchor.isNotEmpty) ? anchor : v1Private;
+        if (effective == null || effective.isEmpty) {
+          transport.dispose();
+          transport = null;
+          state = const V2SessionState(
+              status: V2SessionStatus.disconnected,
+              error: 'Сначала создайте профиль Shade на этом устройстве.');
+          return;
+        }
+        privateKey = effective;
+      } else {
+        // Нет v2-состояния: enrollment возможен только с v1-профилем.
+        final publicKey = await crypto.getPublicKey();
+        final v1Private = await crypto.getPrivateKey();
+        if (publicKey == null || v1Private == null) {
+          transport.dispose();
+          transport = null;
+          state = const V2SessionState(
+              status: V2SessionStatus.disconnected,
+              error: 'Сначала создайте профиль Shade на этом устройстве.');
+          return;
+        }
+        root = await publicSpki(publicKey);
+        privateKey = v1Private;
+      }
       final repository = V2ChatRepository(
           transport: transport,
           crypto: crypto,
-          store: V2Store(database),
+          store: store,
           account: account,
-          root: await publicSpki(publicKey),
+          root: root,
           privateKey: privateKey);
       await repository.load();
       _transport = transport;
@@ -124,6 +179,9 @@ class V2SessionNotifier extends StateNotifier<V2SessionState> {
       sync.start();
       state = V2SessionState(status: V2SessionStatus.ready, account: account);
     } catch (error) {
+      // Транспорт, не переданный в стек, освобождается здесь; переданный —
+      // в _teardown (повторный dispose не допускается).
+      if (!identical(transport, _transport)) transport?.dispose();
       _teardown();
       state = V2SessionState(
           status: V2SessionStatus.error,
@@ -151,6 +209,12 @@ class V2SessionNotifier extends StateNotifier<V2SessionState> {
 final v2SessionProvider =
     StateNotifierProvider<V2SessionNotifier, V2SessionState>(
         (ref) => V2SessionNotifier(ref));
+
+/// Фабрика транспорта сессии: production создаёт реальный AlphaTransport;
+/// тесты подменяют scripted-транспортом через override провайдера.
+final v2TransportFactoryProvider =
+    Provider<AlphaTransport Function(String origin, CryptoService crypto)>(
+        (ref) => AlphaTransport.new);
 
 /// Активный sync-сервис (null, пока сессия не готова).
 final v2SyncProvider = Provider<V2SyncService?>((ref) {

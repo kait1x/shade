@@ -37,7 +37,7 @@ class V2ChatRepository {
 
   /// Сессия НОВОГО устройства (startPairing/completePairing) либо сессия
   /// подключённого вторичного устройства, восстановленная из долговечных
-  /// ключей. Чат от вторичного устройства проводится отдельно (D2).
+  /// ключей (load). Все операции sync идут от текущей сессии устройства.
   DeviceV2Session? _pairingSession;
 
   /// Одноразовый challenge доверенной стороны; живёт только в памяти и
@@ -67,13 +67,20 @@ class V2ChatRepository {
         v2 = DeviceV2Crypto(crypto),
         _pairing = DeviceV2Pairing(crypto);
 
-  DeviceV2Session get _session => DeviceV2Session(
+  /// Текущая сессия ЭТОГО устройства: вторичная (completePairing/
+  /// recoverWithBackup, ключи из v2_device_keys) либо primary-якорь.
+  /// Все подписанные операции и расшифровка идут от неё, а не от якоря.
+  DeviceV2Session get session => _pairingSession ?? _primarySession;
+
+  DeviceV2Session get _primarySession => DeviceV2Session(
       account: account,
       id: 'primary',
       encryptionKey: root,
       signingKey: root,
       encryptionPrivateKey: privateKey,
       signingPrivateKey: privateKey);
+
+  DeviceV2Session get _session => session;
 
   Map<String, dynamic>? _accountCache;
 
@@ -479,8 +486,11 @@ class V2ChatRepository {
     }
     final offerDevice = offer['device'] as Map<String, dynamic>;
     // Свежий каталог сервера: ростер мог измениться другим устройством.
+    // Подпись манифеста и auth — текущей сессией доверенного устройства.
     final dir = await transport.directory(account,
-        account: account, id: _session.id, privateKey: privateKey);
+        account: account,
+        id: _session.id,
+        privateKey: _session.signingPrivateKey);
     final history = (dir['history'] as List).cast<Map<String, dynamic>>();
     await v2.verifier.verifyHistory(history, root,
         acc['checkpoint'] as Map<String, dynamic>, genesis: genesis);
@@ -512,8 +522,8 @@ class V2ChatRepository {
         'signer': _session.id,
         'signature': ''
       };
-      manifest['signature'] =
-          await crypto.signData(manifestText(manifest), privateKey);
+      manifest['signature'] = await crypto.signData(
+          manifestText(manifest), _session.signingPrivateKey);
       // Полная проверка расширенной цепочки ДО отправки (как approveDevices).
       await v2.verifier.verifyHistory([...history, manifest], root, null,
           now: now, genesis: genesis);
@@ -543,12 +553,17 @@ class V2ChatRepository {
     final signedProofs = proofs!;
     try {
       await transport.install(signedManifest,
-          proofs: signedProofs, account: account, id: _session.id, privateKey: privateKey);
+          proofs: signedProofs,
+          account: account,
+          id: _session.id,
+          privateKey: _session.signingPrivateKey);
     } on AlphaTransportException {
       // Сервер мог уже зафиксировать манифест (сбой клиента после коммита) —
       // перенимаем проверенный каталог, а не устанавливаем повторно.
       final retryDir = await transport.directory(account,
-          account: account, id: _session.id, privateKey: privateKey);
+          account: account,
+          id: _session.id,
+          privateKey: _session.signingPrivateKey);
       final retryHistory =
           (retryDir['history'] as List).cast<Map<String, dynamic>>();
       await v2.verifier.verifyHistory(retryHistory, root, null, genesis: genesis);
@@ -560,7 +575,9 @@ class V2ChatRepository {
       return _finishApproval(acc, genesis, retryHistory);
     }
     final fresh = await transport.directory(account,
-        account: account, id: _session.id, privateKey: privateKey);
+        account: account,
+        id: _session.id,
+        privateKey: _session.signingPrivateKey);
     final freshHistory = (fresh['history'] as List).cast<Map<String, dynamic>>();
     return _finishApproval(acc, genesis, freshHistory);
   }
@@ -941,13 +958,19 @@ class V2ChatRepository {
     }
   }
 
-  /// Продление lease каталога тем же устройством (без смены ключей).
+  /// Продление lease каталога ТЕКУЩИМ устройством (без смены ключей).
+  /// Подпись и auth — сессией устройства; каталог обновляется только если
+  /// устройство есть в ростере (отозванное устройство lease не продлевает).
   Future<void> renewLease({bool force = false}) async {
     final acc = _requireAccount();
     final history = acc['history'] as List;
     final last = history.last as Map<String, dynamic>;
     final now = DateTime.now().millisecondsSinceEpoch;
     if (!force && (last['expiresAt'] as int) - now > maxLeaseMs ~/ 2) return;
+    final current = session;
+    // Ростер мог измениться другим устройством (revoke/recovery): продлевать
+    // каталог имеет право только устройство, присутствующее в ростере.
+    if (!(last['devices'] as List).any((d) => d['id'] == current.id)) return;
     final manifest = <String, dynamic>{
       'account': account,
       'rootFingerprint': spkiFingerprint(root),
@@ -956,13 +979,15 @@ class V2ChatRepository {
       'issuedAt': now,
       'expiresAt': now + maxLeaseMs,
       'devices': last['devices'],
-      'signer': 'primary',
+      'signer': current.id,
       'signature': ''
     };
     manifest['signature'] =
-        await crypto.signData(manifestText(manifest), privateKey);
+        await crypto.signData(manifestText(manifest), current.signingPrivateKey);
     final result = await transport.install(manifest,
-        account: account, id: 'primary', privateKey: privateKey);
+        account: account,
+        id: current.id,
+        privateKey: current.signingPrivateKey);
     final checkpoint = {
       ...acc['checkpoint'] as Map<String, dynamic>,
       'revision': result['revision'],
@@ -974,8 +999,11 @@ class V2ChatRepository {
         genesis: acc['genesis'] as Map<String, dynamic>,
         history: [...history, manifest],
         checkpoint: checkpoint,
-        sessionId: 'primary',
-        recovery: acc['recovery'] as Map<String, dynamic>?);
+        sessionId: current.id,
+        recovery: acc['recovery'] as Map<String, dynamic>?,
+        // Якорь rotation и legacy-ключ переживают продление lease.
+        anchorKey: acc['anchorKey'] as String?,
+        legacyKey: acc['legacyKey'] as String?);
     await load();
   }
 
@@ -983,7 +1011,9 @@ class V2ChatRepository {
   /// До подтверждения отправка и ACK входящих заблокированы.
   Future<void> confirmContact(String peer, String expectedGenesisDigest) async {
     final dir = await transport.directory(peer,
-        account: account, id: 'primary', privateKey: privateKey);
+        account: account,
+        id: session.id,
+        privateKey: session.signingPrivateKey);
     final peerRoot = dir['root'] as String;
     final genesis = dir['genesis'] as Map<String, dynamic>;
     final digest = await v2.verifier.verifyGenesis(genesis, peerRoot);
@@ -1013,7 +1043,9 @@ class V2ChatRepository {
       throw StateError('Контакт не подтверждён: сверьте genesis digest');
     }
     final dir = await transport.directory(peer,
-        account: account, id: 'primary', privateKey: privateKey);
+        account: account,
+        id: session.id,
+        privateKey: session.signingPrivateKey);
     final verified = await v2.verifier.verifyHistory(dir['history'] as List,
         contact['root'] as String, contact['checkpoint'] as Map<String, dynamic>,
         genesis: contact['genesis'] as Map<String, dynamic>);
@@ -1112,10 +1144,13 @@ class V2ChatRepository {
   }
 
   /// Read-ACK (C5): только свои входящие; идемпотентно на сервере.
+  /// Auth — текущим устройством: readAt фиксируется для него же.
   Future<void> markRead(List<String> refs) async {
     if (refs.isEmpty) return;
     await transport.read(refs,
-        account: account, id: 'primary', privateKey: privateKey);
+        account: account,
+        id: session.id,
+        privateKey: session.signingPrivateKey);
   }
 
   /// Delete-for-all (C3): только исходящие; локально помечается «отозвано».
@@ -1124,7 +1159,9 @@ class V2ChatRepository {
     check(message != null, 'Сообщение не найдено');
     check(message!['direction'] == 'out', 'Отозвать можно только своё сообщение');
     await transport.retract([ref],
-        account: account, id: 'primary', privateKey: privateKey);
+        account: account,
+        id: session.id,
+        privateKey: session.signingPrivateKey);
     await store.markRetracted(ref);
   }
 
@@ -1132,7 +1169,9 @@ class V2ChatRepository {
   /// Возвращает курсор (max deletedAt) для следующего инкрементального запроса.
   Future<int> syncRetractions({int since = 0}) async {
     final tombstones = await transport.retractions(since: since,
-        account: account, id: 'primary', privateKey: privateKey);
+        account: account,
+        id: session.id,
+        privateKey: session.signingPrivateKey);
     var cursor = since;
     for (final t in tombstones.cast<Map<String, dynamic>>()) {
       final ref = t['ref'] as String;
@@ -1148,7 +1187,9 @@ class V2ChatRepository {
     for (final entry in entries) {
       final message = entry['message'] as Map<String, dynamic>;
       try {
-        final result = await transport.send(message, privateKey: privateKey);
+        // Конверт запечатан текущей сессией: proof подписи — её ключом.
+        final result = await transport.send(message,
+            privateKey: session.signingPrivateKey);
         if (result['accepted'] == true) {
           final own = (message['envelopes'] as List)
               .cast<Map<String, dynamic>>()
@@ -1176,7 +1217,9 @@ class V2ChatRepository {
     try {
       final acc = _requireAccount();
       final bundles = await transport.fetch(
-          account: account, id: 'primary', privateKey: privateKey);
+          account: account,
+          id: session.id,
+          privateKey: session.signingPrivateKey);
       var count = 0;
       final refs = <String>[];
       for (final b in bundles) {
@@ -1189,47 +1232,73 @@ class V2ChatRepository {
           refs.add(ref);
           continue;
         }
-        final peer = (m['from'] == account ? m['to'] : m['from']) as String;
+        final from = m['from'] as String;
+        final to = m['to'] as String;
+        final peer = from == account ? to : from;
+        // Доверие выбирается по СТОРОНАМ конверта, а не по классификации
+        // чата: fanout доставляет устройству и копии исходящих, отправленных
+        // ДРУГИМ устройством аккаунта (from == account, to == peer).
+        final ownTrust = AccountTrust(
+            root: root,
+            genesis: acc['genesis'] as Map<String, dynamic>,
+            checkpoint: acc['checkpoint'] as Map<String, dynamic>);
         final AccountTrust senderTrust;
-        if (peer == account) {
-          senderTrust = AccountTrust(
-              root: root,
-              genesis: acc['genesis'] as Map<String, dynamic>,
-              checkpoint: acc['checkpoint'] as Map<String, dynamic>);
+        if (from == account) {
+          senderTrust = ownTrust;
         } else {
-          final contact = await store.loadContact(peer);
+          final contact = await store.loadContact(from);
           if (contact == null || contact['confirmed'] != true) continue;
           senderTrust = AccountTrust(
               root: contact['root'] as String,
               genesis: contact['genesis'] as Map<String, dynamic>,
               checkpoint: contact['checkpoint'] as Map<String, dynamic>);
         }
-        await v2.openMessage(
-            bundle,
-            _session,
-            senderTrust,
-            AccountTrust(
-                root: root,
-                genesis: acc['genesis'] as Map<String, dynamic>,
-                checkpoint: acc['checkpoint'] as Map<String, dynamic>));
+        final AccountTrust recipientTrust;
+        if (to == account) {
+          recipientTrust = ownTrust;
+        } else {
+          final contact = await store.loadContact(to);
+          if (contact == null || contact['confirmed'] != true) continue;
+          recipientTrust = AccountTrust(
+              root: contact['root'] as String,
+              genesis: contact['genesis'] as Map<String, dynamic>,
+              checkpoint: contact['checkpoint'] as Map<String, dynamic>);
+        }
+        await v2.openMessage(bundle, _session, senderTrust, recipientTrust);
         final own = (m['envelopes'] as List)
             .cast<Map<String, dynamic>>()
             .firstWhere((e) =>
                 e['account'] == account && e['deviceId'] == _session.id);
-        final inserted = await store.insertReceived(
-            ref: ref,
-            peer: peer,
-            messageId: m['id'] as String,
-            createdAt: m['createdAt'] as int,
-            payload: own['payload'] as Map<String, dynamic>);
-        if (inserted) {
+        if (from == account) {
+          // Копия исходящего сообщения аккаунта (self-chat либо отправка
+          // вторичным устройством): хранится как своё; ACK обязателен —
+          // это очередь ТЕКУЩЕГО устройства, relay не должен редоставлять.
+          await store.insertSent(
+              ref: ref,
+              peer: peer,
+              messageId: m['id'] as String,
+              createdAt: m['createdAt'] as int,
+              payload: own['payload'] as Map<String, dynamic>);
           count++;
           refs.add(ref);
+        } else {
+          final inserted = await store.insertReceived(
+              ref: ref,
+              peer: peer,
+              messageId: m['id'] as String,
+              createdAt: m['createdAt'] as int,
+              payload: own['payload'] as Map<String, dynamic>);
+          if (inserted) {
+            count++;
+            refs.add(ref);
+          }
         }
       }
       if (refs.isNotEmpty) {
         await transport.ack(refs,
-            account: account, id: 'primary', privateKey: privateKey);
+            account: account,
+            id: session.id,
+            privateKey: session.signingPrivateKey);
         await store.markAcked(refs);
       }
       return count;
@@ -1242,10 +1311,15 @@ class V2ChatRepository {
   /// переведённого аккаунта. Ciphertext {k,d} расшифровывается тем же исходным
   /// RSA (primary); сервер никогда не видит plaintext. Дедупликация по
   /// v1-идентичности (from:id); ACK только после долговечного сохранения.
+  /// Мост primary-only (контракт сервера): вторичное устройство не имеет
+  /// legacy-ключа и не дренирует account-scoped очередь, которую не может
+  /// расшифровать — для него шаг честно пропускается.
   Future<int> syncLegacyInbox() async {
-    if (!enrolled) return 0;
+    if (!enrolled || session.id != 'primary') return 0;
     final envelopes = await transport.legacyInbox(
-        account: account, id: 'primary', privateKey: privateKey);
+        account: account,
+        id: session.id,
+        privateKey: session.signingPrivateKey);
     var count = 0;
     final refs = <String>[];
     final serverRefs = <String>[];
@@ -1271,7 +1345,9 @@ class V2ChatRepository {
       // ACK только после durable локального сохранения (two-phase):
       // серверный тумбстоун переживает crash и дренирует v1-очередь.
       await transport.legacyAck(serverRefs,
-          account: account, id: 'primary', privateKey: privateKey);
+          account: account,
+          id: session.id,
+          privateKey: session.signingPrivateKey);
       await store.markAcked(refs);
     }
     return count;
@@ -1288,8 +1364,12 @@ class V2ChatRepository {
 
   Future<List<Map<String, dynamic>>> refreshDelivery(List<String> refs) async {
     if (refs.isEmpty) return [];
+    // Статус-проекция запрашивается ТЕКУЩИМ устройством: сервер отдаёт
+    // устройства получателя только отправителю (delivery.from == account).
     final status = await transport.status(refs,
-        account: account, id: 'primary', privateKey: privateKey);
+        account: account,
+        id: session.id,
+        privateKey: session.signingPrivateKey);
     for (final ref in refs) {
       final devices = status[ref] as List? ?? [];
       for (final d in devices.cast<Map<String, dynamic>>()) {
@@ -1312,10 +1392,12 @@ class V2ChatRepository {
     final decoded = <Map<String, dynamic>>[];
     for (final row in rows) {
       // Bridged v1-ciphertext зашифрован СТАРЫМ ключом: после rotation он
-      // хранится отдельно и никогда не покидает устройство.
+      // хранится отдельно и никогда не покидает устройство. v2-конверты
+      // адресованы ТЕКУЩЕМУ устройству и расшифровываются его ключом
+      // (у primary это якорь, у вторичного — ключ сессии устройства).
       final decryptionKey = (row['ref'] as String).startsWith('v1:')
           ? (legacyPrivateKey ?? privateKey)
-          : privateKey;
+          : session.encryptionPrivateKey;
       final plain =
           await crypto.decryptData(row['payload'] as String, decryptionKey);
       final decodedRow = {...row, ...decodePayload(plain)};
@@ -1379,7 +1461,9 @@ class V2ChatRepository {
     check(message != null, 'Сообщение не найдено');
     if (message!['direction'] == 'in' && message['acked'] != true) {
       await transport.ack([ref],
-          account: account, id: 'primary', privateKey: privateKey);
+          account: account,
+          id: session.id,
+          privateKey: session.signingPrivateKey);
     }
     await store.removeOutbox(message['messageId'] as String);
     await store.deleteMessage(ref);

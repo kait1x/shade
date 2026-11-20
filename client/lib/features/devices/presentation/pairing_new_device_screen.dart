@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/services/device_v2/protocol.dart';
 import '../../../core/services/device_v2/repository.dart';
@@ -98,6 +100,17 @@ class _PairingNewDeviceScreenState extends State<PairingNewDeviceScreen> {
     });
     try {
       final result = await widget.repository.completePairing(text);
+      if (!mounted) return;
+      // Долговечная фиксация origin/account/cookie: restore() после перезапуска
+      // поднимает вторичное устройство без v1-профиля (как recovery-экран).
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('alpha_v2_origin', widget.repository.transport.origin);
+      await prefs.setString(
+          'alpha_v2_account', result['account'] as String? ?? widget.repository.account);
+      const secure = FlutterSecureStorage(
+          aOptions: AndroidOptions(encryptedSharedPreferences: true));
+      final cookie = widget.repository.transport.sessionCookie;
+      if (cookie != null) await secure.write(key: 'alpha_v2_cookie', value: cookie);
       if (!mounted) return;
       setState(() {
         _stage = _NewStage.done;
