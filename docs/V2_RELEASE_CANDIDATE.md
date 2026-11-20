@@ -19,11 +19,15 @@
   фикс fanout self-copy trust, prefs после completePairing
 - bcb927e кнопка enrollment на экране подключения (код-HEAD RC; дальнейшие
   коммиты — только документация/статусы)
+- 7e03065 backup-скрипт перехода + процедура restore/rollback
+- 1d2bccd D3: переключение клиентов/applicationId/DNS (ожидает решения владельца)
+- 9a96121 когортная миграция диалогами D1 (state-машина, fail-closed gate,
+  CAS flip, HOLD send-gate, rollback reverse-replay grace 14д) + PWA-методы
+- (в работе) v1 per-dialog guard ingestion + reverseReplay ingestion + PWA-баннеры
 
 ## Тесты (прогоны lead лично)
-- server npm test: **130/130** (на 59d163c; server-файлы после не менялись).
-- flutter test: **225/225** на финальном HEAD bcb927e (включая реальные
-  SQLCipher/FFI и реальный alpha.mjs через тестовые мосты).
+- server npm test: **135/135** на 9a96121 (130 + 5 когортных).
+- flutter test: **225/225** на bcb927e; повтор после wiring-коммита — ниже.
 - flutter analyze: **0 errors / 0 warnings** (info — существующий baseline).
 - Browser-QA матрица: edge normal / edge hostile / webkit — все passed=true.
 
@@ -46,6 +50,9 @@
 - MANIFEST.meta: commit **9998fc0987c662b0ffe4c5954973a6e470a57b23**,
   branch v2-production, sw_version **e5246847d6d00a2ee301**, files **133**.
 - Пакет: build/staging-upload (28 MB), secrets check: no secret-like files.
+- ВНИМАНИЕ: промежуточный пак (до когортной миграции). Финальный RC-пак
+  пересобирается на финальном HEAD после wiring-коммитов; manifest обязан
+  совпадать с деплоящимся commit (fail-closed).
 - SHA256 всех файлов runtime — в MANIFEST.sha256 пакета; commit-bound fail-closed
   переключение ожидает точного совпадения commit при паке деплоя.
 - Backup-скрипт перехода: deploy/transition/backup-transition.sh (bash -n OK);
