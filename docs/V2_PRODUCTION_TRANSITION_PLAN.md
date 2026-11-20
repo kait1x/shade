@@ -147,6 +147,24 @@ native pairing + enrollment-UI + history.transfer + receipts pruning +
 миграционные тесты. Артефакты: MANIFEST, логи server/flutter/browser-QA,
 чек-лист физического QA, отчёты backup-restore и rollback-репетиции.
 
+## 6.1 Переключение клиентов и applicationId (D3, ожидает решения владельца)
+- PWA: origin зашит в сборку/SW; переключение клиентов = новый релиз оболочки,
+  не DNS-трюки. Beta-PWA остаётся на alpha.shadechat.ru до cutover; prod-PWA
+  (shadechat.ru) поднимается вместе с v2-prod unit и новым Caddy-блоком.
+- Натив: v1 APK (com.example.shade) живёт на v1 endpoint до баннера принудительного
+  обновления и cutoff. v2 APK для закрытой беты — ОТДЕЛЬНЫЙ applicationId
+  (предложение: ru.shadechat.app), чтобы сосуществовать с v1 на одном телефоне
+  и не ломать апгрейды v1; ключ подписи у владельца (key.properties).
+- Открытая бета/Play: com.example.* Play не примет → финальный applicationId
+  утверждается владельцем до публикации; смена id после закрытой беты = потеря
+  апгрейд-пути тестеров (документированный trade-off, решаем на cutover).
+- DNS: TTL 300 с заранее (48 ч до cutover); Caddy-блок shadechat.ru→v2 добавляется
+  только на шаге переключения после caddy validate; sslip и alpha не меняются
+  до retirement; rollback = возврат блока из бэкапа + reload.
+- Баннер в v1-клиенте: «Диалог перенесён в Shade v2 / обновите приложение» при
+  upgrade_required/migration_rolled_back (серверные коды уже есть); тихой
+  отправки в несовместимое окружение нет (gate когортной миграции).
+
 ## 7. Что можно делать СЕЙЧАС vs что блокирует переключение
 
 СЕЙЧАС (изолированно, без prod): merge recovery ✓; native pairing (Dart);
