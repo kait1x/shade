@@ -1,0 +1,502 @@
+/// Riverpod-состояние native v2 поверх device-v2 стека.
+///
+/// Сессия восстанавливается из тех же долговечных ключей, что и существующий
+/// alpha-экран (SharedPreferences + Keystore cookie): подключение и enrollment
+/// переиспользуют проверенный AlphaV2Screen, чат/профиль/устройства работают
+/// через V2SyncService. v1-поток (main_native.dart) не затрагивается.
+library;
+
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'package:shade/core/services/device_v2/crypto.dart';
+import 'package:shade/core/services/device_v2/protocol.dart';
+import 'package:shade/core/services/device_v2/repository.dart';
+import 'package:shade/core/services/device_v2/store.dart';
+import 'package:shade/core/services/device_v2/sync.dart';
+import 'package:shade/core/services/device_v2/transport.dart';
+import 'package:shade/core/widgets/shade_motion.dart';
+import 'package:shade/features/auth/data/repositories/auth_notifier.dart'
+    show cryptoServiceProvider, databaseServiceProvider;
+
+import 'v2_chat_screen.dart';
+import 'v2_chats_screen.dart';
+import 'v2_connect_screen.dart';
+import 'v2_devices_screen.dart';
+import 'v2_profile_screen.dart';
+
+/// Модели проекций sync-слоя доступны экранам через единый импорт провайдеров.
+export 'package:shade/core/services/device_v2/sync.dart';
+
+// ── Сессия ────────────────────────────────────────────────────────────────
+
+enum V2SessionStatus { loading, disconnected, needsEnrollment, ready, error }
+
+class V2SessionState {
+  final V2SessionStatus status;
+  final String? account;
+  final String? error;
+
+  const V2SessionState({
+    this.status = V2SessionStatus.loading,
+    this.account,
+    this.error,
+  });
+
+  V2SessionState copyWith({
+    V2SessionStatus? status,
+    String? account,
+    String? error,
+    bool clearError = false,
+  }) =>
+      V2SessionState(
+        status: status ?? this.status,
+        account: account ?? this.account,
+        error: clearError ? null : (error ?? this.error),
+      );
+}
+
+/// Владелец транспорта/репозитория/sync: один стек на всё v2-приложение.
+class V2SessionNotifier extends StateNotifier<V2SessionState> {
+  final Ref _ref;
+  AlphaTransport? _transport;
+  V2ChatRepository? _repository;
+  V2SyncService? _sync;
+
+  V2SessionNotifier(this._ref) : super(const V2SessionState()) {
+    unawaited(restore());
+  }
+
+  V2SyncService? get sync => _sync;
+  V2ChatRepository? get repository => _repository;
+
+  /// Восстановление сессии из долговечного хранилища (те же ключи, что у
+  /// RealAlphaV2Backend.initialize). Повторный вызов пересоздаёт стек.
+  Future<void> restore() async {
+    _teardown();
+    state = const V2SessionState();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final origin = prefs.getString('alpha_v2_origin');
+      final account = prefs.getString('alpha_v2_account');
+      const secure = FlutterSecureStorage(
+          aOptions: AndroidOptions(encryptedSharedPreferences: true));
+      final cookie = await secure.read(key: 'alpha_v2_cookie');
+      if (origin == null || account == null || cookie == null) {
+        state = const V2SessionState(status: V2SessionStatus.disconnected);
+        return;
+      }
+      final crypto = _ref.read(cryptoServiceProvider);
+      final publicKey = await crypto.getPublicKey();
+      final privateKey = await crypto.getPrivateKey();
+      if (publicKey == null || privateKey == null) {
+        state = const V2SessionState(
+            status: V2SessionStatus.disconnected,
+            error: 'Сначала создайте профиль Shade на этом устройстве.');
+        return;
+      }
+      final database = _ref.read(databaseServiceProvider);
+      final transport = AlphaTransport(origin, crypto);
+      transport.sessionCookie = cookie;
+      final repository = V2ChatRepository(
+          transport: transport,
+          crypto: crypto,
+          store: V2Store(database),
+          account: account,
+          root: await publicSpki(publicKey),
+          privateKey: privateKey);
+      await repository.load();
+      _transport = transport;
+      _repository = repository;
+      if (!repository.enrolled) {
+        state = V2SessionState(
+            status: V2SessionStatus.needsEnrollment, account: account);
+        return;
+      }
+      final sync = V2SyncService(repository: repository, database: database);
+      _sync = sync;
+      sync.start();
+      state = V2SessionState(status: V2SessionStatus.ready, account: account);
+    } catch (error) {
+      _teardown();
+      state = V2SessionState(
+          status: V2SessionStatus.error,
+          error: 'Не удалось восстановить сессию v2: $error');
+    }
+  }
+
+  Future<void> refresh() => restore();
+
+  void _teardown() {
+    _sync?.dispose();
+    _sync = null;
+    _transport?.dispose();
+    _transport = null;
+    _repository = null;
+  }
+
+  @override
+  void dispose() {
+    _teardown();
+    super.dispose();
+  }
+}
+
+final v2SessionProvider =
+    StateNotifierProvider<V2SessionNotifier, V2SessionState>(
+        (ref) => V2SessionNotifier(ref));
+
+/// Активный sync-сервис (null, пока сессия не готова).
+final v2SyncProvider = Provider<V2SyncService?>((ref) {
+  final session = ref.watch(v2SessionProvider);
+  if (session.status != V2SessionStatus.ready) return null;
+  return ref.read(v2SessionProvider.notifier).sync;
+});
+
+/// Тик инвалидации проекций после каждого sync-цикла.
+final _v2TickProvider = StreamProvider.autoDispose<void>((ref) {
+  final sync = ref.watch(v2SyncProvider);
+  return sync == null ? const Stream<void>.empty() : sync.changes;
+});
+
+// ── Список чатов ──────────────────────────────────────────────────────────
+
+class V2ChatListState {
+  final bool loading;
+  final String? error;
+  final List<V2ChatSummary> chats;
+  final String query;
+  final String selfAccount;
+
+  const V2ChatListState({
+    this.loading = true,
+    this.error,
+    this.chats = const [],
+    this.query = '',
+    this.selfAccount = '',
+  });
+
+  V2ChatListState copyWith({
+    bool? loading,
+    String? error,
+    List<V2ChatSummary>? chats,
+    String? query,
+    String? selfAccount,
+    bool clearError = false,
+  }) =>
+      V2ChatListState(
+        loading: loading ?? this.loading,
+        error: clearError ? null : (error ?? this.error),
+        chats: chats ?? this.chats,
+        query: query ?? this.query,
+        selfAccount: selfAccount ?? this.selfAccount,
+      );
+
+  /// Локальный поиск: по аккаунту и по «Избранному».
+  List<V2ChatSummary> get filtered {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return chats;
+    return chats
+        .where((c) =>
+            c.peer.toLowerCase().contains(q) ||
+            (c.peer == selfAccount && 'избранное'.contains(q)))
+        .toList();
+  }
+}
+
+class V2ChatListNotifier extends StateNotifier<V2ChatListState> {
+  final V2SyncService _sync;
+  StreamSubscription<void>? _sub;
+  bool _disposed = false;
+
+  V2ChatListNotifier(this._sync) : super(const V2ChatListState()) {
+    _sub = _sync.changes.listen((_) => _load());
+    _load();
+  }
+
+  Future<void> _load() async {
+    if (_disposed) return;
+    try {
+      final chats = await _sync.chats();
+      if (_disposed) return;
+      state = state.copyWith(
+          chats: chats,
+          loading: false,
+          clearError: true,
+          selfAccount: _sync.account);
+    } catch (error) {
+      if (_disposed) return;
+      state = state.copyWith(loading: false, error: '$error');
+    }
+  }
+
+  void setQuery(String query) => state = state.copyWith(query: query);
+  Future<void> refresh() => _load();
+
+  /// Сверка genesis digest вне relay — только после явного подтверждения.
+  Future<void> addContact(String peer, String genesisDigest) async {
+    await _sync.confirmContact(peer, genesisDigest);
+    await _load();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _sub?.cancel();
+    super.dispose();
+  }
+}
+
+final v2ChatListProvider =
+    StateNotifierProvider.autoDispose<V2ChatListNotifier, V2ChatListState>(
+        (ref) => V2ChatListNotifier(ref.watch(v2SyncProvider)!));
+
+// ── Диалог ────────────────────────────────────────────────────────────────
+
+class V2ConversationState {
+  final bool loading;
+  final String? error;
+  final List<V2MessageView> messages;
+  final V2MessageView? replyTo;
+  final bool peerTyping;
+  final bool? peerOnline;
+  final bool blocked;
+
+  const V2ConversationState({
+    this.loading = true,
+    this.error,
+    this.messages = const [],
+    this.replyTo,
+    this.peerTyping = false,
+    this.peerOnline,
+    this.blocked = false,
+  });
+
+  V2ConversationState copyWith({
+    bool? loading,
+    String? error,
+    List<V2MessageView>? messages,
+    V2MessageView? replyTo,
+    bool? peerTyping,
+    bool? peerOnline,
+    bool? blocked,
+    bool clearReply = false,
+    bool clearError = false,
+  }) =>
+      V2ConversationState(
+        loading: loading ?? this.loading,
+        error: clearError ? null : (error ?? this.error),
+        messages: messages ?? this.messages,
+        replyTo: clearReply ? null : (replyTo ?? this.replyTo),
+        peerTyping: peerTyping ?? this.peerTyping,
+        peerOnline: peerOnline ?? this.peerOnline,
+        blocked: blocked ?? this.blocked,
+      );
+}
+
+class V2ConversationNotifier extends StateNotifier<V2ConversationState> {
+  final V2SyncService _sync;
+  final String peer;
+  StreamSubscription<void>? _changesSub;
+  StreamSubscription<V2TypingEvent>? _typingSub;
+  StreamSubscription<V2PresenceEvent>? _presenceSub;
+  Timer? _typingTimer;
+  final _readSent = <String>{};
+  bool _disposed = false;
+
+  V2ConversationNotifier(this._sync, this.peer)
+      : super(const V2ConversationState()) {
+    _changesSub = _sync.changes.listen((_) => _load());
+    _typingSub = _sync.typing.listen((event) {
+      if (event.account != peer || _disposed) return;
+      _typingTimer?.cancel();
+      state = state.copyWith(peerTyping: true);
+      final left = event.until - DateTime.now().millisecondsSinceEpoch;
+      _typingTimer = Timer(Duration(milliseconds: left.clamp(0, 10000)), () {
+        if (!_disposed) state = state.copyWith(peerTyping: false);
+      });
+    });
+    _presenceSub = _sync.presence.listen((event) {
+      if (event.account != peer || _disposed) return;
+      state = state.copyWith(peerOnline: event.online);
+    });
+    if (peer != _sync.account) _sync.watch(peer);
+    _load();
+  }
+
+  bool get isSelf => peer == _sync.account;
+
+  Future<void> _load() async {
+    if (_disposed) return;
+    try {
+      final messages = await _sync.conversation(peer);
+      final blocked = await _sync.peerUpgradeBlocked(peer);
+      if (_disposed) return;
+      state = state.copyWith(
+          messages: messages,
+          loading: false,
+          blocked: blocked,
+          clearError: true);
+      _markRead(messages);
+    } catch (error) {
+      if (_disposed) return;
+      state = state.copyWith(loading: false, error: '$error');
+    }
+  }
+
+  /// Read-ACK только для ещё не отмеченных входящих (идемпотентно на сервере).
+  void _markRead(List<V2MessageView> messages) {
+    final refs = [
+      for (final m in messages)
+        if (!m.mine && m.status != 'retracted' && !_readSent.contains(m.ref))
+          m.ref
+    ];
+    if (refs.isEmpty) return;
+    _readSent.addAll(refs);
+    unawaited(_sync.markRead(refs));
+  }
+
+  Future<void> send(String text) async {
+    final reply = state.replyTo;
+    await _sync.send(peer, text,
+        reply: reply == null
+            ? null
+            : {
+                'ref': reply.ref,
+                'from': reply.mine ? _sync.account : peer,
+                'text': reply.isImage ? 'Фото' : reply.text,
+              });
+    if (_disposed) return;
+    state = state.copyWith(clearReply: true);
+  }
+
+  void setReply(V2MessageView message) =>
+      state = state.copyWith(replyTo: message);
+  void clearReply() => state = state.copyWith(clearReply: true);
+
+  Future<void> deleteLocal(String ref) => _sync.deleteLocal(ref);
+  Future<void> retract(String ref) => _sync.retract(ref);
+  void notifyTyping() {
+    if (!isSelf) _sync.sendTyping(peer);
+  }
+
+  Future<void> refresh() => _load();
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _changesSub?.cancel();
+    _typingSub?.cancel();
+    _presenceSub?.cancel();
+    _typingTimer?.cancel();
+    if (!isSelf) _sync.unwatch(peer);
+    super.dispose();
+  }
+}
+
+final v2ConversationProvider = StateNotifierProvider.autoDispose
+    .family<V2ConversationNotifier, V2ConversationState, String>(
+        (ref, peer) => V2ConversationNotifier(ref.watch(v2SyncProvider)!, peer));
+
+// ── Профиль и устройства ──────────────────────────────────────────────────
+
+final v2ProfileProvider = FutureProvider.autoDispose<V2ProfileView?>((ref) {
+  ref.watch(_v2TickProvider);
+  final sync = ref.watch(v2SyncProvider);
+  return sync == null ? Future.value(null) : sync.profile();
+});
+
+/// [refresh] = true сверяет ростер с сервером (read-only verifyHistory).
+final v2DevicesProvider = FutureProvider.autoDispose
+    .family<List<V2DeviceView>, bool>(
+        (ref, refresh) => ref.watch(v2SyncProvider)!.devices(refresh: refresh));
+
+// ── Роутер ────────────────────────────────────────────────────────────────
+
+final v2RouterProvider = Provider<GoRouter>((ref) {
+  final refresh = _V2RouterRefresh(ref);
+  ref.onDispose(refresh.dispose);
+  return GoRouter(
+    initialLocation: '/',
+    refreshListenable: refresh,
+    redirect: (context, state) {
+      final session = ref.read(v2SessionProvider);
+      final path = state.uri.path;
+      switch (session.status) {
+        case V2SessionStatus.loading:
+          return path == '/loading' ? null : '/loading';
+        case V2SessionStatus.disconnected:
+        case V2SessionStatus.needsEnrollment:
+        case V2SessionStatus.error:
+          return path == '/connect' ? null : '/connect';
+        case V2SessionStatus.ready:
+          return (path == '/loading' || path == '/connect') ? '/' : null;
+      }
+    },
+    routes: [
+      GoRoute(
+          path: '/loading',
+          builder: (context, state) => const Scaffold(
+              body: Center(child: ShadeLoadingIndicator()))),
+      GoRoute(
+          path: '/connect',
+          builder: (context, state) => const V2ConnectScreen()),
+      GoRoute(
+          path: '/', builder: (context, state) => const V2ChatsScreen()),
+      GoRoute(
+          path: '/chat/:peer',
+          pageBuilder: (context, state) {
+            final peer = state.pathParameters['peer'] ?? '';
+            if (!accountPattern.hasMatch(peer)) {
+              return _v2Page(
+                  context,
+                  state,
+                  const Scaffold(
+                      body: Center(child: Text('Неверный адрес чата'))));
+            }
+            return _v2Page(context, state, V2ChatScreen(peer: peer));
+          }),
+      GoRoute(
+          path: '/profile',
+          pageBuilder: (context, state) =>
+              _v2Page(context, state, const V2ProfileScreen())),
+      GoRoute(
+          path: '/devices',
+          pageBuilder: (context, state) =>
+              _v2Page(context, state, const V2DevicesScreen())),
+    ],
+  );
+});
+
+/// Переходы в конвенции v1: короткий fade+slide, уважая reduced-motion.
+CustomTransitionPage<void> _v2Page(
+        BuildContext context, GoRouterState state, Widget child) =>
+    CustomTransitionPage<void>(
+        key: state.pageKey,
+        child: child,
+        transitionDuration: ShadeMotion.duration(context, 220),
+        reverseTransitionDuration: ShadeMotion.duration(context, 180),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          if (MediaQuery.disableAnimationsOf(context)) return child;
+          final curve = animation.drive(CurveTween(curve: Curves.easeOutCubic));
+          return FadeTransition(
+              opacity: curve,
+              child: SlideTransition(
+                  position: Tween(
+                          begin: const Offset(.035, 0), end: Offset.zero)
+                      .animate(curve),
+                  child: child));
+        });
+
+class _V2RouterRefresh extends ChangeNotifier {
+  _V2RouterRefresh(Ref ref) {
+    ref.listen<V2SessionState>(v2SessionProvider, (previous, next) {
+      if (previous?.status != next.status) notifyListeners();
+    });
+  }
+}
