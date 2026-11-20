@@ -14,7 +14,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:fast_rsa/fast_rsa.dart';
-import 'package:file_picker/file_picker.dart';
+import 'package:shade/core/services/picked_file.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -98,10 +98,10 @@ void main() {
       };
     }
 
-    PlatformFile packageFile(Map<String, dynamic> pkg,
+    PickedFile packageFile(Map<String, dynamic> pkg,
         {String name = 'shade-recovery-rec_widget.json'}) {
       final bytes = Uint8List.fromList(utf8.encode(jsonEncode(pkg)));
-      return PlatformFile(name: name, size: bytes.length, bytes: bytes);
+      return PickedFile(name: name, size: bytes.length, bytes: bytes);
     }
 
     /// Экран с fake-репозиторием: обработчик управляется тестом.
@@ -110,7 +110,7 @@ void main() {
         {Future<Map<String, dynamic>> Function(
                 Map<String, dynamic> pkg, String phrase,
                 {void Function(String)? onStep})? handler,
-        Future<PlatformFile?> Function()? picker}) async {
+        Future<PickedFile?> Function()? picker}) async {
       SharedPreferences.setMockInitialValues({});
       FlutterSecureStorage.setMockInitialValues({});
       final crypto = CryptoService();
@@ -169,7 +169,7 @@ void main() {
     testWidgets('выбор пакета: имя/аккаунт; битый JSON/форма/размер отсекаются',
         (tester) async {
       phone(tester);
-      PlatformFile? next;
+      PickedFile? next;
       final (repo, _) = await pumpScreen(tester, picker: () async => next);
 
       // Валидный пакет: имя и аккаунт видны ДО ввода фразы.
@@ -180,7 +180,7 @@ void main() {
       expect(find.text('Выбрать другой файл'), findsOneWidget);
 
       // Битый JSON.
-      next = PlatformFile(
+      next = PickedFile(
           name: 'broken.json',
           size: 5,
           bytes: Uint8List.fromList(utf8.encode('{oops')));
@@ -207,7 +207,7 @@ void main() {
           findsOneWidget);
 
       // Размер >1 МБ отсекается до разбора.
-      next = PlatformFile(
+      next = PickedFile(
           name: 'huge.json',
           size: 1024 * 1024 + 1,
           bytes: Uint8List(1024 * 1024 + 1));
@@ -220,7 +220,7 @@ void main() {
     testWidgets('валидация фразы: <24 символов — ошибка без вызова',
         (tester) async {
       phone(tester);
-      PlatformFile? next;
+      PickedFile? next;
       final (repo, _) = await pumpScreen(tester, picker: () async => next);
       next = packageFile(syntheticPackage());
       await tapText(tester, 'Выбрать файл пакета (JSON)');
@@ -233,7 +233,7 @@ void main() {
     testWidgets('успех: шаги, плашка, очистка секретов, фиксация сессии, переход',
         (tester) async {
       phone(tester);
-      PlatformFile? next;
+      PickedFile? next;
       final gate = Completer<void>();
       final (repo, transport) = await pumpScreen(tester, picker: () async => next,
           handler: (pkg, phrase, {onStep}) async {
@@ -310,7 +310,7 @@ void main() {
     testWidgets('ошибки: 429, неверная фраза, чужой пакет, genesis, нет сети',
         (tester) async {
       phone(tester);
-      PlatformFile? next;
+      PickedFile? next;
       Object? failure;
       final (repo, _) = await pumpScreen(tester, picker: () async => next,
           handler: (pkg, phrase, {onStep}) async {

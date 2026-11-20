@@ -24,6 +24,10 @@
 - 9a96121 когортная миграция диалогами D1 (state-машина, fail-closed gate,
   CAS flip, HOLD send-gate, rollback reverse-replay grace 14д) + PWA-методы
 - (в работе) v1 per-dialog guard ingestion + reverseReplay ingestion + PWA-баннеры
+- (lead) file_picker заменён на platform channel MainActivity (ACTION_OPEN_DOCUMENT):
+  Android-часть file_picker 11.0.3 не применяет KGP при AGP>=9 и ломает registrant;
+  builtInKotlin=true конфликтует с KGP остальных плагинов → убрали зависимость,
+  свой тип PickedFile + метод pickRecoveryPackage (лимит 1 МБ читается на нативе).
 
 ## Тесты (прогоны lead лично)
 - server npm test: **135/135** на 9a96121 (130 + 5 когортных).
@@ -59,23 +63,48 @@
   процедура restore/rollback: docs/V2_RESTORE_ROLLBACK.md. Исполнение на VPS —
   только по отдельному «го» владельца.
 
+## Installable QA APK (для физического QA на Galaxy A31)
+- Файл: artifacts/v2-a31-staging/shade-v2-qa-300-debug.apk (локально, в Git не
+  коммитится — бинарь ~190 МБ).
+- SHA-256: D60EA751D7E634723EACFB1FD3CF90CF4BDB387ED502D87D29D7F9DCC6C144E1.
+- package com.example.shade, versionCode 300, versionName 2.1.0-qa; подписан
+  debug-ключом машины (SHA-256 d7d88767fbb4d126… = установленная база v1) →
+  бесшовное обновление поверх v1 с сохранением SQLCipher/Keystore-данных.
+- Установка: adb install -r <apk> (или передача файла на телефон); поверх
+  установленного v1 обновление без удаления данных. Отдельный applicationId
+  не используется (D3: сохранить production id).
+- Origin для QA: https://alpha.shadechat.ru (вводится на экране подключения);
+  staging-сервис не изменяется.
+
 ## Backup/restore и rollback
 - Синтетический restore-тест: PASS (server/test/backup-restore.test.mjs).
-- Restore на копии staging-данных: ОЖИДАЕТ «го» владельца (P5).
-- Репетиция rollback на staging: ОЖИДАЕТ «го» владельца (P5).
-- Внешняя копия бэкапа: подтверждение владельца ожидается.
+- **Изолированный restore-тест на копии staging-данных: PASS (21.11 ~00:48, GO
+  владельца)**: COPY_INTEGRITY_OK (sha256 всех файлов копии = оригинал, кроме
+  writer.lock живого сервиса); восстановленные счётчики: accounts=4,
+  queueEntries=4, receipts=32, dialogs=0, historyStaging=0, sessions=3, format=2;
+  негатив: подменённый байт снапшота → NEG_REJECTED (fail-closed); копия секретов
+  удалена после теста (rm -rf изолированного каталога). Живые сервисы/данные/
+  конфигурация не изменялись; секреты не выводились.
+- Репетиция rollback на staging: ОЖИДАЕТ после защиты (демо-заморозка до 23.11).
+- Внешняя копия бэкапа: подтверждение владельца ожидается (backup-transition.sh готов).
 
 ## GO/NO-GO (план §5)
 - [x] server suite зелёный
 - [x] flutter suite зелёный + analyze 0/0
 - [x] browser-QA матрица PASS оба движка (edge normal+hostile, webkit)
 - [ ] физические QA A31/iPhone подписаны (после защиты + «го»)
-- [ ] restore-тест на реальных данных + репетиция rollback (по «го»)
+- [x] restore-тест на копии staging-данных PASS (изолированно, 21.11) + негатив fail-closed
+- [ ] репетиция rollback на staging (после защиты, по «го»)
 - [x] RC commit-bound: SHA 9998fc0 + MANIFEST (133 файла, sw e5246847d6d00a2ee301)
 - [ ] защита 23.11 проведена
 - [ ] отдельные «го» на prod-шаги
 
 ## Открытые задачи (не блокеры RC, но до открытой беты)
+- D3 РЕШЕНО (21.11): сохранить applicationId v1 (com.example.shade); QA v2 APK —
+  same id + debug-cert этой машины (отпечаток D7:D8:87:… совпадает с установленной
+  базой v1) + versionCode 300 → бесшовное обновление с сохранением SQLCipher/Keystore.
+  До открытой беты: release-ключ + portable vault export/restore (иначе reinstall
+  release-сборки теряет локальную историю debug-базы).
 - Периодический refreshOwn как в web (опережающее обновление каталога другим
   устройством → stale install до refresh; сейчас честный отказ).
 - Переносимый vault-экспорт native→web (после беты, решение lead).

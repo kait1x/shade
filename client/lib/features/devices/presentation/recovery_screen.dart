@@ -3,8 +3,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:file_picker/file_picker.dart';
+import 'package:shade/core/services/picked_file.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:pointycastle/export.dart' show InvalidCipherTextException;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -31,7 +32,7 @@ class NativeRecoveryScreen extends StatefulWidget {
   final V2ChatRepository repository;
 
   /// Инъекция выбора файла для тестов; по умолчанию — системный file picker.
-  final Future<PlatformFile?> Function()? pickPackage;
+  final Future<PickedFile?> Function()? pickPackage;
 
   const NativeRecoveryScreen(
       {super.key, required this.repository, this.pickPackage});
@@ -153,13 +154,18 @@ class _NativeRecoveryScreenState extends State<NativeRecoveryScreen> {
     super.dispose();
   }
 
-  Future<PlatformFile?> _defaultPick() async {
-    final result = await FilePicker.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: ['json'],
-        allowMultiple: false,
-        withData: false);
-    return result?.files.singleOrNull;
+  Future<PickedFile?> _defaultPick() async {
+    // Системный выбор файла через MainActivity (ACTION_OPEN_DOCUMENT):
+    // без стороннего плагина file_picker (его Android-часть несовместима
+    // с AGP 9 / built-in Kotlin конфигурацией проекта).
+    final result = await const MethodChannel('com.shade.app/security')
+        .invokeMethod<Map<dynamic, dynamic>>('pickRecoveryPackage');
+    if (result == null) return null; // отмена выбора — не ошибка
+    final bytes = Uint8List.fromList(List<int>.from(result['bytes'] as List));
+    return PickedFile(
+        name: result['name'] as String? ?? 'recovery-package.json',
+        size: bytes.length,
+        bytes: bytes);
   }
 
   /// Полная проверка формы genesis и полей пакета ДО ввода фразы:

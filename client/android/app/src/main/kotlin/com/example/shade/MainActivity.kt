@@ -2,6 +2,7 @@ package com.example.shade
 
 import android.os.Bundle
 import android.view.WindowManager
+import android.content.Intent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -11,6 +12,8 @@ class MainActivity : FlutterActivity() {
     private val keyWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     private val CHANNEL = "com.shade.app/security"
+    private val PICK_RECOVERY_REQUEST = 4711
+    private var pendingPick: MethodChannel.Result? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,6 +72,26 @@ class MainActivity : FlutterActivity() {
                     excludeFromRecents()
                     result.success(null)
                 }
+                "pickRecoveryPackage" -> {
+                    // Системный выбор JSON-пакета восстановления без сторонних
+                    // плагинов: ACTION_OPEN_DOCUMENT, байты читаются здесь.
+                    if (pendingPick != null) {
+                        result.error("PICK_IN_PROGRESS", "Выбор файла уже открыт", null)
+                    } else {
+                        pendingPick = result
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "application/json"
+                            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
+                        }
+                        try {
+                            startActivityForResult(intent, PICK_RECOVERY_REQUEST)
+                        } catch (e: Exception) {
+                            pendingPick = null
+                            result.error("PICK_UNAVAILABLE", "Нет приложения для выбора файла", null)
+                        }
+                    }
+                }
                 else -> {
                     result.notImplemented()
                 }
@@ -88,5 +111,38 @@ class MainActivity : FlutterActivity() {
     private fun excludeFromRecents() {
         val recentsFlag = 0x00080000
         window.addFlags(recentsFlag)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != PICK_RECOVERY_REQUEST) return
+        val result = pendingPick
+        pendingPick = null
+        if (result == null) return
+        if (resultCode != RESULT_OK || data?.data == null) {
+            result.success(null) // отмена выбора — не ошибка
+            return
+        }
+        val uri = data.data!!
+        try {
+            contentResolver.openInputStream(uri)?.use { stream ->
+                // Лимит пакета 1 МБ; читаем на байт больше, чтобы клиент честно
+                // отклонил превышение, а не обрезал молча.
+                val buffer = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(64 * 1024)
+                var total = 0
+                while (total <= 1024 * 1024) {
+                    val read = stream.read(chunk)
+                    if (read <= 0) break
+                    buffer.write(chunk, 0, read)
+                    total += read
+                }
+                val bytes = buffer.toByteArray()
+                val name = uri.lastPathSegment ?: "recovery-package.json"
+                result.success(mapOf("name" to name, "bytes" to bytes))
+            } ?: result.error("PICK_READ_FAILED", "Не удалось прочитать файл", null)
+        } catch (e: Exception) {
+            result.error("PICK_READ_FAILED", "Не удалось прочитать файл", null)
+        }
     }
 }
