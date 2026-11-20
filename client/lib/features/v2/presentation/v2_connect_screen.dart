@@ -8,6 +8,7 @@ library;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:shade/core/services/device_v2/repository.dart';
@@ -89,6 +90,14 @@ class V2ConnectScreen extends ConsumerWidget {
                           onPressed: () => _openRecovery(context, ref),
                           icon: const Icon(Icons.settings_backup_restore_rounded),
                           label: const Text('Восстановить с recovery-пакетом')),
+                      const SizedBox(height: 12),
+                      // Продакшн-мастер переноса v1→v2: та же личность,
+                      // локальный импорт истории; недоставленное остаётся в v1.
+                      OutlinedButton.icon(
+                          key: const Key('v2-connect-enrollment'),
+                          onPressed: () => context.push('/enrollment'),
+                          icon: const Icon(Icons.move_down_rounded),
+                          label: const Text('Перенести аккаунт из Shade v1')),
                     ]))));
   }
 
