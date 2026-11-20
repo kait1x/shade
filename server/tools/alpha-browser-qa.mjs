@@ -957,6 +957,95 @@ try {
     (window.__shadeClient?.state?.own?.history?.at(-1)?.devices || []).length), 2);
   results.pairing = true;
   console.log('PASS second-device pairing end-to-end: offer, approval, session, delivery');
+  // ── Recovery с recovery-пакетом (PRF_RECOVERY_BLOCKER §3) ─────────────────
+  // Аддитивный сценарий: свежий аккаунт регистрируется реальным PWA-onboarding
+  // (пакет скачивается, фраза записывается с экрана), затем НОВЫЙ контекст без
+  // vault («все устройства утрачены») восстанавливает личность через Flutter-
+  // проекцию: file input пакета (setInputFiles скрытого DOM input), фраза,
+  // успех, честная плашка. Старые устройства retire-ятся, ростер заменяется.
+  await a.page.waitForTimeout(1500); // пауза под общий IP-лимитер после pairing
+  const recSrc = await browser('recovery-src');
+  qaPages.push(['recovery-src', recSrc.page]);
+  f.setLoginSub('synthetic-browser-recovery');
+  await recSrc.page.goto(f.origin);
+  await recSrc.page.getByRole('link',{name:'Продолжить с Google'}).click();
+  await recSrc.page.getByLabel('Ваш никнейм').fill('browser_rec');
+  await recSrc.page.getByRole('button',{name:'Продолжить',exact:true}).click();
+  {
+    // Identity-шаг: headless без platform authenticator → фразовый путь.
+    const phraseButton = recSrc.page.getByRole('button',{name:'Создать ключи на этом устройстве'});
+    const prfButton = recSrc.page.getByRole('button',{name:'Создать ключи и включить защиту'});
+    const first = await Promise.any([phraseButton.waitFor({timeout:30000}), prfButton.waitFor({timeout:30000})]).catch(() => null);
+    if (first === prfButton) {
+      await prfButton.click();
+      if (!await phraseButton.waitFor({timeout:10000}).catch(() => null)) {
+        await recSrc.page.getByRole('button',{name:'Использовать фразу устройства'}).click();
+      }
+    }
+    await phraseButton.waitFor({timeout:30000});
+    await recSrc.page.getByLabel('Фраза устройства ·').fill(phrase);
+    await recSrc.page.getByLabel('Повторите фразу устройства').fill(phrase);
+    await recSrc.page.getByRole('button',{name:'Создать ключи на этом устройстве'}).click();
+  }
+  await recSrc.page.getByRole('heading',{name:'Сохраните recovery-пакет'}).waitFor({timeout:120000});
+  // Пакет и фраза сохраняются ВНЕ браузера — как это делает реальный пользователь.
+  const recoveryPhraseText = (await recSrc.page.locator('.phrase-box code').textContent()).trim();
+  assert.ok(recoveryPhraseText.length >= 24);
+  const pkgPath = path.join(run, 'shade-recovery-browser_rec.json');
+  const recDownload = recSrc.page.waitForEvent('download');
+  await recSrc.page.getByRole('button',{name:'Скачать recovery-пакет'}).click();
+  await (await recDownload).saveAs(pkgPath);
+  const pkgBuffer = await fs.readFile(pkgPath);
+  const pkgParsed = JSON.parse(pkgBuffer.toString('utf8'));
+  assert.equal(pkgParsed.genesis.account, 'browser_rec');
+  assert.ok(pkgParsed.backup.genesisDigest);
+  await recSrc.page.getByRole('checkbox').check();
+  await recSrc.page.getByRole('button',{name:'Завершить регистрацию'}).click();
+  await recSrc.page.getByText('Подключено · E2EE',{exact:true}).waitFor({timeout:120000});
+  const oldRecDeviceId = await recSrc.page.evaluate(async () =>
+    (await (await import('/device_crypto.mjs')).listVaults())[0].id);
+  // Новый контекст: тот же Google-аккаунт, но ключей браузера нет — linkStep.
+  const recNew = await browser('recovery-new');
+  qaPages.push(['recovery-new', recNew.page]);
+  f.setLoginSub('synthetic-browser-recovery');
+  await recNew.page.goto(f.origin);
+  await recNew.page.getByRole('link',{name:'Продолжить с Google'}).click();
+  await linkingScreen(recNew.page);
+  assert.equal(await recNew.page.evaluate(async () =>
+    (await (await import('/device_crypto.mjs')).listVaults()).length), 0);
+  await recNew.page.getByRole('button',{name:'Восстановить с recovery-пакетом'}).click();
+  await recNew.page.getByText('Восстановление аккаунта',{exact:true}).waitFor({timeout:30000});
+  // Честная плашка на форме: старая переписка не восстанавливается.
+  await recNew.page.getByText('Старая переписка недоступна: она шифровалась под утраченные ключи',{exact:false}).first().waitFor();
+  // File input пакета: скрытый DOM input создаётся в жесте пользователя;
+  // setFiles == setInputFiles на этом input (контракт recovery.pick).
+  const recChooserPromise = recNew.page.waitForEvent('filechooser', {timeout:30000});
+  await recNew.page.getByRole('button',{name:'Выбрать файл пакета (JSON)'}).click();
+  const recChooser = await recChooserPromise;
+  await recChooser.setFiles({name:'shade-recovery-browser_rec.json', mimeType:'application/json', buffer:pkgBuffer});
+  await recNew.page.getByText('shade-recovery-browser_rec.json',{exact:false}).waitFor({timeout:30000});
+  await recNew.page.getByText('@browser_rec',{exact:false}).first().waitFor();
+  await recNew.page.getByLabel('Recovery-фраза',{exact:true}).fill(recoveryPhraseText);
+  await recNew.page.getByLabel('Фраза устройства ·').fill(phrase);
+  await recNew.page.getByLabel('Повторите фразу устройства').fill(phrase);
+  await recNew.page.getByRole('button',{name:'Восстановить аккаунт'}).click();
+  await recNew.page.getByText('Личность восстановлена',{exact:true}).waitFor({timeout:120000});
+  await recNew.page.getByText('Восстановлена личность и доступ к новым сообщениям',{exact:false}).waitFor();
+  // Новые ключи: vault отличается от утраченного; ростер заменён сервером.
+  const newRecDeviceId = await recNew.page.evaluate(async () =>
+    (await (await import('/device_crypto.mjs')).listVaults())[0].id);
+  assert.notEqual(newRecDeviceId, oldRecDeviceId);
+  const recSnap = f.registry.exportSnapshot();
+  assert.ok(recSnap.accounts.browser_rec.retired.includes(oldRecDeviceId));
+  const recTip = f.registry.directory('browser_rec').history.at(-1);
+  assert.equal(recTip.signer, 'recovery');
+  assert.deepEqual(recTip.devices.map(d => d.id), [newRecDeviceId]);
+  // Recovery-пакет сохранён в состоянии и продолжает действовать.
+  assert.ok(await recNew.page.evaluate(() => Boolean(window.__shadeClient?.state?.backup?.genesisDigest)));
+  await recNew.page.getByRole('button',{name:'Открыть Shade'}).click();
+  await recNew.page.getByText('Подключено · E2EE',{exact:true}).waitFor({timeout:120000});
+  results.pwaRecovery = true;
+  console.log('PASS PWA recovery: file input package, phrase, roster replacement, honest banner');
   assert.deepEqual(errors,[]); results.pageErrors = errors;
   results.passed = true;
 } catch (error) {

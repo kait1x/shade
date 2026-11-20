@@ -67,6 +67,9 @@ dependencies:
   # Save images to gallery
   gal: ^2.3.0
 
+  # Выбор файла recovery-пакета (JSON) через системный file picker
+  file_picker: ^11.0.3
+
   # Image processing (strip metadata)
   image: ^4.1.3
 

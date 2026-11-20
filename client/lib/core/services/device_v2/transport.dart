@@ -113,6 +113,33 @@ class AlphaTransport {
         as Map<String, dynamic>;
   }
 
+  /// Recovery-сессия (PRF_RECOVERY_BLOCKER §3): одноразовый nonce, привязанный
+  /// к аккаунту — устройство не требуется, ростер мог быть полностью утрачен.
+  Future<String> recoveryChallenge(String account) async =>
+      (await _send('POST', '/api/v2/session/recovery-challenge',
+          body: {'account': account}) as Map<String, dynamic>)['nonce'] as String;
+
+  /// Вход независимым recovery-ключом: proof подписан над requestText с
+  /// operationDigest('recovery-session', genesisDigest) и одноразовым nonce.
+  /// Сервер сверяет принесённый genesis с хранимым и выдаёт короткоживущую
+  /// recovery-cookie (разрешены только directory/install).
+  Future<Map<String, dynamic>> recoverySession(String account,
+          Map<String, dynamic> genesis, String nonce, String proof) async =>
+      await _send('POST', '/api/v2/session/recovery', body: {
+        'account': account,
+        'genesis': genesis,
+        'nonce': nonce,
+        'proof': proof
+      }) as Map<String, dynamic>;
+
+  /// Операция под recovery-сессией: auth несёт только account — device-proof
+  /// не требуется, authority подтверждается recovery-подписью манифеста внутри
+  /// verifyHistory. Сервер разрешает только directory и install.
+  Future<dynamic> recoveryOperation(String op, Object? body,
+          {required String account}) async =>
+      await _send('POST', '/api/v2/operation',
+          body: {'op': op, 'body': body, 'auth': {'account': account}});
+
   /// Одноразовый nonce для входа через Google ID token (защита от replay):
   /// клиент передаёт его в google_sign_in initialize(nonce:), сервер сверяет
   /// claim nonce в токене и потребляет nonce безвозвратно.

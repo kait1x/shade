@@ -22,7 +22,9 @@ class V2ChatRepository {
   final DeviceV2Crypto v2;
   final CryptoService crypto;
   final V2Store store;
-  final String account;
+  // Аккаунт может быть уточнён при восстановлении: репозиторий создаётся до
+  // выбора пакета (account ''), а recoverWithBackup принимает аккаунт genesis.
+  String account;
   String root; // SPKI base64 якоря (primary); после rotation — новый RSA-4096
   String privateKey; // PEM, никогда не покидает устройство
   /// Исходный v1-ключ после rotation: расшифровка старой истории и bridged
@@ -751,6 +753,192 @@ class V2ChatRepository {
     await store.deletePairingJournal(account);
     await load();
     return {'account': account, 'revision': own['revision'], 'deviceId': session.id};
+  }
+
+  // ── Восстановление с recovery-пакетом (PRF_RECOVERY_BLOCKER §3) ─────────────
+  // Все устройства аккаунта утрачены. Старые ключи устройства НЕ возвращаются:
+  // создаётся новая сессия устройства, независимый recovery-ключ из пакета
+  // открывает короткоживущую recovery-сессию, ростер заменяется манифестом
+  // signer:'recovery' только с новым устройством, затем открывается обычная
+  // device-сессия. Последовательность 1:1 с client/web/alpha-client.mjs
+  // recoverWithBackup; криптоформаты и протокол не меняются.
+  //
+  // Локальная фиксация — только после полного успеха на сервере: прерванная
+  // попытка не оставляет ключей без состояния (журнал не ведётся), повтор
+  // создаёт новые ключи. At-rest защита новых ключей — SQLCipher с
+  // device-bound ключом (нативный эквивалент web-vault; локальная разблокировка
+  // не требует фразы, переносимый vault-экспорт для web — отдельная задача).
+
+  bool _recovering = false;
+
+  /// [pkg] — {backup, genesis} из файла recovery-пакета; [recoveryPhrase] —
+  /// фраза, расшифровывающая пакет (≥24 символа, проверяется расшифровкой).
+  /// [onStep] — шаги потока: unlock/keys/session/install/bootstrap.
+  Future<Map<String, dynamic>> recoverWithBackup(
+      Map<String, dynamic> pkg, String recoveryPhrase,
+      {void Function(String step)? onStep}) async {
+    check(!_recovering, 'Восстановление уже выполняется');
+    _recovering = true;
+    try {
+      final step = onStep ?? (_) {};
+      final backupRaw = pkg['backup'];
+      final genesisRaw = pkg['genesis'];
+      check(backupRaw is Map && genesisRaw is Map,
+          'Неверный формат recovery-пакета');
+      final backup = Map<String, dynamic>.from(backupRaw as Map);
+      final genesis = Map<String, dynamic>.from(genesisRaw as Map);
+      final pkgAccount = genesis['account'];
+      check(pkgAccount is String && accountPattern.hasMatch(pkgAccount),
+          'Неверный аккаунт в recovery-пакете');
+      // Репозиторий уже привязан к аккаунту (подключённое устройство) —
+      // чужой пакет не может тихо сменить личность.
+      check(account.isEmpty || account == pkgAccount,
+          'Recovery-пакет принадлежит другому аккаунту');
+      final targetAccount = pkgAccount as String;
+      final rootAnchor =
+          (genesis['firstDevice'] as Map)['signingKey'] as String;
+      final genesisDigest = sha256Hex(genesisText(genesis));
+
+      // 1) Recovery-ключ: фраза расшифровывает пакет, привязанный к точному
+      // genesis (identity + genesisDigest проверяются внутри unlock).
+      step('unlock');
+      final recoveryPem =
+          await v2.unlockRecoveryBackup(backup, recoveryPhrase, genesis);
+
+      // 2) Новый vault с НОВЫМИ ключами устройства (нативный эквивалент
+      // createVault/unlockVault): пара RSA-4096, приватные части только в
+      // памяти до полного успеха. Формат ключей/протокола не менялся.
+      step('keys');
+      final session = await _pairing.generateDeviceSession(targetAccount);
+
+      // 3) Recovery-сессия: challenge → подпись recovery-ключом, привязанная
+      // к genesisDigest, → вход. Сервер сверяет принесённый genesis с хранимым.
+      step('session');
+      final nonce = await transport.recoveryChallenge(targetAccount);
+      final operation = operationDigest('recovery-session', genesisDigest);
+      final proof = await crypto.signData(
+          requestText(targetAccount, 'primary', nonce, operation), recoveryPem);
+      await transport.recoverySession(targetAccount, genesis, nonce, proof);
+
+      // 4) Каталог через op directory: recovery-сессия разрешает только его
+      // и install; auth несёт только account (без device-proof).
+      final directory = await transport.recoveryOperation('directory',
+          targetAccount, account: targetAccount) as Map<String, dynamic>;
+      final dirGenesis =
+          Map<String, dynamic>.from(directory['genesis'] as Map);
+      check(sha256Hex(genesisText(dirGenesis)) == genesisDigest,
+          'Genesis digest mismatch');
+      final history =
+          (directory['history'] as List).cast<Map<String, dynamic>>();
+
+      // 5) Манифест revision+1 signer:'recovery': ростер только из нового
+      // устройства, старые retire-ятся сервером. Possession proof —
+      // challenge-bound v2 с self-generated challenge (как при обычном
+      // pairing, доверенное устройство не нужно).
+      step('install');
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final tip = history.last;
+      final manifest = <String, dynamic>{
+        'account': targetAccount,
+        'rootFingerprint': spkiFingerprint(rootAnchor),
+        'revision': (tip['revision'] as int) + 1,
+        'previous': sha256Hex(manifestText(tip)),
+        'issuedAt': now,
+        'expiresAt': now + maxLeaseMs,
+        'devices': [session.descriptor],
+        'signer': 'recovery',
+        'signature': ''
+      };
+      manifest['signature'] =
+          await crypto.signData(manifestText(manifest), recoveryPem);
+      // Полная проверка расширенной цепочки ДО отправки (как approveDevices).
+      await v2.verifier.verifyHistory([...history, manifest], rootAnchor, null,
+          now: now, genesis: genesis);
+      final offer = await _pairing.buildPairingOffer(
+          account: targetAccount,
+          device: session.descriptor,
+          signingPrivateKey: session.signingPrivateKey,
+          challenge: createPairingChallenge()['nonce'] as String);
+      final offerDevice = offer['device'] as Map<String, dynamic>;
+      final proofs = [
+        {
+          'id': offerDevice['id'],
+          'nonce': offer['nonce'],
+          'expiresAt': offer['expiresAt'],
+          'challenge': offer['challenge'],
+          'pairingVersion': 2,
+          'signature': offer['signature']
+        }
+      ];
+      await transport.recoveryOperation('install',
+          {'manifest': manifest, 'proofs': proofs}, account: targetAccount);
+
+      // 6) Bootstrap обычной device-сессии нового устройства (sessionless
+      // challenge): recovery-cookie заменяется обычной device-cookie.
+      step('bootstrap');
+      await transport.deviceSession(
+          targetAccount, session.id, session.signingPrivateKey);
+
+      // 7) Каталог уже device-сессией: полная проверка цепочки, genesis и
+      // ростера против закреплённого genesis пакета.
+      final fresh = await transport.directory(targetAccount,
+          account: targetAccount,
+          id: session.id,
+          privateKey: session.signingPrivateKey);
+      final serverGenesis =
+          Map<String, dynamic>.from(fresh['genesis'] as Map);
+      final serverRoot = fresh['root'] as String;
+      check(serverRoot == rootAnchor &&
+          sha256Hex(genesisText(serverGenesis)) == genesisDigest,
+          'Каталог сервера не совпадает с recovery-пакетом');
+      final freshHistory =
+          (fresh['history'] as List).cast<Map<String, dynamic>>();
+      final own = await v2.verifier
+          .verifyHistory(freshHistory, serverRoot, null, genesis: serverGenesis);
+      check((freshHistory.last['devices'] as List).any((d) => d['id'] == session.id),
+          'Устройство отсутствует в каталоге сервера');
+
+      // 8) Локальная фиксация после успеха: ключи + состояние. Recovery-пакет
+      // сохраняется в состоянии — он по-прежнему действует (genesis неизменяем).
+      // Порядок как в completePairing: ключи долговечно до состояния аккаунта.
+      final checkpoint = {
+        'account': targetAccount,
+        'rootFingerprint': own['rootFingerprint'],
+        'revision': own['revision'],
+        'digest': own['digest'],
+        'genesisDigest': own['genesisDigest']
+      };
+      await store.saveDeviceKeys(
+          account: targetAccount,
+          deviceId: session.id,
+          encryptionKey: session.encryptionKey,
+          signingKey: session.signingKey,
+          encryptionPrivate: session.encryptionPrivateKey,
+          signingPrivate: session.signingPrivateKey);
+      await store.saveAccount(
+          account: targetAccount,
+          root: serverRoot,
+          genesis: serverGenesis,
+          history: freshHistory,
+          checkpoint: checkpoint,
+          sessionId: session.id,
+          recovery: backup);
+      account = targetAccount;
+      root = serverRoot;
+      // Приватная часть якоря утрачена вместе со старыми устройствами;
+      // legacy-мост v1 после восстановления недоступен (честно).
+      privateKey = '';
+      legacyPrivateKey = null;
+      _pairingSession = session;
+      await load();
+      return {
+        'account': targetAccount,
+        'revision': own['revision'],
+        'deviceId': session.id
+      };
+    } finally {
+      _recovering = false;
+    }
   }
 
   /// Продление lease каталога тем же устройством (без смены ключей).
