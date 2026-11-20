@@ -28,6 +28,7 @@ import 'v2_chat_screen.dart';
 import 'v2_chats_screen.dart';
 import 'v2_connect_screen.dart';
 import 'v2_devices_screen.dart';
+import 'v2_enrollment_route.dart';
 import 'v2_profile_screen.dart';
 
 /// Модели проекций sync-слоя доступны экранам через единый импорт провайдеров.
@@ -433,7 +434,7 @@ final v2RouterProvider = Provider<GoRouter>((ref) {
         case V2SessionStatus.disconnected:
         case V2SessionStatus.needsEnrollment:
         case V2SessionStatus.error:
-          return path == '/connect' ? null : '/connect';
+          return (path == '/connect' || path == '/enrollment') ? null : '/connect';
         case V2SessionStatus.ready:
           return (path == '/loading' || path == '/connect') ? '/' : null;
       }
@@ -469,6 +470,10 @@ final v2RouterProvider = Provider<GoRouter>((ref) {
           path: '/devices',
           pageBuilder: (context, state) =>
               _v2Page(context, state, const V2DevicesScreen())),
+      GoRoute(
+          path: '/enrollment',
+          pageBuilder: (context, state) =>
+              _v2Page(context, state, const V2EnrollmentRoute())),
     ],
   );
 });

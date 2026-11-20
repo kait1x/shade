@@ -8,6 +8,7 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import 'package:shade/core/services/device_v2/repository.dart';
 import 'package:shade/core/theme/shade_theme.dart';
@@ -106,6 +107,13 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
                       onTap: () => _openPairing(
                           (repository) =>
                               PairingApproveScreen(repository: repository))),
+                   const SizedBox(height: 10),
+                   _pairingTile(
+                       icon: Icons.move_down_rounded,
+                       title: 'Перенести аккаунт из Shade v1',
+                       subtitle:
+                           'Та же личность и локальная история; недоставленное останется в очередях v1',
+                       onTap: () => context.push('/enrollment')),
                 ])));
   }
 
