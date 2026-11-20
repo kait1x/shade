@@ -17,16 +17,30 @@
 - d4de08e карта рисков: native at-rest вариант A
 - 07c43aa session-aware sync (secondary/recovered), restore без v1-профиля,
   фикс fanout self-copy trust, prefs после completePairing
-- (pending) кнопка enrollment на экране подключения
+- bcb927e кнопка enrollment на экране подключения (код-HEAD RC; дальнейшие
+  коммиты — только документация/статусы)
 
-## Тесты (заполняется по факту прогонов lead)
-- server npm test: 130/130 (на 59d163c); повтор после всех коммитов — ниже.
-- flutter test: 225/225 (на 07c43aa); повтор после кнопки enrollment — ниже.
-- flutter analyze: 0 errors / 0 warnings (info — существующий baseline).
-- Browser-QA матрица (edge normal / edge hostile / webkit): лог ниже.
+## Тесты (прогоны lead лично)
+- server npm test: **130/130** (на 59d163c; server-файлы после не менялись).
+- flutter test: **225/225** на финальном HEAD bcb927e (включая реальные
+  SQLCipher/FFI и реальный alpha.mjs через тестовые мосты).
+- flutter analyze: **0 errors / 0 warnings** (info — существующий baseline).
+- Browser-QA матрица: edge normal / edge hostile / webkit — все passed=true.
 
-## Browser-QA результаты
-(заполняется после прогона матрицы)
+## Browser-QA результаты (прогон lead 20.11 ~23:40, локальный HTTPS-фикстур)
+- edge normal: passed=true, pageErrors=[] (registration, E2EE+WSS, ACK, offline
+  outbox, media chunks, readAck, typing, profile/avatar/stickers, pairing=true,
+  pwaRecovery=true, push subscribed, responsive, scroll restoration).
+- edge hostile (SHADE_QA_HOSTILE_BLOB=1): passed=true, pageErrors=[] — тот же
+  набор, Android-класс отказа blob-XHR воспроизведён и пережит.
+- webkit: passed=true, pageErrors=[]; push = honest-failure («Push не
+  поддерживается этим браузером») — честное поведение, не дефект.
+- enrollment/transfer в browser-матрице отдельными сценариями не покрыты:
+  покрыты серверными тестами (history-transfer, migration, recovery-session)
+  и нативными тестами на реальном SQLCipher/scripted+real transport;
+  browser-сценарии enrollment/transfer — опциональное дополнение до открытой беты.
+- 429 при быстром прогоне: штатный лимит 300 req/min, клиент восстановился
+  повтором (http429DuringRapidRun 14/23/6) — не дефект.
 
 ## Backup/restore и rollback
 - Синтетический restore-тест: PASS (server/test/backup-restore.test.mjs).
@@ -37,7 +51,7 @@
 ## GO/NO-GO (план §5)
 - [x] server suite зелёный
 - [x] flutter suite зелёный + analyze 0/0
-- [ ] browser-QA матрица PASS оба движка (в прогоне)
+- [x] browser-QA матрица PASS оба движка (edge normal+hostile, webkit)
 - [ ] физические QA A31/iPhone подписаны (после защиты + «го»)
 - [ ] restore-тест на реальных данных + репетиция rollback (по «го»)
 - [x] RC commit-bound (SHA выше; manifest собирается при паке)
