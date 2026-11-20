@@ -48,8 +48,75 @@ const errors = { google_login_required: 'Сессия Google истекла. В�
   login_required: 'Сессия истекла. Войдите снова; ключи сохранены.',
   operation_rejected: 'Операция отклонена. Проверьте сеть, срок каталога и доступ устройства. Сообщение не отмечено доставленным.',
   account_requires_linking: 'Аккаунт уже существует. Нужна привязка доверенным устройством; новые ключи не назначены.',
+  // D1: честные HOLD-тексты когортной миграции. Сообщение остаётся в outbox
+  // со статусом blocked; тихой отправки в несовместимое окружение нет.
+  migration_pending: 'Миграция диалога в Shade v2 не завершена. Сообщение сохранено в очереди и будет отправлено после переключения.',
+  migration_rolled_back: 'Диалог возвращён в Shade v1. Сообщение сохранено в очереди; отправка из этого приложения (v2) недоступна — используйте Shade v1.',
+  peer_upgrade_required: 'Собеседник ещё не перешёл на Shade v2. Сообщение сохранено в очереди и будет доставлено после его перехода.',
   // Ответ реестра на запрос директории несуществующего аккаунта.
   'Unknown account': 'Никнейм не найден' };
+// ── Когортная миграция диалога (D1, V2_COHORT_MIGRATION.md) ──────────────────
+// Проекция per-dialog состояния и честные тексты. Кнопок управления миграцией
+// в UI нет: управление через отдельные методы/экран позже; здесь только состояние.
+const MIGRATION_HOLD_CODES = new Set(['migration_pending', 'migration_rolled_back']);
+// peer → последняя подписанная проекция dialog.migration.status; {state:null}
+// = диалог без journal (обычный чат, баннера нет).
+const dialogRoutingCache = new Map();
+const dialogRoutingFetchAt = new Map();
+const dialogRoutingBusy = new Set();
+// Баннер шапки чата по состоянию диалога. v1_active без rollback (abort или
+// обычный диалог) → баннера нет: обычный чат не меняется.
+export function migrationBannerText(record) {
+  if (!record) return null;
+  switch (record.state) {
+    case 'migration_pending': return 'Ожидание собеседника/устройств…';
+    case 'transferring': return 'Диалог переносится…';
+    case 'v2_active': return 'Диалог в Shade v2';
+    case 'v1_active': return record.rolledBackAt ? 'Диалог возвращён в v1' : null;
+    default: return null;
+  }
+}
+// Чистая проекция для render: баннер замещает connection/connected только
+// онлайн и без реальных ошибок (сеть/сессия честнее баннера). null = прежнее
+// поведение connection/connected без изменений.
+export function migrationBannerProjection({ peer, account, routing, lastError, online }) {
+  if (!peer || peer === account || !online) return null;
+  const banner = migrationBannerText(routing);
+  if (!banner) return null;
+  if (lastError && !MIGRATION_HOLD_CODES.has(lastError)) return null;
+  return { connection: banner, connected: false };
+}
+// Подписанный fetch состояния (авторитет — серверный journal, не socket-подсказка).
+// Троттлинг 15 с — ритм sync; force при открытии чата и wake-подсказке сервера.
+async function refreshDialogRouting(peer, force = false) {
+  if (!peer || peer === client.session?.account || !client.state?.registered) return;
+  if (dialogRoutingBusy.has(peer)) return;
+  const now = Date.now();
+  if (!force && now - (dialogRoutingFetchAt.get(peer) || 0) < 15000) return;
+  dialogRoutingFetchAt.set(peer, now);
+  dialogRoutingBusy.add(peer);
+  try {
+    const status = await client.dialogMigrationStatus(peer);
+    dialogRoutingCache.set(peer, { state: status.state, revision: status.revision,
+      rolledBackAt: status.rolledBackAt || null });
+  } catch (error) {
+    // dialog_not_found = диалог без journal (обычный чат). Сетевой сбой:
+    // сохраняем последнее известное состояние, баннер не выдумываем.
+    if (error.message === 'dialog_not_found') dialogRoutingCache.set(peer, { state: null });
+    else return;
+  } finally { dialogRoutingBusy.delete(peer); }
+  render();
+}
+// Wake-подсказка сервера dialogRouting (уходит устройствам обоих участников):
+// немедленный подписанный fetch. Socket пересоздаётся в start() — хук идемпотентен.
+function hookDialogRouting() {
+  const socket = client.socket;
+  if (!socket || socket.__shadeRoutingHook) return;
+  socket.__shadeRoutingHook = true;
+  socket.on('dialogRouting', data => {
+    if (typeof data?.peer === 'string') refreshDialogRouting(data.peer, true);
+  });
+}
 function action(work) {
   actionTail = actionTail.then(async () => {
     const buttons = [...root.querySelectorAll('button[type=submit]')]; buttons.forEach(b => b.disabled = true);
@@ -776,12 +843,19 @@ function sessionOverlay(show) {
 }
 function render() {
   if (!ready || !window.shadeReceive) return;
+  hookDialogRouting();
   const accounts = [...new Set([...users.map(u => u.account), ...Object.keys(client.state.contacts),
     ...client.state.messages.flatMap(m => [m.from,m.to]), ...(client.unverified || [])])]
     .filter(a => a !== client.session.account);
-  const connection = !navigator.onLine ? 'Нет сети · история сохранена' : client.lastError ?
+  // D1: баннер миграции открытого диалога проецируется в существующий канал
+  // connection/connected (Flutter-шапка чата показывает его без изменений UI).
+  const migrationView = migrationBannerProjection({ peer: selected, account: client.session.account,
+    routing: dialogRoutingCache.get(selected), lastError: client.lastError, online: navigator.onLine });
+  const connection = migrationView ? migrationView.connection :
+    !navigator.onLine ? 'Нет сети · история сохранена' : client.lastError ?
     (errors[client.lastError] || 'Ошибка синхронизации · повтор через 15 секунд') :
     client.connected ? 'Подключено · E2EE' : 'Переподключение…';
+  const connected = migrationView ? false : client.connected && navigator.onLine && !client.lastError;
   sessionOverlay(client.lastError === 'google_login_required' || client.lastError === 'login_required');
   window.__lastProjection = { messages: (client.state.messages || []).length,
     firstMessage: client.state.messages?.[0] || null,
@@ -797,7 +871,11 @@ function render() {
     return { name: cached.name, avatarDigest: cached.digest, frame: cached.frame };
   };
   window.shadeReceive(JSON.stringify({
-    account: client.session.account, selected, connection, connected: client.connected && navigator.onLine && !client.lastError,
+    account: client.session.account, selected, connection, connected,
+    // D1: аддитивная проекция per-dialog routing (подписанный fetch журнала).
+    dialogRouting: Object.fromEntries([...dialogRoutingCache]
+      .filter(([, record]) => record.state)
+      .map(([peer, record]) => [peer, { state: record.state, revision: record.revision, rolledBackAt: record.rolledBackAt }])),
     peers: [
       { account: client.session.account, favorites: true, pinned: true,
         name: 'Избранное', avatarDigest: client.state.profile?.avatarDigest || '' },
@@ -827,6 +905,9 @@ function render() {
         name: id === client.session.id ? thisDeviceName() : undefined})),
     positions: ui.positions, readUntil: ui.readUntil,
   }));
+  // Периодический подписанный fetch открытого диалога: wake-подсказки могут
+  // потеряться, авторитет — серверный journal (троттлинг внутри refresh).
+  if (selected && selected !== client.session.account) refreshDialogRouting(selected);
   announceIncoming();
 }
 // Own key presentation data (public material only): the identicon seed is
@@ -900,6 +981,7 @@ async function openApp() {
         case 'select':
           selected = data.account; ui.selected = selected; saveUi(); render();
           client.watchPeer(selected, true);
+          refreshDialogRouting(selected, true);
           client.loadProfile().catch(() => {});
           if (!contact(selected) && selected !== client.session.account) verifyContact(selected); break;
         case 'find': {
@@ -910,6 +992,7 @@ async function openApp() {
           if (account !== client.session.account) await client.tofuContact(account);
           selected = account; ui.selected = selected; saveUi(); render();
           client.watchPeer(selected, true);
+          refreshDialogRouting(selected, true);
           client.loadProfile().catch(() => {});
           client.sync().catch(() => {});
           break;
@@ -939,8 +1022,14 @@ async function openApp() {
           } break;
         }
         case 'position': ui.positions[data.account] = {offset:Math.max(0,data.offset),bottom:!!data.bottom}; saveUi(); break;
-        case 'send': await client.send(data.account, data.text, data.reply || null); client.sync().catch(e => notice(errors[e.message] || e.message)); break;
-        case 'sendMedia': await client.sendMedia(data.account, data.image, data.mime || 'image/jpeg'); client.sync().catch(e => notice(errors[e.message] || e.message)); break;
+        case 'send': await client.send(data.account, data.text, data.reply || null);
+          // 409 миграции: состояние диалога только что обнаружено/изменилось —
+          // немедленный подписанный fetch для баннера (сообщение осталось в outbox).
+          if (MIGRATION_HOLD_CODES.has(client.lastError)) refreshDialogRouting(data.account, true);
+          client.sync().catch(e => notice(errors[e.message] || e.message)); break;
+        case 'sendMedia': await client.sendMedia(data.account, data.image, data.mime || 'image/jpeg');
+          if (MIGRATION_HOLD_CODES.has(client.lastError)) refreshDialogRouting(data.account, true);
+          client.sync().catch(e => notice(errors[e.message] || e.message)); break;
         case 'deleteLocal': await client.deleteLocal(data.ref); break;
         case 'retract': await client.retract(data.ref); break;
         case 'sync': await client.sync(); break;
@@ -1086,3 +1175,6 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
     });
   }).catch(() => notice('Offline-запуск недоступен. Проверьте разрешения хранилища.'));
 }
+// Экспорт для тестов проекции D1 (чистые функции и карта честных текстов);
+// поведение страницы не меняется.
+export { errors };
