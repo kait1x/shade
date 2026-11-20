@@ -25,6 +25,25 @@
 ## 2. Физический QA (A31 владельца + iPhone тестера), после деплоя v2-prod по «го»
 Сборка нативного v2: `flutter build apk --release --target lib/main_native_v2.dart
 --dart-define-from-file=config/<v2-prod>.json` + key.properties (ключ у владельца).
+
+### 2.0 Runbook установки QA-APK на Galaxy A31 (можно до деплоя v2-prod, QA против staging)
+1. Файл: artifacts/v2-a31-staging/shade-v2-qa-300-debug.apk; SHA-256
+   D60EA751D7E634723EACFB1FD3CF90CF4BDB387ED502D87D29D7F9DCC6C144E1 (сверить на телефоне/ПК).
+2. `adb install -r shade-v2-qa-300-debug.apk` — ОБНОВЛЕНИЕ поверх установленного v1
+   (same package com.example.shade, same debug-cert, versionCode 300 > базы).
+   Если adb предлагает uninstall — НЕ соглашаться (потеря данных); проверить
+   `adb shell dumpsys package com.example.shade | grep versionCode` до/после.
+3. После обновления: локальная история v1 и ключи на месте (SQLCipher/Keystore
+   переживают обновление при том же package+cert) — проверить список чатов v1.
+4. Запуск v2: экран подключения → адрес https://alpha.shadechat.ru → вход Google
+   или ключом v1 → enrollment-мастер («Перенести аккаунт из Shade v1») → импорт
+   истории → чаты v2. Сверить: личность та же (отпечаток device-ключа = v1),
+   история импортирована без дублей, недоставленное осталось в очередях v1.
+5. Далее пункты 3-10 ниже (E2EE с PWA/iPhone, offline, pairing, recovery-учение
+   на ТЕСТОВОМ аккаунте, push после Firebase key, медиа, UX).
+6. Откат QA-установки при необходимости: adb install -r <старый v1 apk> невозможно
+   (versionCode ниже) — откат только через uninstall+reinstall v1 (данные v2
+   теряются; recovery-пакет сохраняет личность). Документированный trade-off QA.
 Чек-лист (каждый пункт: ожидание / факт / подпись):
 1. Установка v2-APK рядом с v1 (разные applicationId до cutover) — v1 не ломается.
 2. Регистрация нового аккаунта в нативе v2; recovery-пакет сохранён вне устройства.
