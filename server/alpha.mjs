@@ -70,7 +70,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   // profiles were verified against the OAuth allowlist at creation time.
   for (const [savedSid, value] of Object.entries(await store.loadSessions())) {
     if (/^[0-9a-f]{64}$/.test(savedSid) && value && Number.isFinite(value.expiresAt) &&
-      value.expiresAt > Date.now() &&
+      value.expiresAt > Date.now() && value.kind !== 'recovery' &&
       (typeof value.account === 'string' ||
         (value.profile && typeof value.profile.googleSub === 'string'))) {
       sessions.set(savedSid, value);
@@ -78,6 +78,10 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   }
   let sessionsDirty = false;
   const markSessionsDirty = () => { sessionsDirty = true; };
+  // Recovery-сессии живут только в памяти: аварийный короткоживущий доступ не
+  // должен переживать рестарт/восстановление из бэкапа (defense in depth).
+  const persistableSessions = () =>
+    Object.fromEntries([...sessions].filter(([, s]) => s.kind !== 'recovery'));
   const oauth = new OAuth2Client(clientId, clientSecret, `${publicOrigin}/auth/google/callback`);
   const verifier = createAuthProof({ audience: clientId, verifyGoogle });
   // Web Push (C6): wake-only notifications, no E2EE content or message refs.
@@ -753,7 +757,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   const sessionsFlush = setInterval(() => {
     if (!sessionsDirty) return;
     sessionsDirty = false;
-    store.saveSessions(Object.fromEntries(sessions)).catch(() => { sessionsDirty = true; });
+    store.saveSessions(persistableSessions()).catch(() => { sessionsDirty = true; });
   }, 15000);
   sessionsFlush.unref();
   const broadcastPresence = (account, online) => {
@@ -838,7 +842,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       clearInterval(cleanup); clearInterval(presenceFlush); clearInterval(sessionsFlush);
       await new Promise(resolve => io.close(resolve));
       if (presenceDirty) await store.savePresence(Object.fromEntries(lastSeenAt)).catch(() => {});
-      if (sessionsDirty) await store.saveSessions(Object.fromEntries(sessions)).catch(() => {});
+      if (sessionsDirty) await store.saveSessions(persistableSessions()).catch(() => {});
       await store.close();
     } };
 }

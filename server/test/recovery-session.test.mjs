@@ -202,6 +202,46 @@ test('recovery session expires after its TTL', { timeout: 120000 }, async () => 
   } finally { await f.close(); }
 });
 
+// Регрессия 20.11: rolling-refresh обычных сессий НЕ должен продлевать
+// recovery-сессию (активность внутри TTL не сдвигает expiresAt).
+test('recovery TTL regression: activity never rolling-refreshes a recovery session', { timeout: 120000 }, async () => {
+  const f = await fixture(await opts({ recoverySessionMs: 1500 }));
+  try {
+    const who = await makeIdentity('rec_ttl_refresh');
+    await register(f, who, await f.login('synthetic-rec_ttl_refresh'));
+    const rc = cookieOf(await recoveryLogin(f, who, 'rec_ttl_refresh'));
+    const auth = { account: 'rec_ttl_refresh' };
+    const started = Date.now();
+    for (let i = 0; i < 3; i++) {
+      assert.equal((await f.request('/api/v2/operation', { op: 'directory', body: 'rec_ttl_refresh', auth }, rc)).response.status, 200);
+      await new Promise(r => setTimeout(r, 350));
+    }
+    // Активность была внутри TTL; после истечения исходного TTL — только 401.
+    await new Promise(r => setTimeout(r, Math.max(0, started + 1600 - Date.now())));
+    assert.equal((await f.request('/api/v2/operation', { op: 'directory', body: 'rec_ttl_refresh', auth }, rc)).response.status, 401);
+  } finally { await f.close(); }
+});
+
+// Recovery-сессии живут только в памяти: не переживают рестарт/restore бэкапа,
+// тогда как обычные сессии сохраняются (deploy не разлогинивает пользователей).
+test('recovery sessions are memory-only across restart; normal sessions persist', { timeout: 120000 }, async () => {
+  const base = await opts({ recoverySessionMs: 60000 });
+  const f1 = await fixture(base);
+  let rc, nc;
+  try {
+    const who = await makeIdentity('rec_persist');
+    nc = await f1.login('synthetic-rec_persist');
+    await register(f1, who, nc);
+    rc = cookieOf(await recoveryLogin(f1, who, 'rec_persist'));
+    assert.equal((await f1.request('/api/session', undefined, rc)).result.kind, 'recovery');
+  } finally { await f1.close(); }
+  const f2 = await fixture({ ...base });
+  try {
+    assert.equal((await f2.request('/api/session', undefined, rc)).result.authenticated, false);
+    assert.equal((await f2.request('/api/session', undefined, nc)).result.authenticated, true);
+  } finally { await f2.close(); }
+});
+
 test('full recovery flow: session → directory → install (recovery signer) → tombstones → new device session', { timeout: 120000 }, async () => {
   const f = await fixture(await opts());
   try {

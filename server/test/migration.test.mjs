@@ -424,7 +424,9 @@ test('v1 server guard: upgrade_required on auth/send/refresh, live v1→v2 bridg
     sockets.push(socket);
     await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('connect_error', reject); socket.connect(); });
     const outcome = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(Error(`register outcome timeout: ${account}`)), 30000);
+      // 60 с: под параллельной нагрузкой (flutter-компиляции сабагентов) RSA-регистрация
+      // v1 может превышать 30 с; проверяемая функция не меняется, только допуск по времени.
+      const timer = setTimeout(() => reject(Error(`register outcome timeout: ${account}`)), 60000);
       socket.once('registered', () => { clearTimeout(timer); resolve('registered'); });
       socket.once('authError', e => { clearTimeout(timer); resolve(e.error); });
       socket.emit('register', { username: account, token });
