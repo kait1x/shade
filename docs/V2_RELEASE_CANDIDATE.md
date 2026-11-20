@@ -42,6 +42,16 @@
 - 429 при быстром прогоне: штатный лимит 300 req/min, клиент восстановился
   повтором (http429DuringRapidRun 14/23/6) — не дефект.
 
+## Manifest RC (пак lead 20.11 ~23:55, локально, без деплоя)
+- MANIFEST.meta: commit **9998fc0987c662b0ffe4c5954973a6e470a57b23**,
+  branch v2-production, sw_version **e5246847d6d00a2ee301**, files **133**.
+- Пакет: build/staging-upload (28 MB), secrets check: no secret-like files.
+- SHA256 всех файлов runtime — в MANIFEST.sha256 пакета; commit-bound fail-closed
+  переключение ожидает точного совпадения commit при паке деплоя.
+- Backup-скрипт перехода: deploy/transition/backup-transition.sh (bash -n OK);
+  процедура restore/rollback: docs/V2_RESTORE_ROLLBACK.md. Исполнение на VPS —
+  только по отдельному «го» владельца.
+
 ## Backup/restore и rollback
 - Синтетический restore-тест: PASS (server/test/backup-restore.test.mjs).
 - Restore на копии staging-данных: ОЖИДАЕТ «го» владельца (P5).
@@ -54,7 +64,7 @@
 - [x] browser-QA матрица PASS оба движка (edge normal+hostile, webkit)
 - [ ] физические QA A31/iPhone подписаны (после защиты + «го»)
 - [ ] restore-тест на реальных данных + репетиция rollback (по «го»)
-- [x] RC commit-bound (SHA выше; manifest собирается при паке)
+- [x] RC commit-bound: SHA 9998fc0 + MANIFEST (133 файла, sw e5246847d6d00a2ee301)
 - [ ] защита 23.11 проведена
 - [ ] отдельные «го» на prod-шаги
 
