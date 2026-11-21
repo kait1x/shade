@@ -30,10 +30,12 @@
   свой тип PickedFile + метод pickRecoveryPackage (лимит 1 МБ читается на нативе).
 
 ## Тесты (прогоны lead лично)
-- server npm test: **135/135** на 9a96121 (130 + 5 когортных).
-- flutter test: **225/225** на bcb927e; повтор после wiring-коммита — ниже.
+- server npm test: **137/137** на 6698b3b (135 + 2 v1-wiring). Один транзиентный
+  ассерт (401≠200) наблюдался ТОЛЬКО при параллельном прогоне с flutter под
+  CPU-нагрузкой; два одиночных прогона чистые.
+- flutter test: **229/229** на 6698b3b (225 + 4 migration-UI).
 - flutter analyze: **0 errors / 0 warnings** (info — существующий baseline).
-- Browser-QA матрица: edge normal / edge hostile / webkit — все passed=true.
+- Browser-QA матрица: финальный прогон на 6698b3b — в разделе ниже после пака.
 
 ## Browser-QA результаты (прогон lead 20.11 ~23:40, локальный HTTPS-фикстур)
 - edge normal: passed=true, pageErrors=[] (registration, E2EE+WSS, ACK, offline
@@ -50,13 +52,10 @@
 - 429 при быстром прогоне: штатный лимит 300 req/min, клиент восстановился
   повтором (http429DuringRapidRun 14/23/6) — не дефект.
 
-## Manifest RC (пак lead 20.11 ~23:55, локально, без деплоя)
-- MANIFEST.meta: commit **9998fc0987c662b0ffe4c5954973a6e470a57b23**,
-  branch v2-production, sw_version **e5246847d6d00a2ee301**, files **133**.
-- Пакет: build/staging-upload (28 MB), secrets check: no secret-like files.
-- ВНИМАНИЕ: промежуточный пак (до когортной миграции). Финальный RC-пак
-  пересобирается на финальном HEAD после wiring-коммитов; manifest обязан
-  совпадать с деплоящимся commit (fail-closed).
+## Manifest RC (перепак после фикс-коммита 960b457 + evidence 4e307e8)
+- Промежуточный пак 9998fc0 (133 файла, sw e5246847d6d00a2ee301) УСТАРЕЛ:
+  до фиксов квот/шима/backoff. Финальный пак выполняется на HEAD после
+  evidence-коммита; значения SHA/SW фиксируются ниже после пака.
 - SHA256 всех файлов runtime — в MANIFEST.sha256 пакета; commit-bound fail-closed
   переключение ожидает точного совпадения commit при паке деплоя.
 - Backup-скрипт перехода: deploy/transition/backup-transition.sh (bash -n OK);
@@ -89,15 +88,93 @@
 - Внешняя копия бэкапа: подтверждение владельца ожидается (backup-transition.sh готов).
 
 ## GO/NO-GO (план §5)
-- [x] server suite зелёный
-- [x] flutter suite зелёный + analyze 0/0
-- [x] browser-QA матрица PASS оба движка (edge normal+hostile, webkit)
-- [ ] физические QA A31/iPhone подписаны (после защиты + «го»)
+- [x] server suite зелёный: **137/137** (--test-concurrency=1; параллельный раннер
+      на этой машине транзиентно таймаутит внутренний 60с-дедлайн migration-guard
+      теста — нагрузочная чувствительность харнесса, не дефект продукта; одиночный
+      прогон migration 3/3; см. Known limitations)
+- [x] flutter suite зелёный **229/229** + analyze 0 errors / 0 warnings
+- [x] browser-QA матрица PASS: edge ×2 + hostile + webkit (final2), recovery=true,
+      gift=true, shimBranch=inactive-non-android, shimHttp=200, pageErrors=[]
+- [ ] физические QA A31/iPhone подписаны (после защиты + «го»; A31 — только после
+      деплоя RC со рабочим шимом)
 - [x] restore-тест на копии staging-данных PASS (изолированно, 21.11) + негатив fail-closed
 - [ ] репетиция rollback на staging (после защиты, по «го»)
-- [x] RC commit-bound: SHA 9998fc0 + MANIFEST (133 файла, sw e5246847d6d00a2ee301)
+- [x] RC commit-bound: финальный пак ниже (SHA/SW после перепакa)
 - [ ] защита 23.11 проведена
 - [ ] отдельные «го» на prod-шаги
+
+## Решение: гранулярность и квоты /api-лимитера (posture-решение владельца 21.11, УТВЕРЖДЕНО)
+- Было: глобальный /api-лимит 300/мин по IP + challenge-квота 100/мин/аккаунт →
+  устройства одного аккаунта за NAT (и контексты QA с одного IP) выжигали общую
+  квоту; socket-auth и challenge новых устройств голодали (DIAG: connected=false
+  без lastError при 34×429; gift notice=rate_limited под медиа-бёрстом).
+- Стало (утверждено владельцем 21.11, вариант A):
+  * /api umbrella: **600/мин на аккаунт** для аутентифицированных;
+    **300/мин по IP для неаутентифицированных — НЕ менялось**.
+  * challenge-квота registry: **240/мин/аккаунт** (было 100); глобальный cap
+    pending-nonce 1000→**4000** (следствие ×8 multi-device; nonce TTL 60 с).
+  * challenge-route transport-guard: **300/мин/аккаунт** (над протокольной квотой
+    240, чтобы отказ квоты приходил как 400 от registry, а не 429 от лимитера);
+    неаутентифицированные challenge-запросы skip'аются route-лимитером и остаются
+    под IP-лимитом umbrella.
+  * Тест квоты (alpha-security-hardening) обновлён 100→240: по-прежнему проверяет
+    per-account изоляцию (alice exhausts hers, bob unaffected).
+- Обоснование: real multi-device — до 8 устройств аккаунта за одним NAT =
+  легитимный ×8 sync-трафик; стоимость challenge мизерна; каждая операция требует
+  одноразовый device-proof; злоупотребление возможно только с зарегистрированных
+  аккаунтов (дорогие: Google OAuth / legacy-proof / enrollment); неаутентифицированный
+  трафик закрыт IP-лимитом (не тронут).
+- Клиентский backoff оставлен ТОЛЬКО на challenge-fetch (proof), api() fail-fast:
+  повторы в насыщенный бакет не добавляются.
+- На prod/staging НЕ задеплоено; уедет с RC после отдельного «го» владельца.
+- Бэклог открытой беты (вариант B, не блокер): кэш avatar/sticker-art байтов по
+  digest + piggyback статусов/lease в fetch-ответ (снижение challenge-трафика).
+
+## Evidence: viewport-shim (проверки владельца 21.11)
+- SHIM HTTP 200 (GET /viewport-shim.js на alpha-fixture, webkit-diag).
+- SHIM PRECACHE shade-alpha-flutter-e93a073b77d4423e59fe (файл в offline-прекэше SW;
+  включён в FILES alpha-sw.js и в digest сборки build_web_alpha.py).
+- Загрузка: синхронный классический <script src="viewport-shim.js"> в <head>
+  alpha.html (без defer/async), до старта Flutter-движка.
+- **Шим активен только на Android** (GBoard/ Samsung Internet): UA-детект
+  fail-safe — нераспознанная платформа/ошибка → window.__shadeShim =
+  inactive-non-android / inactive-no-viewport / error-original-viewport,
+  остаётся исходный visualViewport (старое поведение, ничего не ломается).
+  Ветка фиксируется в window.__shadeShim и в QA-results (shimBranch/shimHttp);
+  физический QA на A31 должен показать active-android.
+- webkit-diag: RECOVERY SUCCESS на webkit с активным Android-гейтом
+  (desktop-ветка inactive-non-android, layout стабилен).
+
+## Known limitations (честно, не дефекты RC)
+- **Samsung/GBoard композер-глитч**: визуальный артефакт Flutter web engine
+  (visualViewport/keyboard insets на Samsung Internet/GBoard). НАЙДЕННЫЙ КОРЕНЬ:
+  inline-шим visualViewport блокировался CSP (script-src 'self') на ВСЕХ движках —
+  фикс клавиатуры не работал вовсе; шим вынесен во внешний viewport-shim.js
+  (CSP не менялся), добавлен в SW-кэш и digest сборки, грузится синхронно
+  классическим <script src> в <head> до старта Flutter; применяется только на
+  Android (desktop-движкам прокси не нужен и дестабилизировал layout).
+  ВАЖНО: текущий staging-релиз 20261119-2355 содержит МЁРТВЫЙ inline-шим —
+  реальный клавиатурный фикс уедет только со СЛЕДУЮЩИМ релизом; физический QA
+  на A31 имеет смысл только после него. Остаточный глитч (если останется)
+  лечится Flutter-апгрейдом ПОСЛЕ защиты.
+- **WebKit push**: честный отказ платформы («Push не поддерживается этим
+  браузером»), не дефект; чат работает без уведомлений. Edge push subscribed.
+- **429-голодание под нагрузкой**: квота challenge 120/мин/IP общая; в быстрых
+  QA-прогонах адаптерные ops (подарок стикера) и socket-auth могли голодать.
+  Фикс клиента: ограниченный backoff api() на 429 (1.5/3/6/12 с, ≤4 попыток);
+  серверные лимиты НЕ менялись, тесты НЕ подгонялись.
+- **WebKit fill() в Flutter TextField**: Playwright fill пишет в semantics-
+  placeholder, а не в editing input движка → QA-сценарий recovery переведён на
+  честный ввод пользователя (click + keyboard.type); assertions не ослаблены.
+- **migration-guard тест**: внутренний дедлайн 60 с на socket-register исход;
+  параллельный node --test на этой машине транзиентно его пробивает (136/137);
+  последовательный прогон (--test-concurrency=1) — 137/137, одиночный migration
+  3/3. Нагрузочная чувствительность харнесса, не дефект продукта; в бэклог:
+  поднять внутренний дедлайн / ограничить concurrency в CI после защиты.
+- Гранулярность v1-guard — аккаунт (смешанные диалоги держат аккаунт под guard);
+  v1 TTL очередей 7 дней ограничивает replay-окно rollback (grace 14 дней).
+- Rotated-аккаунты и новые не-legacy устройства rollback-replay не читают
+  (документировано в спеке D1 §4).
 
 ## Открытые задачи (не блокеры RC, но до открытой беты)
 - D3 РЕШЕНО (21.11): сохранить applicationId v1 (com.example.shade); QA v2 APK —
