@@ -68,8 +68,8 @@ test('real TLS relay: three clients, receipt isolation, retry, offline restart a
     if (child.exitCode === null) { const exit = new Promise(resolve => child.once('exit', resolve)); child.kill(); await exit; }
   }
   t.after(async () => { t.diagnostic(logs); sockets.forEach(socket => socket.disconnect()); await stop(); agent.destroy(); });
-  const request = (route, body, headers = {}) => new Promise((resolve, reject) => {
-    const req = https.request(base + route, { agent, method: body ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json', ...headers } }, res => {
+  const request = (route, body, headers = {}, method = body ? "POST" : "GET") => new Promise((resolve, reject) => {
+    const req = https.request(base + route, { agent, method, headers: { 'Content-Type': 'application/json', ...headers } }, res => {
       let data = ''; res.on('data', value => data += value); res.on('end', () => resolve({ status: res.statusCode, data: JSON.parse(data) }));
     });
     req.on('error', reject); if (body) req.write(JSON.stringify(body)); req.end();
@@ -101,6 +101,37 @@ test('real TLS relay: three clients, receipt isolation, retry, offline restart a
   await start();
   const alice = identity('alice'), bob = identity('bob'), carol = identity('carol');
   for (const user of [alice, bob, carol]) await register(user);
+  const headers = u => ({'x-username':u.username,'x-session-token':u.token});
+  const gift={toUsername:'bob',stickerId:'flowers',requestId:crypto.randomUUID(),note:'private-test-note'};
+  assert.equal((await request('/profile/name',{displayName:'Луна'},headers(alice),'PUT')).status,200);
+  assert.equal((await request('/user/alice/stickers',null,headers(bob))).data.displayName,'Луна');
+  const sendGift=(body,h=headers(alice))=>request('/stickers/gift',body,h);
+  assert.equal((await sendGift(gift,{})).status,401);
+  for(const [change,status] of [[{toUsername:'missing'},404],[{fromUsername:'bob'},400],[{stickerId:'unknown'},400],[{note:'a'.repeat(241)},400]]){
+    assert.equal((await sendGift({...gift,...change})).status,status);
+  }
+  const sent=await Promise.all([sendGift(gift),sendGift(gift)]);
+  assert.equal(sent[0].status,200);assert.deepEqual(sent[0],sent[1]);
+  const giftId=sent[0].data.giftId;
+  const inventory=await request('/stickers/inventory',null,headers(bob));
+  assert.equal(inventory.data.inventory.length,1);assert.equal(inventory.data.inventory[0].fromUsername,'alice');
+  assert.deepEqual(inventory.data.wall,[]);
+  const publicView=await request('/user/bob/stickers',null,headers(alice));
+  assert.equal(publicView.data.inventory[0].note,undefined);
+  const place={giftId,xNorm:.5,yNorm:.5,scale:1,rotation:0,zIndex:0};
+  const put=(body,h=headers(bob))=>request('/stickers/wall',body,h,'PUT');
+  assert.equal((await put({revision:0,wall:[place]},headers(carol))).status,400);
+  assert.equal((await put({revision:0,username:'bob',wall:[]},headers(carol))).status,400);
+  assert.equal((await put({revision:0,wall:[{...place,xNorm:-.1}]})).status,400);
+  assert.equal((await put({revision:0,wall:[place,place]})).status,400);
+  const competing=await Promise.all([put({revision:0,wall:[place]}),put({revision:0,wall:[place]})]);
+  assert.deepEqual(competing.map(r=>r.status).sort(),[200,409]);
+  // Make the temp destination unwritable in this isolated DATA_DIR.
+  const blocked=path.join(temp,'data','stickers.json.tmp');fs.mkdirSync(blocked);
+  assert.equal((await put({revision:1,wall:[]})).status,503);
+  fs.rmdirSync(blocked);
+  assert.equal((await request('/stickers/inventory',null,headers(bob))).data.revision,1);
+  assert.equal(fs.readFileSync(path.join(temp,'data','stickers.json'),'utf8').includes(gift.note),false);
   const a = await connect(alice), b = await connect(bob), c = await connect(carol);
   const id = crypto.randomUUID();
   const payload = { id, to: 'bob', data: encrypt('Привет, Bob! 🔐', bob.publicKey) };
@@ -127,6 +158,8 @@ test('real TLS relay: three clients, receipt isolation, retry, offline restart a
   assert.equal((await send(a, offline)).ok, true);
   a.disconnect(); c.disconnect(); await stop(); logs = ''; await start();
   await register(alice); await register(bob);
+  const restored=(await request('/stickers/inventory',null,headers(bob))).data;
+  assert.equal(restored.inventory[0].note,gift.note);assert.equal(restored.wall[0].giftId,giftId);
   const a2 = await connect(alice);
   const b2 = io(base, { transports: ['websocket'], autoConnect: false, reconnection: false, ca: fs.readFileSync(path.join(certs, 'cert.pem')) }); sockets.push(b2);
   const queued = once(b2, 'message'), connected = once(b2, 'connect'); b2.connect(); await connected;

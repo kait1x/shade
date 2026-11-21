@@ -1,4 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
+import 'package:shade/core/widgets/shade_motion.dart';
+import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
+import 'package:shade/features/stickers/collection.dart';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
@@ -7,10 +11,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shade/core/services/connection_service.dart';
 import 'package:shade/core/widgets/shade_ui.dart';
+import 'package:shade/features/profile/data/avatar_repository.dart';
+import 'package:shade/features/profile/presentation/screens/avatar_editor.dart';
 import 'package:shade/main.dart';
 
 // Brighter secondary tones for better contrast on the dark background.
-const _kSubtle = Color(0xFFB9B9C0);
+const _kSubtle = Color(0xFF8E8E93);
 const _kIcon = Color(0xFFD2D2D8);
 const _kAmberText = Color(0xFFFFB92E);
 
@@ -24,7 +30,7 @@ class ProfileScreen extends ConsumerStatefulWidget {
   final String? email;
   final String? publicKey;
   final bool isSelf;
-  final VoidCallback? onSignOut;
+  final VoidCallback? onSignOut, onWrite;
 
   const ProfileScreen({
     super.key,
@@ -36,6 +42,7 @@ class ProfileScreen extends ConsumerStatefulWidget {
     this.publicKey,
     this.isSelf = false,
     this.onSignOut,
+    this.onWrite,
   });
 
   @override
@@ -48,26 +55,41 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   UserStatus? _status;
   String _note = '';
   bool _verified = false;
-  static const _amber = Color(0xFFF5A300);
+  StreamSubscription<UserStatusUpdate>? _presence;
+  static const _amber = Color(0xFFF59E0B);
 
   double get _headerHeight =>
-      250 + (MediaQuery.textScalerOf(context).scale(27) - 27) * 2;
+      280 + (MediaQuery.textScalerOf(context).scale(27) - 27) * 2;
 
-  String get _title => widget.displayName?.trim().isNotEmpty == true
-      ? widget.displayName!.trim()
-      : widget.username;
+  String? _serverName;
+  String get _title =>
+      _serverName ??
+      (widget.displayName?.trim().isNotEmpty == true
+          ? widget.displayName!.trim()
+          : widget.username);
 
   String get _noteKey => 'contact_note_${widget.username}';
 
   @override
   void initState() {
     super.initState();
+    _refreshName();
     _scroll.addListener(() {
       final collapsed = _scroll.hasClients &&
           _scroll.offset > _headerHeight - kToolbarHeight - 40;
       if (collapsed != _collapsed) setState(() => _collapsed = collapsed);
     });
     if (!widget.isSelf) {
+      _presence = ref
+          .read(connectionServiceProvider)
+          .statusUpdates
+          .where((s) => s.username == widget.username)
+          .listen((s) {
+        if (mounted) {
+          setState(() =>
+              _status = UserStatus(online: s.online, lastSeen: s.lastSeen));
+        }
+      });
       _loadStatus();
       _loadNote();
       _loadVerification();
@@ -76,6 +98,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   @override
   void dispose() {
+    _presence?.cancel();
     _scroll.dispose();
     super.dispose();
   }
@@ -90,21 +113,37 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   Future<void> _loadVerification() async {
     final key = _verificationKey, fingerprint = _fingerprintHex;
     if (key == null || fingerprint == null) return;
-    final prefs = await SharedPreferences.getInstance();
-    if (mounted && key == _verificationKey && fingerprint == _fingerprintHex) {
-      setState(() => _verified = prefs.getString(key) == fingerprint);
+    final db = ref.read(databaseServiceProvider),
+        owner = widget.viewerUsername!,
+        peer = widget.username;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted ||
+          key != _verificationKey ||
+          fingerprint != _fingerprintHex) {
+        return;
+      }
+      final legacy = prefs.getString(key);
+      final ok = await db.checkFingerprint(owner, peer, fingerprint, legacy);
+      if (legacy != null) await prefs.remove(key);
+      if (mounted &&
+          key == _verificationKey &&
+          fingerprint == _fingerprintHex) {
+        setState(() => _verified = ok);
+      }
+    } catch (_) {
+      if (mounted && key == _verificationKey) setState(() => _verified = false);
     }
   }
 
   Future<bool> _confirmKey(String key, String fingerprint) async {
     if (key != _verificationKey || fingerprint != _fingerprintHex) return false;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final saved = await prefs.setString(key, fingerprint);
+      await ref.read(databaseServiceProvider).confirmFingerprint(
+          widget.viewerUsername!, widget.username, fingerprint);
       if (!mounted ||
           key != _verificationKey ||
-          fingerprint != _fingerprintHex ||
-          !saved) {
+          fingerprint != _fingerprintHex) {
         return false;
       }
       setState(() => _verified = true);
@@ -122,6 +161,96 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
         oldWidget.viewerUsername != widget.viewerUsername) {
       _verified = false;
       _loadVerification();
+    }
+  }
+
+  Future<void> _refreshName() async {
+    try {
+      final data = await ref.read(connectionServiceProvider).profileRequest(
+          'GET', '/user/${Uri.encodeComponent(widget.username)}/stickers');
+      if (mounted && data['displayName'] is String) {
+        setState(() => _serverName = data['displayName']);
+      }
+    } catch (_) {/* Cached profile stays readable offline. */}
+  }
+
+  Future<void> _editAvatar() async {
+    final provider = avatarProfileProvider(widget.username);
+    var current = ref.read(provider).valueOrNull;
+    if (current == null) {
+      await ref.read(provider.notifier).load();
+      if (!mounted) return;
+      current = ref.read(provider).valueOrNull;
+    }
+    if (current == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'Не удалось загрузить аватар. Проверьте подключение и повторите попытку.')));
+      return;
+    }
+    ShadeMotion.selection(context);
+    await Navigator.of(context).push<bool>(PageRouteBuilder<bool>(
+        transitionDuration: ShadeMotion.duration(context, 260),
+        reverseTransitionDuration: ShadeMotion.duration(context, 220),
+        pageBuilder: (_, __, ___) =>
+            AvatarEditor(username: widget.username, initial: current!),
+        transitionsBuilder: (_, animation, __, child) => FadeTransition(
+            opacity: animation.drive(CurveTween(curve: Curves.easeOutCubic)),
+            child: child)));
+  }
+
+  Future<void> _editName() async {
+    String draft = _title;
+    final name = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+                title: const Text('Имя профиля'),
+                content: TextFormField(
+                    initialValue: draft,
+                    maxLength: 64,
+                    onChanged: (v) => draft = v),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text('Отмена')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(ctx, draft.trim()),
+                      child: const Text('Сохранить'))
+                ]));
+    if (name == null || name.isEmpty || !mounted) return;
+    try {
+      final result = await ref
+          .read(connectionServiceProvider)
+          .profileRequest('PUT', '/profile/name', {'displayName': name});
+      if (mounted) {
+        setState(() => _serverName = result['displayName']);
+        await ref.read(avatarProfileProvider(widget.username).notifier).load();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
+  Future<void> _confirmSignOut() async {
+    final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+                title: const Text('Выйти из Shade?'),
+                content: const Text(
+                    'Ключи и история останутся на этом устройстве. Для следующего входа используйте тот же Google-аккаунт и никнейм.'),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('Отмена')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('Выйти'))
+                ]));
+    if (confirmed == true && mounted) {
+      await ref.read(authNotifierProvider.notifier).logout();
     }
   }
 
@@ -202,7 +331,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     var confirming = false;
     showModalBottomSheet<void>(
         context: context,
+        sheetAnimationStyle: ShadeMotion.sheet(context),
         showDragHandle: true,
+        shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
         isScrollControlled: true,
         backgroundColor: const Color(0xFF141414),
         builder: (ctx) => SafeArea(
@@ -216,10 +348,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                       const SizedBox(height: 5),
                       Text(
                           '@${widget.username} · ${widget.isSelf ? "ваш ключ" : (_verified ? "сверен" : "не сверен")}',
-                          style: const TextStyle(
-                              fontSize: 12, color: _kSubtle)),
+                          style:
+                              const TextStyle(fontSize: 12, color: _kSubtle)),
                       const SizedBox(height: 20),
-                      _KeyIdenticon(bytes: bytes, size: 176),
+                      _KeyIdenticon(bytes: bytes, size: 148),
                       const SizedBox(height: 18),
                       Container(
                           padding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
@@ -246,9 +378,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                               : 'Сравните рисунок и полный код с профилем на телефоне @${widget.username}. Подтверждение относится только к этому ключу.',
                           textAlign: TextAlign.center,
                           style: const TextStyle(
-                              color: _kSubtle,
-                              fontSize: 12,
-                              height: 1.5)),
+                              color: _kSubtle, fontSize: 12, height: 1.5)),
                       if (!widget.isSelf && _verificationKey != null) ...[
                         const SizedBox(height: 18),
                         SizedBox(
@@ -260,7 +390,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                     foregroundColor: Colors.black,
                                     elevation: 0,
                                     shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(14)),
+                                        borderRadius:
+                                            BorderRadius.circular(14)),
                                     textStyle: Theme.of(ctx)
                                         .textTheme
                                         .labelLarge
@@ -281,7 +412,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                                 'Не удалось подтвердить ключ. Откройте сверку заново.')));
                                   }
                                 },
-                                icon: const Icon(Icons.verified_user_rounded, size: 20),
+                                icon: const Icon(Icons.verified_user_rounded,
+                                    size: 20),
                                 label: Text(_verified
                                     ? 'Подтверждено'
                                     : 'Ключ совпадает'))),
@@ -291,8 +423,12 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final avatar =
+        ref.watch(avatarProfileProvider(widget.username)).valueOrNull;
+    final title =
+        avatar?.displayName.isNotEmpty == true ? avatar!.displayName : _title;
     final subtitle = widget.isSelf
-        ? 'это вы'
+        ? '@${widget.username}'
         : (_status?.displayText ?? 'загрузка статуса…');
     final online = _status?.online == true;
     return Scaffold(
@@ -304,16 +440,31 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
               tooltip: 'Назад',
               icon: const Icon(Icons.arrow_back_rounded, size: 22),
               onPressed: () => Navigator.maybePop(context)),
+          actions: [
+            if (!widget.isSelf)
+              PopupMenuButton<String>(
+                  onSelected: (v) => v == 'note'
+                      ? _editNote()
+                      : _copy('@${widget.username}', 'Имя пользователя'),
+                  itemBuilder: (_) => const [
+                        PopupMenuItem(
+                            value: 'note', child: Text('Личная заметка')),
+                        PopupMenuItem(
+                            value: 'copy', child: Text('Копировать ник'))
+                      ])
+          ],
           stretch: true,
           expandedHeight: _headerHeight,
-          backgroundColor: ShadeColors.surfaceDark,
+          backgroundColor: ShadeColors.black,
           surfaceTintColor: Colors.transparent,
           title: AnimatedOpacity(
               opacity: _collapsed ? 1 : 0,
-              duration: const Duration(milliseconds: 180),
+              duration: ShadeMotion.duration(context, 180),
               child: Row(children: [
                 ShadeAvatar(
-                    name: widget.username,
+                    name: title,
+                    username: widget.username,
+                    online: online,
                     imageUrl: widget.avatarUrl,
                     size: 34),
                 const SizedBox(width: 10),
@@ -321,7 +472,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                     child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                      Text(_title,
+                      Text(title,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -338,7 +489,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             ],
             background: _ProfileHeader(
                 name: widget.username,
-                title: _title,
+                title: title,
+                onEdit: widget.isSelf ? _editAvatar : null,
                 subtitle: subtitle,
                 online: online,
                 avatarUrl: widget.avatarUrl),
@@ -349,8 +501,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                 child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 640),
                     child: Padding(
-                        padding: EdgeInsets.fromLTRB(
-                            16, 16, 16, 40 + MediaQuery.viewPaddingOf(context).bottom),
+                        padding: EdgeInsets.fromLTRB(20, 20, 20,
+                            40 + MediaQuery.viewPaddingOf(context).bottom),
                         child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
@@ -361,8 +513,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                 const SizedBox(height: 16),
                                 _buildKeySection(),
                               ],
-                              if (widget.isSelf &&
-                                  widget.onSignOut != null) ...[
+                              StickerCollection(
+                                  key: ValueKey(widget.username),
+                                  username: widget.username,
+                                  owner: widget.isSelf),
+                              if (widget.isSelf) ...[
                                 const SizedBox(height: 16),
                                 _Section(children: [
                                   _Tile(
@@ -370,8 +525,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                       title: 'Выйти из профиля',
                                       danger: true,
                                       onTap: () {
-                                        Navigator.pop(context);
-                                        widget.onSignOut!();
+                                        if (widget.onSignOut != null) {
+                                          widget.onSignOut!();
+                                        } else {
+                                          _confirmSignOut();
+                                        }
                                       }),
                                 ]),
                               ],
@@ -390,11 +548,18 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   Widget _buildActions() {
     final actions = <Widget>[
+      if (widget.isSelf)
+        _ActionButton(
+            icon: Icons.edit_outlined,
+            label: 'Имя',
+            primary: true,
+            onTap: _editName),
       if (!widget.isSelf)
         _ActionButton(
             icon: Icons.chat_bubble_outline_rounded,
             label: 'Написать',
-            onTap: () => Navigator.pop(context)),
+            primary: true,
+            onTap: widget.onWrite ?? () => Navigator.pop(context)),
       _ActionButton(
           icon: Icons.copy_outlined,
           label: 'Копировать',
@@ -404,7 +569,6 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             icon: widget.isSelf
                 ? Icons.qr_code_2_rounded
                 : Icons.verified_user_outlined,
-            accent: true,
             label: widget.isSelf ? 'Мой ключ' : 'Ключ',
             onTap: _showKey),
       if (!widget.isSelf)
@@ -419,7 +583,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     ]);
   }
 
-  Widget _buildInfo() => _Section(title: 'Информация', children: [
+  Widget _buildInfo() => _Section(title: 'Информация', plain: true, children: [
         _Tile(
             icon: Icons.alternate_email_rounded,
             title: '@${widget.username}',
@@ -447,11 +611,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   Widget _buildKeySection() {
     final bytes = _fingerprint!;
-    return _Section(title: 'Шифрование', children: [
+    return _Section(title: 'Безопасность', children: [
       InkWell(
           onTap: _showKey,
           child: Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(16),
               child: Row(children: [
                 _KeyIdenticon(bytes: bytes, size: 52),
                 const SizedBox(width: 12),
@@ -470,7 +634,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                 horizontal: 8, vertical: 4),
                             decoration: BoxDecoration(
                                 color: widget.isSelf
-                                    ? _amber.withValues(alpha: .2)
+                                    ? ShadeColors.surfaceElevated
                                     : Colors.white.withValues(alpha: .12),
                                 borderRadius: BorderRadius.circular(20)),
                             child: Text(
@@ -481,8 +645,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600,
                                     color: widget.isSelf
-                                        ? _kAmberText
-                                        : ShadeColors.textPrimary))),
+                                        ? ShadeColors.textPrimary
+                                        : (_verified
+                                            ? ShadeColors.textPrimary
+                                            : _kAmberText)))),
                       ]),
                       const SizedBox(height: 6),
                       _FingerprintText(bytes: bytes, fontSize: 12, groups: 4),
@@ -491,11 +657,10 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                           widget.isSelf
                               ? 'Нажмите, чтобы показать код'
                               : 'Нажмите, чтобы сверить',
-                          style: const TextStyle(
-                              fontSize: 12, color: _kSubtle)),
+                          style:
+                              const TextStyle(fontSize: 12, color: _kSubtle)),
                     ])),
-                const Icon(Icons.chevron_right_rounded,
-                    color: _kSubtle),
+                const Icon(Icons.chevron_right_rounded, color: _kSubtle),
               ]))),
     ]);
   }
@@ -507,47 +672,62 @@ class _ProfileHeader extends StatelessWidget {
   final String subtitle;
   final bool online;
   final String? avatarUrl;
+  final VoidCallback? onEdit;
   const _ProfileHeader(
       {required this.name,
       required this.title,
       required this.subtitle,
       required this.online,
+      this.onEdit,
       this.avatarUrl});
 
   @override
   Widget build(BuildContext context) => DecoratedBox(
-      decoration: const BoxDecoration(
-          gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [
-            Color(0xFF181818),
-            Color(0xFF101010),
-            ShadeColors.black
-          ])),
+      decoration: const BoxDecoration(color: Color(0xFF000000)),
       child: SafeArea(
           bottom: false,
           child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 32, 24, 16),
+              padding: const EdgeInsets.fromLTRB(24, 36, 24, 22),
               child:
                   Column(mainAxisAlignment: MainAxisAlignment.end, children: [
-                Container(
-                    padding: const EdgeInsets.all(4),
-                    decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                            color: online
-                                ? ShadeColors.violetLight
-                                : Colors.white.withValues(alpha: .12),
-                            width: 2),
-                        boxShadow: [
-                          BoxShadow(
-                              color: Colors.black.withValues(alpha: .5),
-                              blurRadius: 30,
-                              offset: const Offset(0, 12))
-                        ]),
-                    child: ShadeAvatar(
-                        name: name, imageUrl: avatarUrl, size: 108)),
+                Semantics(
+                    button: onEdit != null,
+                    label: onEdit == null ? null : 'Изменить аватар',
+                    child: Tooltip(
+                        message: onEdit == null ? title : 'Изменить аватар',
+                        child: InkWell(
+                            customBorder: const CircleBorder(),
+                            onTap: onEdit,
+                            child: Stack(clipBehavior: Clip.none, children: [
+                              HeroMode(
+                                  enabled:
+                                      !MediaQuery.disableAnimationsOf(context),
+                                  child: Hero(
+                                      tag: onEdit == null
+                                          ? 'chat-avatar-$name'
+                                          : 'profile-avatar-$name',
+                                      child: ShadeAvatar(
+                                          name: title,
+                                          username: name,
+                                          imageUrl: avatarUrl,
+                                          size: 108,
+                                          online: online))),
+                              if (onEdit != null)
+                                Positioned(
+                                    right: -3,
+                                    bottom: -3,
+                                    child: Container(
+                                        padding: const EdgeInsets.all(6),
+                                        decoration: BoxDecoration(
+                                            color: const Color(0xFF111113),
+                                            shape: BoxShape.circle,
+                                            border: Border.all(
+                                                color: const Color(0xFF29292D),
+                                                width: 2)),
+                                        child: const Icon(Icons.edit_outlined,
+                                            size: 15,
+                                            color: Color(0xFFF5F5F7))))
+                            ])))),
                 const SizedBox(height: 12),
                 Text(title,
                     maxLines: 1,
@@ -563,8 +743,7 @@ class _ProfileHeader extends StatelessWidget {
                         width: 8,
                         height: 8,
                         decoration: const BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: ShadeColors.violetLight)),
+                            shape: BoxShape.circle, color: Color(0xff22c55e))),
                     const SizedBox(width: 6),
                   ],
                   Text(subtitle,
@@ -580,45 +759,55 @@ class _ProfileHeader extends StatelessWidget {
 class _ActionButton extends StatelessWidget {
   final IconData icon;
   final String label;
-  final bool accent;
+  final bool primary;
   final VoidCallback onTap;
   const _ActionButton(
       {required this.icon,
       required this.label,
       required this.onTap,
-      this.accent = false});
+      this.primary = false});
 
   @override
-  Widget build(BuildContext context) => Material(
-      color: const Color(0xFF141414),
-      shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side:
-              BorderSide(color: ShadeColors.greyBorder.withValues(alpha: .55))),
-      child: InkWell(
-          borderRadius: BorderRadius.circular(16),
-          onTap: onTap,
-          child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                Icon(icon,
-                    size: 20,
-                    color: accent
-                        ? const Color(0xFFF5A300)
-                        : ShadeColors.violetLight),
-                const SizedBox(height: 6),
-                Text(label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                        fontSize: 12, fontWeight: FontWeight.w600)),
-              ]))));
+  Widget build(BuildContext context) => ShadeTapScale(
+      child: Material(
+          color: primary ? ShadeColors.textPrimary : ShadeColors.surfaceCard,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(18),
+              side: BorderSide(
+                  color:
+                      primary ? Colors.transparent : ShadeColors.greyBorder)),
+          child: InkWell(
+              borderRadius: BorderRadius.circular(18),
+              onTap: () {
+                ShadeMotion.selection(context);
+                onTap();
+              },
+              child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(icon,
+                        size: 21,
+                        color:
+                            primary ? Colors.black : ShadeColors.textPrimary),
+                    const SizedBox(height: 9),
+                    Text(label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                            color: primary
+                                ? Colors.black
+                                : ShadeColors.textPrimary,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600)),
+                  ])))));
 }
 
 class _Section extends StatelessWidget {
   final String? title;
   final List<Widget> children;
-  const _Section({this.title, required this.children});
+  final bool plain;
+  const _Section({this.title, required this.children, this.plain = false});
 
   @override
   Widget build(BuildContext context) =>
@@ -632,13 +821,14 @@ class _Section extends StatelessWidget {
                       fontWeight: FontWeight.w600,
                       color: _kSubtle))),
         ClipRRect(
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(16),
             child: Material(
-                color: const Color(0xFF141414),
+                color: plain ? Colors.transparent : ShadeColors.surfaceCard,
                 shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(18),
-                    side: BorderSide(
-                        color: ShadeColors.greyBorder.withValues(alpha: .55))),
+                    borderRadius: BorderRadius.circular(16),
+                    side: plain
+                        ? BorderSide.none
+                        : const BorderSide(color: ShadeColors.greyBorder)),
                 child: Column(children: [
                   for (var i = 0; i < children.length; i++) ...[
                     if (i > 0)
@@ -674,19 +864,20 @@ class _Tile extends StatelessWidget {
         onTap: onTap,
         dense: true,
         minTileHeight: subtitle == null ? 48 : 64,
+        titleAlignment: icon == Icons.sticky_note_2_outlined
+            ? ListTileTitleAlignment.top
+            : null,
         minLeadingWidth: 20,
         horizontalTitleGap: 14,
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-        leading: Icon(icon,
-            color: danger ? color : _kIcon, size: 22),
+        leading: Icon(icon, color: danger ? color : _kIcon, size: 22),
         title: Text(title,
             style: TextStyle(
                 color: color, fontSize: 14, fontWeight: FontWeight.w500)),
         subtitle: subtitle == null
             ? null
             : Text(subtitle!,
-                style: const TextStyle(
-                    color: _kSubtle, fontSize: 12)));
+                style: const TextStyle(color: _kSubtle, fontSize: 12)));
   }
 }
 
@@ -698,7 +889,7 @@ class _KeyIdenticon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ClipRRect(
-      borderRadius: BorderRadius.circular(size * .12),
+      borderRadius: BorderRadius.circular(size > 100 ? 14 : 10),
       child: CustomPaint(
           size: Size.square(size), painter: _IdenticonPainter(bytes)));
 }
@@ -753,10 +944,10 @@ class _FingerprintText extends StatelessWidget {
     final lines = <String>[
       for (var i = 0; i < parts.length; i += 4) parts.skip(i).take(4).join(' ')
     ];
-    return Text(lines.join('\n'),
+    return Text(lines.join('\n') + (groups * 2 < bytes.length ? '…' : ''),
         textAlign: groups > 4 ? TextAlign.center : TextAlign.start,
         style: TextStyle(
-            fontFamily: 'Roboto',
+            fontFamily: 'monospace',
             fontSize: fontSize,
             letterSpacing: 1.2,
             height: 1.5,

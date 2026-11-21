@@ -23,9 +23,12 @@ class AppDelegate: FlutterAppDelegate {
     securityChannel.setMethodCallHandler { [weak self] call, result in
       switch call.method {
       case "enableSecureMode":
-        self?.enableSecureMode()
+        self?.disableSecureMode()
         result(nil)
       case "disableSecureMode":
+        self?.disableSecureMode()
+        result(nil)
+      case "setSecureMode":
         self?.disableSecureMode()
         result(nil)
       case "excludeFromRecents":

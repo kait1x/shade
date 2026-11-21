@@ -128,6 +128,14 @@ test('regressions: logout identity, admin revocation, refresh, durable receipts 
   assert.equal((await request('/user/bob', null, auth(alice))).status, 403);
   await register(alice);
   let a = await connect(alice), b = await connect(bob), c = await connect(carol);
+  // Avatar endpoints use the real TLS/session middleware and socket identity.
+  assert.equal((await request('/user/alice/avatar')).status,401);
+  b.emit('watchProfiles',['alice']);
+  await new Promise(resolve=>setTimeout(resolve,100));
+  const avatarEvent=once(b,'avatarUpdated');
+  assert.equal((await request('/profile/avatar',{frame:'silver',revision:0},auth(alice),'PUT')).status,200);
+  assert.equal((await avatarEvent).username,'alice');
+  assert.equal((await request('/user/alice/avatar',null,auth(bob))).data.frame,'silver');
   const payload = { id: crypto.randomUUID(), to: 'bob', data: encrypt('durable receipt', bob.publicKey) };
   let duplicates = 0;
   const first = once(b, 'message'); assert.equal((await send(a, payload)).ok, true); await first;
@@ -137,6 +145,8 @@ test('regressions: logout identity, admin revocation, refresh, durable receipts 
   assert.equal(readAck.ok, true);
   b.disconnect(); c.disconnect(); await stop(); logs = ''; await start();
   for (const user of [alice, bob, carol]) await register(user);
+  assert.equal((await request('/user/alice/avatar',null,auth(alice))).data.frame,'silver','avatar settings survive server restart');
+  assert.equal(fs.readFileSync(path.join(temp,'data','stickers.json'),'utf8').includes('silver'),false,'profile settings stay encrypted at rest');
   a = io(base, { transports: ['websocket'], autoConnect: false, reconnection: false, ca: fs.readFileSync(path.join(certs, 'cert.pem')) });
   sockets.push(a);
   const statusReplay = once(a, 'messageStatus'), connected = once(a, 'connect'); a.connect(); await connected;

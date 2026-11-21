@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Shade">
+  <meta name="description" content="Shade Web Alpha 0.1 — зашифрованная переписка">
+  <link rel="manifest" href="alpha-manifest.json">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" href="favicon.png">
+  <link rel="stylesheet" href="alpha.css">
+  <title>Shade · Alpha 0.1</title>
+</head>
+<body>
+  <main id="root"><p role="status">Загрузка Shade…</p></main>
+  <p id="notice" role="status" aria-live="polite"></p>
+  <dialog id="dialog"><form method="dialog"><h2 id="dialog-title"></h2><div id="dialog-body"></div><button value="close">Закрыть</button></form></dialog>
+  <noscript>Для работы Shade включите JavaScript.</noscript>
+  <script src="/socket.io/socket.io.js" defer></script>
+  <script type="module" src="alpha-ui.mjs"></script>
+</body>
+</html>

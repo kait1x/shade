@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:math';
+import 'package:shade/core/widgets/shade_motion.dart';
 import 'package:shade/features/home/presentation/widgets/chat_list_view.dart';
 
 import 'package:flutter/material.dart';
@@ -15,7 +16,7 @@ import 'package:shade/features/chats/presentation/widgets/message_bubble.dart';
 import 'package:shade/features/chats/presentation/widgets/message_input.dart';
 import 'package:shade/main.dart';
 import 'package:shade/core/widgets/shade_ui.dart';
-import 'package:shade/features/profile/presentation/screens/profile_screen.dart';
+import 'package:go_router/go_router.dart';
 
 /// Arguments passed to [ChatScreen] via GoRouter `extra`.
 class ChatScreenArgs {
@@ -63,6 +64,9 @@ class DisplayMessage {
 class ChatMessagesState {
   final List<DisplayMessage> messages;
   final bool isLoading;
+  final bool isLoadingMore;
+  final bool hasMore;
+  final String? paginationError;
   final String? error;
   final bool isRecipientTyping;
   final UserStatus? userStatus;
@@ -71,6 +75,9 @@ class ChatMessagesState {
   const ChatMessagesState({
     this.messages = const [],
     this.isLoading = true,
+    this.isLoadingMore = false,
+    this.hasMore = true,
+    this.paginationError,
     this.error,
     this.isRecipientTyping = false,
     this.userStatus,
@@ -80,6 +87,11 @@ class ChatMessagesState {
   ChatMessagesState copyWith({
     List<DisplayMessage>? messages,
     bool? isLoading,
+    bool? isLoadingMore,
+    bool? hasMore,
+    String? paginationError,
+    bool clearPaginationError = false,
+    bool clearError = false,
     String? error,
     bool? isRecipientTyping,
     UserStatus? userStatus,
@@ -89,7 +101,12 @@ class ChatMessagesState {
     return ChatMessagesState(
       messages: messages ?? this.messages,
       isLoading: isLoading ?? this.isLoading,
-      error: error,
+      isLoadingMore: isLoadingMore ?? this.isLoadingMore,
+      hasMore: hasMore ?? this.hasMore,
+      paginationError: clearPaginationError
+          ? null
+          : (paginationError ?? this.paginationError),
+      error: clearError ? null : (error ?? this.error),
       isRecipientTyping: isRecipientTyping ?? this.isRecipientTyping,
       userStatus: userStatus ?? this.userStatus,
       replyTo: clearReply ? null : (replyTo ?? this.replyTo),
@@ -118,6 +135,16 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   int _loadedCount = 0;
   bool _isLoadingMore = false;
   bool _hasMore = true;
+  Future<void> _operations = Future.value();
+
+  // Serialize refreshes and pagination so offsets and decrypted pages agree.
+  Future<void> _enqueue(Future<void> Function() operation) {
+    final next = _operations.then((_) async {
+      if (!_isDisposed) await operation();
+    });
+    _operations = next.catchError((Object _) {});
+    return next;
+  }
 
   ChatMessagesNotifier({
     required this.conversationId,
@@ -221,17 +248,35 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   }
 
   /// Load initial messages (latest page)
-  Future<void> _loadMessages() async {
-    try {
-      state = state.copyWith(isLoading: state.messages.isEmpty, error: null);
+  Future<void> _loadMessages() => _enqueue(_reloadMessages);
 
+  Future<void> _reloadMessages() async {
+    try {
+      state =
+          state.copyWith(isLoading: state.messages.isEmpty, clearError: true);
+
+      final requested = max(_pageSize, _loadedCount);
       final rawMessages = await _chatRepository.getMessages(
         conversationId,
-        limit: _pageSize,
+        limit: requested,
         offset: 0,
       );
-      _loadedCount = rawMessages.length;
-      _hasMore = _loadedCount >= _pageSize;
+      // A new message shifts OFFSET pagination. Extend the fetched window until
+      // the oldest visible history is included, preserving the entire loaded range.
+      final oldest =
+          state.messages.length > _pageSize ? state.messages.first : null;
+      var more = rawMessages.length >= requested;
+      while (oldest != null &&
+          more &&
+          rawMessages.isNotEmpty &&
+          !rawMessages.any((m) => m.id == oldest.id) &&
+          !rawMessages.last.timestamp.isBefore(oldest.timestamp)) {
+        final page = await _chatRepository.getMessages(conversationId,
+            limit: _pageSize, offset: rawMessages.length);
+        if (_isDisposed) return;
+        rawMessages.addAll(page);
+        more = page.length >= _pageSize;
+      }
 
       final decrypted = await _chatRepository.decryptMessages(
         rawMessages,
@@ -239,6 +284,8 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
       );
 
       if (_isDisposed) return;
+      _loadedCount = rawMessages.length;
+      _hasMore = more;
       unawaited(_markDisplayedRead(rawMessages));
       if (_isDisposed) return;
       state = state.copyWith(
@@ -258,6 +305,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
                 ))
             .toList(),
         isLoading: false,
+        hasMore: _hasMore,
       );
     } catch (e) {
       if (_isDisposed) return;
@@ -288,10 +336,14 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
 
   /// Load more messages (older) for pagination
   Future<void> loadMoreMessages() async {
-    if (_isLoadingMore || !_hasMore) return;
+    if (_isLoadingMore || !_hasMore || _isDisposed) return;
+    _isLoadingMore = true;
+    return _enqueue(_loadOlderMessages);
+  }
 
+  Future<void> _loadOlderMessages() async {
     try {
-      _isLoadingMore = true;
+      state = state.copyWith(isLoadingMore: true, clearPaginationError: true);
 
       final rawMessages = await _chatRepository.getMessages(
         conversationId,
@@ -304,8 +356,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         return;
       }
 
-      _loadedCount += rawMessages.length;
-      _hasMore = rawMessages.length >= _pageSize;
+      final hasMore = rawMessages.length >= _pageSize;
 
       final decrypted = await _chatRepository.decryptMessages(
         rawMessages,
@@ -330,20 +381,34 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
               ))
           .toList();
 
+      _loadedCount += rawMessages.length;
+      _hasMore = hasMore;
+      final existing = state.messages.map((m) => m.id).toSet();
       // Prepend older messages to the beginning
       state = state.copyWith(
-        messages: [...newMessages, ...state.messages],
+        messages: [
+          ...newMessages.where((m) => !existing.contains(m.id)),
+          ...state.messages
+        ],
       );
     } catch (e) {
-      debugPrint('Error loading more messages: $e');
+      if (!_isDisposed) {
+        state = state.copyWith(paginationError: 'Не удалось загрузить историю');
+      }
     } finally {
       _isLoadingMore = false;
+      if (!_isDisposed) {
+        state = state.copyWith(
+            isLoadingMore: false,
+            hasMore: _hasMore,
+            paginationError: state.paginationError);
+      }
     }
   }
 
   /// Both payload copies are encrypted before committing. A durable outbox
   /// prevents a temporary disconnect from silently losing a message.
-  Future<void> _sendPayload(String payload) async {
+  Future<bool> _sendPayload(String payload) async {
     try {
       final myPublicKey = await _cryptoService.getPublicKey();
       if (myPublicKey == null) throw StateError('No public key');
@@ -372,19 +437,24 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
         recipient: isSelfChat ? null : recipientUsername,
         networkPayload: isSelfChat ? null : recipientCopy,
       );
-      if (_isDisposed) return;
-      state = state.copyWith(clearReply: true);
+      if (_isDisposed) return true;
+      state = state.copyWith(clearReply: true, clearError: true);
       await _loadMessages();
       unawaited(_connectionService.flushOutbox());
+      return true;
     } catch (e) {
-      if (!_isDisposed) state = state.copyWith(error: e.toString());
+      if (!_isDisposed) {
+        state = state.copyWith(
+            error: 'Не удалось отправить сообщение. Попробуйте ещё раз.');
+      }
+      return false;
     }
   }
 
-  Future<void> sendAndEncrypt(String plainText) async {
-    if (plainText.trim().isEmpty) return;
+  Future<bool> sendAndEncrypt(String plainText) async {
+    if (plainText.trim().isEmpty) return false;
     final reply = state.replyTo;
-    await _sendPayload(reply == null
+    return _sendPayload(reply == null
         ? plainText
         : jsonEncode({
             't': plainText,
@@ -396,7 +466,7 @@ class ChatMessagesNotifier extends StateNotifier<ChatMessagesState> {
   }
 
   Future<void> refresh() => _loadMessages();
-  Future<void> sendImage(List<int> imageBytes) =>
+  Future<bool> sendImage(List<int> imageBytes) =>
       _sendPayload('IMG:${base64Encode(imageBytes)}');
 
   /// Deletes a message locally and optionally for everyone.
@@ -518,11 +588,11 @@ class ChatScreen extends ConsumerWidget {
             recipientPublicKey: args.recipientPublicKey,
             recipientUsername: args.recipientUsername,
             currentUsername: ref.read(authNotifierProvider).nickname ?? '')),
-        (_, __) {
-      ref.invalidate(conversationsProvider);
+        (previous, next) {
+      if (previous?.messages != next.messages) {
+        ref.invalidate(conversationsProvider);
+      }
     });
-    // Clear notifications for this conversation
-    NotificationService.cancelForConversation(conversationId.toString());
 
     final authState = ref.watch(authNotifierProvider);
     final currentUsername = authState.nickname ?? '';
@@ -540,8 +610,13 @@ class ChatScreen extends ConsumerWidget {
     final notifier = ref.read(chatMessagesProvider(params).notifier);
 
     return Scaffold(
+      backgroundColor: Colors.black,
       resizeToAvoidBottomInset: true,
       appBar: AppBar(
+        backgroundColor: Colors.black,
+        toolbarHeight:
+            68 + max(0, MediaQuery.textScalerOf(context).scale(16) - 16) * 2,
+        shape: const Border(bottom: BorderSide(color: Color(0xFF1C1C1F))),
         leading: const BackButton(),
         leadingWidth: 48,
         titleSpacing: 0,
@@ -549,16 +624,18 @@ class ChatScreen extends ConsumerWidget {
             borderRadius: BorderRadius.circular(12),
             onTap: args.conversationName == 'Избранное'
                 ? null
-                : () => Navigator.of(context).push(MaterialPageRoute<void>(
-                    builder: (_) => ProfileScreen(
-                        username: args.recipientUsername,
-                        viewerUsername: currentUsername,
-                        publicKey: args.recipientPublicKey))),
+                : () => context.push(
+                    '/peer/${Uri.encodeComponent(args.recipientUsername)}',
+                    extra: args.recipientPublicKey),
             child: Row(children: [
-              ShadeAvatar(
-                  name: args.conversationName,
-                  size: 40,
-                  saved: args.conversationName == 'Избранное'),
+              Hero(
+                  tag: 'chat-avatar-${args.recipientUsername}',
+                  child: ShadeAvatar(
+                      name: args.conversationName,
+                      username: args.recipientUsername,
+                      online: messagesState.userStatus?.online == true,
+                      size: 40,
+                      saved: args.conversationName == 'Избранное')),
               const SizedBox(width: 12),
               Expanded(
                   child: Column(
@@ -570,20 +647,26 @@ class ChatScreen extends ConsumerWidget {
                         style: const TextStyle(
                             fontSize: 16, fontWeight: FontWeight.w700)),
                     const SizedBox(height: 4),
-                    Text(
-                        messagesState.isRecipientTyping
-                            ? 'печатает…'
-                            : (messagesState.userStatus?.displayText ??
-                                (args.conversationName == 'Избранное'
-                                    ? 'Ваши личные заметки'
-                                    : 'Личная переписка')),
-                        style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w400,
-                            color: messagesState.userStatus?.online == true ||
-                                    messagesState.isRecipientTyping
-                                ? ShadeColors.greenAccent
-                                : ShadeColors.textSecondary)),
+                    AnimatedSwitcher(
+                        duration: ShadeMotion.duration(context, 160),
+                        child: Text(
+                            messagesState.isRecipientTyping
+                                ? 'печатает…'
+                                : (messagesState.userStatus?.displayText ??
+                                    (args.conversationName == 'Избранное'
+                                        ? 'Ваши личные заметки'
+                                        : 'Личная переписка')),
+                            key: ValueKey(messagesState.isRecipientTyping),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w400,
+                                color:
+                                    messagesState.userStatus?.online == true ||
+                                            messagesState.isRecipientTyping
+                                        ? ShadeColors.greenAccent
+                                        : ShadeColors.textSecondary))),
                   ])),
             ])),
         actions: [
@@ -612,7 +695,8 @@ class ChatScreen extends ConsumerWidget {
             Padding(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-                child: Text(messagesState.error!,
+                child: Text(
+                    'Не удалось выполнить действие. Проверьте подключение и повторите.',
                     style: TextStyle(
                         color: Theme.of(context).colorScheme.error,
                         fontSize: 12))),
@@ -656,6 +740,7 @@ class ChatScreen extends ConsumerWidget {
                   IconButton(
                     icon: const Icon(Icons.close_rounded,
                         size: 18, color: ShadeColors.textMuted),
+                    tooltip: 'Отменить ответ',
                     onPressed: () => notifier.clearReply(),
                   ),
                 ],
@@ -663,8 +748,16 @@ class ChatScreen extends ConsumerWidget {
             ),
           // Input area
           MessageInput(
-            onSend: (text) => notifier.sendAndEncrypt(text),
-            onImageSelected: (bytes) => notifier.sendImage(bytes),
+            onSend: (text) async {
+              if (!await notifier.sendAndEncrypt(text)) {
+                throw StateError('Send failed');
+              }
+            },
+            onImageSelected: (bytes) async {
+              if (!await notifier.sendImage(bytes)) {
+                throw StateError('Send failed');
+              }
+            },
             onTyping: () => notifier.notifyTyping(),
             onStopTyping: () => notifier.notifyStopTyping(),
           ),
@@ -674,7 +767,7 @@ class ChatScreen extends ConsumerWidget {
   }
 }
 
-class _MessagesArea extends StatelessWidget {
+class _MessagesArea extends StatefulWidget {
   final ChatMessagesState messagesState;
   final VoidCallback onRefresh;
   final ChatMessagesNotifier notifier;
@@ -692,177 +785,264 @@ class _MessagesArea extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
-    // Show messages immediately, even while decrypting new ones
-    final msgs = messagesState.messages;
+  State<_MessagesArea> createState() => _MessagesAreaState();
+}
 
-    if (messagesState.error != null && msgs.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.error_outline_rounded,
-                size: 48,
-                color: Theme.of(context).colorScheme.error,
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Loading Error',
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: ShadeColors.textPrimary,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                messagesState.error!,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 13,
-                  color: ShadeColors.textMuted,
-                ),
-              ),
-              const SizedBox(height: 16),
-              FilledButton.icon(
-                onPressed: onRefresh,
-                icon: const Icon(Icons.refresh_rounded),
-                label: const Text('Retry'),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
+class _MessagesAreaState extends State<_MessagesArea> {
+  final _scroll = ScrollController();
+  final Set<int> _arrivals = {};
+  final Map<int, GlobalKey> _anchors = {};
+  int _unseen = 0;
+  bool _away = false;
 
-    if (msgs.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: ShadeColors.surfaceCard,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: ShadeColors.greyBorder,
-                  width: 0.5,
-                ),
-              ),
-              child: const Icon(
-                Icons.lock_outline_rounded,
-                size: 36,
-                color: ShadeColors.violet,
-              ),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'Начните разговор',
-              style: TextStyle(
-                fontSize: 15,
-                color: ShadeColors.textSecondary,
-              ),
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              'Напишите что-нибудь хорошее.',
-              style: TextStyle(
-                fontSize: 12,
-                color: ShadeColors.textMuted,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    final hasTyping = messagesState.isRecipientTyping;
-    final msgCount = msgs.length;
-
-    return NotificationListener<ScrollNotification>(
-      onNotification: (notification) {
-        // Load more messages when scrolling to the top
-        if (notification is ScrollUpdateNotification &&
-            notification.metrics.extentAfter < 100) {
-          notifier.loadMoreMessages();
-          return true;
-        }
-        return false;
-      },
-      child: ListView.builder(
-        reverse: true,
-        padding: const EdgeInsets.only(top: 8, bottom: 8),
-        itemCount:
-            msgCount + (hasTyping ? 1 : 0) + (_isLoadingMoreIndicator ? 1 : 0),
-        itemBuilder: (context, index) {
-          // Loading indicator at the top
-          if (_isLoadingMoreIndicator && index == 0) {
-            return const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12.0),
-              child: Center(
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            );
-          }
-
-          // Typing bubble at the bottom (index 0 in reversed list)
-          final adjustedIndex = _isLoadingMoreIndicator ? index - 1 : index;
-          if (hasTyping && adjustedIndex == 0) {
-            return const _TypingBubble();
-          }
-          final msgIndex = hasTyping ? adjustedIndex - 1 : adjustedIndex;
-          final reversedIndex = msgCount - 1 - msgIndex;
-
-          if (reversedIndex < 0 || reversedIndex >= msgCount) {
-            return const SizedBox.shrink();
-          }
-
-          final msg = msgs[reversedIndex];
-          final previous =
-              reversedIndex > 0 ? msgs[reversedIndex - 1].timestamp : null;
-          final startsDay = previous == null ||
-              previous.year != msg.timestamp.year ||
-              previous.month != msg.timestamp.month ||
-              previous.day != msg.timestamp.day;
-          return Column(
-              key: ValueKey(msg.id),
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (startsDay) ShadeDateSeparator(date: msg.timestamp),
-                MessageBubble(
-                  text: msg.text,
-                  timestamp: msg.timestamp,
-                  isMine: msg.isMine,
-                  isEncrypted: msg.decryptSuccess,
-                  isImage: msg.isImage,
-                  imageData: msg.imageData,
-                  status: msg.status,
-                  onLongPress: () => _showDeleteMenu(context, msg, notifier),
-                  replyText: msg.replyText,
-                  replySender: msg.replySender,
-                )
-              ]);
-        },
-      ),
-    );
+  @override
+  void initState() {
+    super.initState();
+    NotificationService.cancelForConversation(widget.conversationId.toString());
+    _scroll.addListener(_onScroll);
   }
 
-  bool get _isLoadingMoreIndicator => false; // Will be handled by state
+  void _onScroll() {
+    final away = _scroll.offset > 180;
+    if (away != _away || (!away && _unseen != 0)) {
+      setState(() {
+        _away = away;
+        if (!away) _unseen = 0;
+      });
+    }
+    if (_scroll.position.extentAfter < 180 &&
+        widget.messagesState.paginationError == null) {
+      widget.notifier.loadMoreMessages();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _MessagesArea oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final before = oldWidget.messagesState.messages;
+    final after = widget.messagesState.messages;
+    if (before.isEmpty || after.isEmpty || before.last.id == after.last.id) {
+      return;
+    }
+    final known = before.map((m) => m.id).toSet();
+    final anchor = after.indexWhere((m) => m.id == before.last.id);
+    final added = anchor < 0
+        ? <DisplayMessage>[]
+        : after.skip(anchor + 1).where((m) => !known.contains(m.id)).toList();
+    if (added.isEmpty) return;
+    if (!_away) _arrivals.addAll(added.map((m) => m.id));
+    if (_away && added.any((m) => m.isMine)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _toLatest();
+      });
+    } else if (_away && _scroll.hasClients) {
+      _unseen += added.where((m) => !m.isMine).length;
+      GlobalKey? anchorKey;
+      double? anchorY;
+      final area = context.findRenderObject() as RenderBox?;
+      if (area != null && area.hasSize) {
+        final bounds = area.localToGlobal(Offset.zero) & area.size;
+        for (final key in _anchors.values) {
+          final box = key.currentContext?.findRenderObject() as RenderBox?;
+          if (box == null || !box.hasSize) continue;
+          final y = box.localToGlobal(Offset.zero).dy;
+          if (y >= bounds.top && y < bounds.bottom) {
+            anchorKey = key;
+            anchorY = y;
+            break;
+          }
+        }
+      }
+      if (anchorKey != null && anchorY != null) {
+        final key = anchorKey, y = anchorY;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !_scroll.hasClients) return;
+          final box = key.currentContext?.findRenderObject() as RenderBox?;
+          if (box == null || !box.hasSize) return;
+          final delta = y - box.localToGlobal(Offset.zero).dy;
+          _scroll.jumpTo((_scroll.offset + delta)
+              .clamp(0, _scroll.position.maxScrollExtent));
+        });
+      }
+    }
+
+    final active = after.map((m) => m.id).toSet();
+    _arrivals.removeWhere((id) => !active.contains(id));
+    _anchors.removeWhere((id, _) => !active.contains(id));
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _toLatest() {
+    if (!_scroll.hasClients) return;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _scroll.jumpTo(0);
+    } else {
+      _scroll.animateTo(0,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = widget.messagesState;
+    final msgs = state.messages;
+    if (state.isLoading && msgs.isEmpty) {
+      return const Center(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+        SizedBox.square(
+            dimension: 24, child: ShadeLoadingIndicator(strokeWidth: 2)),
+        SizedBox(height: 16),
+        Text('Открываем переписку',
+            style: TextStyle(color: ShadeColors.textSecondary)),
+      ]));
+    }
+    if (state.error != null && msgs.isEmpty) {
+      return SingleChildScrollView(
+          child: ShadeEmptyState(
+              icon: Icons.cloud_off_rounded,
+              title: 'Не удалось открыть переписку',
+              description:
+                  'История остаётся на устройстве. Попробуйте ещё раз.',
+              action: OutlinedButton.icon(
+                  onPressed: widget.onRefresh,
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('Повторить'))));
+    }
+    if (msgs.isEmpty) {
+      return const Center(
+          child: SingleChildScrollView(
+              child: ShadeEmptyState(
+                  icon: Icons.chat_bubble_outline_rounded,
+                  title: 'Начните разговор',
+                  description:
+                      'Слова, фотографии, важные моменты.\nВсё начинается с одного сообщения.')));
+    }
+    final hasTyping = state.isRecipientTyping;
+    final offset = hasTyping ? 1 : 0;
+    final indexes = <int, int>{
+      for (var i = 0; i < msgs.length; i++)
+        msgs[i].id: msgs.length - 1 - i + offset
+    };
+    bool grouped(DisplayMessage a, DisplayMessage b) =>
+        a.isMine == b.isMine &&
+        a.timestamp.year == b.timestamp.year &&
+        a.timestamp.month == b.timestamp.month &&
+        a.timestamp.day == b.timestamp.day &&
+        b.timestamp.difference(a.timestamp).inMinutes.abs() < 5;
+    return Stack(children: [
+      ListView.builder(
+          key: PageStorageKey('messages-${widget.conversationId}'),
+          controller: _scroll,
+          reverse: true,
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          padding: const EdgeInsets.only(top: 8, bottom: 12),
+          itemCount: msgs.length + offset + 1,
+          findChildIndexCallback: (key) =>
+              key is ValueKey<int> ? indexes[key.value] : null,
+          itemBuilder: (context, index) {
+            if (hasTyping && index == 0) return const _TypingBubble();
+            final reversedIndex = msgs.length - 1 - (index - offset);
+            if (reversedIndex < 0) {
+              if (state.isLoadingMore) {
+                return const Padding(
+                    padding: EdgeInsets.all(18),
+                    child: Center(
+                        child: SizedBox.square(
+                            dimension: 20,
+                            child: ShadeLoadingIndicator(strokeWidth: 2))));
+              }
+              if (state.paginationError != null) {
+                return Center(
+                    child: TextButton.icon(
+                        onPressed: widget.notifier.loadMoreMessages,
+                        icon: const Icon(Icons.refresh_rounded, size: 18),
+                        label: const Text('Загрузить историю ещё раз')));
+              }
+              return Padding(
+                  padding:
+                      const EdgeInsets.symmetric(vertical: 20, horizontal: 32),
+                  child: Text(
+                      state.hasMore
+                          ? 'Потяните к началу переписки'
+                          : 'Начало переписки',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          fontSize: 11, color: ShadeColors.textMuted)));
+            }
+            final msg = msgs[reversedIndex];
+            final previous = reversedIndex > 0 ? msgs[reversedIndex - 1] : null;
+            final next = reversedIndex + 1 < msgs.length
+                ? msgs[reversedIndex + 1]
+                : null;
+            final startsDay = previous == null ||
+                previous.timestamp.year != msg.timestamp.year ||
+                previous.timestamp.month != msg.timestamp.month ||
+                previous.timestamp.day != msg.timestamp.day;
+            return Column(
+                key: ValueKey(msg.id),
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (startsDay) ShadeDateSeparator(date: msg.timestamp),
+                  ShadeMessageArrival(
+                      key: ValueKey('arrival-${msg.id}'),
+                      animate: _arrivals.remove(msg.id),
+                      child: MessageBubble(
+                          key: _anchors.putIfAbsent(msg.id, () => GlobalKey()),
+                          text: msg.text,
+                          timestamp: msg.timestamp,
+                          isMine: msg.isMine,
+                          isEncrypted: msg.decryptSuccess,
+                          isImage: msg.isImage,
+                          imageData: msg.imageData,
+                          status: msg.status,
+                          groupedWithPrevious:
+                              previous != null && grouped(previous, msg),
+                          groupedWithNext: next != null && grouped(msg, next),
+                          onLongPress: () =>
+                              _showDeleteMenu(context, msg, widget.notifier),
+                          replyText: msg.replyText,
+                          replySender: msg.replySender))
+                ]);
+          }),
+      if (_away)
+        Positioned(
+            right: 16,
+            bottom: 12,
+            child: FloatingActionButton.small(
+                key: const Key('jump-to-latest'),
+                heroTag: 'latest-${widget.conversationId}',
+                tooltip: _unseen > 0
+                    ? 'Новых сообщений: $_unseen. К последним'
+                    : 'К последним сообщениям',
+                backgroundColor: const Color(0xFF29292D),
+                onPressed: _toLatest,
+                child: _unseen > 0
+                    ? Text('$_unseen',
+                        style: const TextStyle(fontWeight: FontWeight.w700))
+                    : const Icon(Icons.arrow_downward_rounded, size: 21)))
+    ]);
+  }
 
   void _showDeleteMenu(
       BuildContext context, DisplayMessage msg, ChatMessagesNotifier notifier) {
+    ShadeMotion.selection(context);
     showModalBottomSheet(
       context: context,
+      sheetAnimationStyle: ShadeMotion.sheet(context),
+      showDragHandle: true,
       backgroundColor: ShadeColors.surfaceCard,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (ctx) => SafeArea(
-        child: Column(
+        child: SingleChildScrollView(
+            child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
@@ -884,7 +1064,7 @@ class _MessagesArea extends StatelessWidget {
                 notifier.deleteMessage(msg.id, forEveryone: false);
               },
             ),
-            if (msg.isMine)
+            if (msg.isMine && msg.status != 'queued' && msg.networkId != null)
               ListTile(
                 leading: const Icon(Icons.delete_forever_rounded,
                     color: Color(0xFFEF4444)),
@@ -896,7 +1076,7 @@ class _MessagesArea extends StatelessWidget {
                 },
               ),
           ],
-        ),
+        )),
       ),
     );
   }
@@ -920,7 +1100,18 @@ class _TypingBubbleState extends State<_TypingBubble>
     _controller = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1200),
-    )..repeat();
+    );
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _controller.stop();
+      _controller.value = .5;
+    } else {
+      _controller.repeat();
+    }
   }
 
   @override

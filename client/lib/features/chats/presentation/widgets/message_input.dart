@@ -1,18 +1,21 @@
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:shade/core/widgets/shade_motion.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:image/image.dart' as img;
-import 'package:shade/main.dart';
+import 'package:shade/core/services/message_image.dart';
+import 'package:shade/core/theme/shade_theme.dart';
 
 class MessageInput extends StatefulWidget {
-  final ValueChanged<String> onSend;
-  final ValueChanged<List<int>>? onImageSelected;
+  final FutureOr<void> Function(String) onSend;
+  final int maxLines;
+  final FutureOr<void> Function(List<int>)? onImageSelected;
   final VoidCallback? onTyping;
   final VoidCallback? onStopTyping;
   const MessageInput(
       {super.key,
       required this.onSend,
+      this.maxLines = 5,
       this.onImageSelected,
       this.onTyping,
       this.onStopTyping});
@@ -24,6 +27,8 @@ class _MessageInputState extends State<MessageInput> {
   final _controller = TextEditingController();
   final _focusNode = FocusNode();
   bool _hasText = false;
+  bool _sending = false;
+  bool _picking = false;
   Timer? _stopTypingTimer;
   DateTime? _lastTyping;
   @override
@@ -63,16 +68,34 @@ class _MessageInputState extends State<MessageInput> {
     super.dispose();
   }
 
-  void _handleSend() {
+  Future<void> _handleSend() async {
     final text = _controller.text.trim();
-    if (text.isEmpty) return;
-    widget.onSend(text);
-    _controller.clear();
+    if (text.isEmpty || _sending || _picking) return;
+    setState(() => _sending = true);
+    final original = _controller.text;
+    try {
+      await widget.onSend(text);
+      if (!mounted) return;
+      ShadeMotion.selection(context);
+      // Do not erase edits made while encryption/storage was in progress.
+      if (_controller.text == original) _controller.clear();
+      _focusNode.requestFocus();
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                'Не удалось отправить. Текст сохранён — попробуйте ещё раз.')));
+      }
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
   }
 
   Future<void> _pickImage() async {
+    if (_picking || _sending) return;
     final source = await showModalBottomSheet<ImageSource>(
         context: context,
+        sheetAnimationStyle: ShadeMotion.sheet(context),
         showDragHandle: true,
         builder: (ctx) => SafeArea(
             child: Padding(
@@ -114,29 +137,30 @@ class _MessageInputState extends State<MessageInput> {
   Future<void> _getImage(ImageSource source) async {
     final picker = ImagePicker();
     try {
+      setState(() => _picking = true);
       final file = await picker.pickImage(
         source: source,
         maxWidth: 1280,
         maxHeight: 1280,
         imageQuality: 80,
       );
-      if (file == null || widget.onImageSelected == null) return;
+      if (file == null || widget.onImageSelected == null || !mounted) return;
 
-      // Read and re-encode to strip ALL metadata (EXIF, GPS, camera, etc.)
       final rawBytes = await file.readAsBytes();
-      final decoded = img.decodeImage(rawBytes);
-      if (decoded == null) return;
-
-      // Re-encode as clean JPEG — no metadata preserved
-      final cleanJpeg = img.encodeJpg(decoded, quality: 80);
+      if (rawBytes.length > 20 * 1024 * 1024) {
+        throw const FormatException('Image too large');
+      }
+      final cleanJpeg = await compute(prepareMessageImage, rawBytes);
       if (!mounted) return;
-      widget.onImageSelected!(Uint8List.fromList(cleanJpeg));
+      await widget.onImageSelected!(cleanJpeg);
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
             content: Text(
                 'Не удалось открыть фото. Проверьте разрешения камеры или выберите другое изображение.')));
       }
+    } finally {
+      if (mounted) setState(() => _picking = false);
     }
   }
 
@@ -144,12 +168,12 @@ class _MessageInputState extends State<MessageInput> {
   Widget build(BuildContext context) {
     return DecoratedBox(
         decoration: const BoxDecoration(
-            color: ShadeColors.black,
-            border: Border(top: BorderSide(color: Color(0xFF292929)))),
+            color: Colors.black,
+            border: Border(top: BorderSide(color: Color(0xFF29292D)))),
         child: SafeArea(
             top: false,
             child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                padding: const EdgeInsets.fromLTRB(10, 10, 14, 10),
                 child:
                     Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
                   if (widget.onImageSelected != null)
@@ -157,30 +181,31 @@ class _MessageInputState extends State<MessageInput> {
                         padding: const EdgeInsets.only(bottom: 3, right: 4),
                         child: IconButton(
                             tooltip: 'Прикрепить фото',
-                            onPressed: _pickImage,
+                            onPressed: _picking || _sending ? null : _pickImage,
                             icon: const Icon(Icons.add_rounded,
                                 color: ShadeColors.textSecondary, size: 26))),
                   Expanded(
                       child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 160),
+                          duration: ShadeMotion.duration(context, 160),
                           decoration: BoxDecoration(
-                              color: ShadeColors.surfaceCard,
+                              color: const Color(0xFF111113),
                               borderRadius: BorderRadius.circular(22),
                               border: Border.all(
                                   color: _focusNode.hasFocus
-                                      ? ShadeColors.violet.withValues(alpha: .6)
-                                      : ShadeColors.greyBorder)),
+                                      ? const Color(0xFF626267)
+                                      : const Color(0xFF29292D))),
                           child: TextField(
                               key: const Key('message-field'),
                               controller: _controller,
                               focusNode: _focusNode,
-                              maxLines: 5,
+                              maxLines: widget.maxLines,
+                              keyboardType: TextInputType.multiline,
                               minLines: 1,
                               textCapitalization: TextCapitalization.sentences,
-                              textInputAction: TextInputAction.send,
+                              textInputAction: TextInputAction.newline,
                               style: const TextStyle(
                                   color: ShadeColors.textPrimary,
-                                  fontSize: 15,
+                                  fontSize: 16,
                                   height: 1.45),
                               decoration: const InputDecoration(
                                   hintText: 'Сообщение',
@@ -195,23 +220,31 @@ class _MessageInputState extends State<MessageInput> {
                   Padding(
                       padding: const EdgeInsets.only(bottom: 2),
                       child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 160),
+                          duration: ShadeMotion.duration(context, 160),
                           width: 48,
                           height: 48,
                           decoration: BoxDecoration(
                               color: _hasText
-                                  ? ShadeColors.violetDark
-                                  : ShadeColors.surfaceElevated,
-                              borderRadius: BorderRadius.circular(18)),
+                                  ? const Color(0xFFF5F5F7)
+                                  : const Color(0xFF1C1C1F),
+                              borderRadius: BorderRadius.circular(17)),
                           child: IconButton(
                               key: const Key('send-message'),
                               tooltip: 'Отправить',
-                              onPressed: _hasText ? _handleSend : null,
-                              icon: Icon(Icons.arrow_upward_rounded,
-                                  size: 24,
-                                  color: _hasText
-                                      ? Colors.white
-                                      : ShadeColors.textMuted)))),
+                              onPressed: _hasText && !_sending && !_picking
+                                  ? _handleSend
+                                  : null,
+                              icon: _sending || _picking
+                                  ? const SizedBox.square(
+                                      dimension: 19,
+                                      child: ShadeLoadingIndicator(
+                                          strokeWidth: 2,
+                                          color: Color(0xFF8E8E93)))
+                                  : Icon(Icons.arrow_upward_rounded,
+                                      size: 24,
+                                      color: _hasText
+                                          ? Colors.black
+                                          : ShadeColors.textMuted)))),
                 ]))));
   }
 }

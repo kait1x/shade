@@ -7,6 +7,39 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   sqfliteFfiInit();
 
+  test(
+      'v6 history and legacy confirmations migrate per owner, key rotation revokes old trust',
+      () async {
+    final folder = await Directory.systemTemp.createTemp('shade-key-migrate');
+    final file = '${folder.path}/db';
+    var service = await DatabaseService.openForTest(databaseFactoryFfi, file,
+        schemaVersion: 6);
+    await (await service.database).insert('messages', {
+      'conversation_id': 1,
+      'sender_id': 1,
+      'encrypted_content': 'history',
+      'timestamp': 1
+    });
+    await service.close();
+    service = await DatabaseService.openForTest(databaseFactoryFfi, file);
+    expect(
+        await service.checkFingerprint('me', 'peer', 'keyA', 'keyA'), isTrue);
+    expect(
+        await service.checkFingerprint('other', 'peer', 'keyA', null), isFalse);
+    await service.close();
+    service = await DatabaseService.openForTest(databaseFactoryFfi, file);
+    expect(await service.checkFingerprint('me', 'peer', 'keyA', null), isTrue);
+    expect(await service.checkFingerprint('me', 'peer', 'keyB', null), isFalse);
+    expect(
+        await service.checkFingerprint('me', 'peer', 'keyA', 'keyA'), isFalse);
+    await service.confirmFingerprint('me', 'peer', 'keyB');
+    expect(await service.checkFingerprint('me', 'peer', 'keyB', null), isTrue);
+    expect(
+        (await service.getMessages(1)).single['encrypted_content'], 'history');
+    await service.close();
+    await folder.delete(recursive: true);
+  });
+
   test('real SQLite migration preserves v4 history and supports durable outbox',
       () async {
     final folder = await Directory.systemTemp.createTemp('shade-db-test-');

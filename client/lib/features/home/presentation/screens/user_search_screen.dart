@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shade/core/widgets/shade_motion.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shade/core/services/connection_service.dart';
@@ -19,6 +20,7 @@ class UserSearchScreen extends ConsumerStatefulWidget {
 class _UserSearchScreenState extends ConsumerState<UserSearchScreen> {
   final _controller = TextEditingController();
   bool _isSearching = false;
+  bool _opening = false;
   String? _error;
   PublicKeyBundle? _foundUser;
   String? _searchedUsername;
@@ -30,8 +32,17 @@ class _UserSearchScreenState extends ConsumerState<UserSearchScreen> {
   }
 
   Future<void> _search() async {
-    final username = _controller.text.trim().toLowerCase();
-    if (username.isEmpty || _isSearching) return;
+    final username =
+        _controller.text.trim().toLowerCase().replaceFirst(RegExp(r'^@'), '');
+    if (username.isEmpty || _isSearching || _opening) return;
+    FocusScope.of(context).unfocus();
+    if (!RegExp(r'^[a-z0-9_]{3,32}$').hasMatch(username)) {
+      setState(() {
+        _foundUser = null;
+        _error = 'Используйте от 3 до 32 латинских букв, цифр или знак _.';
+      });
+      return;
+    }
 
     setState(() {
       _isSearching = true;
@@ -47,7 +58,8 @@ class _UserSearchScreenState extends ConsumerState<UserSearchScreen> {
       if (!mounted) return;
       if (bundle == null) {
         setState(() {
-          _error = 'Пользователь не найден или подпись невалидна';
+          _error =
+              'Проверьте никнейм и подключение. Не удалось найти и проверить профиль.';
           _isSearching = false;
         });
         return;
@@ -60,14 +72,14 @@ class _UserSearchScreenState extends ConsumerState<UserSearchScreen> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Ошибка поиска: $e';
+        _error = 'Не удалось связаться с сервером. Попробуйте ещё раз.';
         _isSearching = false;
       });
     }
   }
 
   Future<void> _startChat() async {
-    if (_foundUser == null || _searchedUsername == null) return;
+    if (_foundUser == null || _searchedUsername == null || _opening) return;
 
     final myNickname = ref.read(authNotifierProvider).nickname;
     if (myNickname == null) return;
@@ -80,41 +92,52 @@ class _UserSearchScreenState extends ConsumerState<UserSearchScreen> {
       return;
     }
 
-    final chatRepo = ref.read(chatRepositoryProvider);
+    setState(() => _opening = true);
+    try {
+      final chatRepo = ref.read(chatRepositoryProvider);
 
-    // Save contact
-    final db = ref.read(databaseServiceProvider);
-    await db.saveContact(
-      nickname: _searchedUsername!,
-      publicKey: _foundUser!.publicKey,
-      signature: _foundUser!.signature,
-    );
-
-    // Create or find conversation
-    final conversations = await chatRepo.getConversations();
-    int? conversationId;
-
-    for (final conv in conversations) {
-      if (conv.name == _searchedUsername) {
-        conversationId = conv.id;
-        break;
-      }
-    }
-
-    conversationId ??= await chatRepo.createConversation(
-      _searchedUsername!,
-      publicKey: _foundUser!.publicKey,
-    );
-
-    if (mounted) {
-      context.pushReplacement(
-        '/chat/$conversationId',
-        extra: ChatScreenArgs(
-          conversationName: _searchedUsername!,
-          recipientPublicKey: _foundUser!.publicKey,
-          recipientUsername: _searchedUsername!,
-        ),
+      // Save contact
+      final db = ref.read(databaseServiceProvider);
+      await db.saveContact(
+        nickname: _searchedUsername!,
+        publicKey: _foundUser!.publicKey,
+        signature: _foundUser!.signature,
       );
+
+      // Create or find conversation
+      final conversations = await chatRepo.getConversations();
+      int? conversationId;
+
+      for (final conv in conversations) {
+        if (conv.name == _searchedUsername) {
+          conversationId = conv.id;
+          break;
+        }
+      }
+
+      conversationId ??= await chatRepo.createConversation(
+        _searchedUsername!,
+        publicKey: _foundUser!.publicKey,
+      );
+
+      if (mounted) {
+        context.pushReplacement(
+          '/chat/$conversationId',
+          extra: ChatScreenArgs(
+            conversationName: _searchedUsername!,
+            recipientPublicKey: _foundUser!.publicKey,
+            recipientUsername: _searchedUsername!,
+          ),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content:
+                Text('Не удалось открыть переписку. Попробуйте ещё раз.')));
+      }
+    } finally {
+      if (mounted) setState(() => _opening = false);
     }
   }
 
@@ -145,7 +168,7 @@ class _UserSearchScreenState extends ConsumerState<UserSearchScreen> {
                         TextField(
                             key: const Key('user-search'),
                             controller: _controller,
-                            enabled: !_isSearching,
+                            enabled: !_isSearching && !_opening,
                             autocorrect: false,
                             textInputAction: TextInputAction.search,
                             decoration: InputDecoration(
@@ -173,16 +196,17 @@ class _UserSearchScreenState extends ConsumerState<UserSearchScreen> {
                                 })),
                         const SizedBox(height: 16),
                         FilledButton.icon(
-                            onPressed:
-                                _isSearching || _controller.text.trim().isEmpty
-                                    ? null
-                                    : _search,
+                            onPressed: _isSearching ||
+                                    _opening ||
+                                    _controller.text.trim().isEmpty
+                                ? null
+                                : _search,
                             icon: _isSearching
                                 ? const SizedBox(
                                     width: 17,
                                     height: 17,
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2))
+                                    child:
+                                        ShadeLoadingIndicator(strokeWidth: 2))
                                 : const Icon(Icons.search_rounded, size: 20),
                             label: Text(
                                 _isSearching ? 'Ищем…' : 'Найти собеседника'),
@@ -190,45 +214,55 @@ class _UserSearchScreenState extends ConsumerState<UserSearchScreen> {
                                 minimumSize: const Size.fromHeight(52))),
                         const SizedBox(height: 28),
                         if (_error != null)
-                          const ShadeEmptyState(
+                          ShadeEmptyState(
                               icon: Icons.person_search_outlined,
                               title: 'Пока не нашли',
-                              description:
-                                  'Проверьте никнейм и соединение с сервером.\nЗатем попробуйте ещё раз.')
+                              description: _error!)
                         else if (_foundUser != null &&
                             _searchedUsername != null)
-                          Container(
-                              padding: const EdgeInsets.all(24),
-                              decoration: BoxDecoration(
-                                  color: ShadeColors.surfaceCard,
-                                  borderRadius: BorderRadius.circular(24),
-                                  border: Border.all(
-                                      color: ShadeColors.greyBorder)),
-                              child: Column(children: [
-                                ShadeAvatar(name: _searchedUsername!, size: 76),
-                                const SizedBox(height: 18),
-                                Text('@$_searchedUsername',
-                                    style: const TextStyle(
-                                        fontSize: 22,
-                                        fontWeight: FontWeight.w700)),
-                                const SizedBox(height: 8),
-                                const Text('Профиль найден',
-                                    style: TextStyle(
-                                        color: ShadeColors.greenAccent,
-                                        fontSize: 13)),
-                                const SizedBox(height: 22),
-                                SizedBox(
-                                    width: double.infinity,
-                                    child: FilledButton.icon(
-                                        onPressed: _startChat,
-                                        icon: const Icon(
-                                            Icons.chat_bubble_outline_rounded,
-                                            size: 19),
-                                        label: const Text('Написать сообщение'),
-                                        style: FilledButton.styleFrom(
-                                            minimumSize:
-                                                const Size.fromHeight(50)))),
-                              ]))
+                          ShadeMessageArrival(
+                              key: ValueKey(_searchedUsername),
+                              animate: true,
+                              child: Container(
+                                  padding: const EdgeInsets.all(24),
+                                  decoration: BoxDecoration(
+                                      color: ShadeColors.surfaceCard,
+                                      borderRadius: BorderRadius.circular(24),
+                                      border: Border.all(
+                                          color: ShadeColors.greyBorder)),
+                                  child: Column(children: [
+                                    ShadeAvatar(
+                                        name: _searchedUsername!,
+                                        username: _searchedUsername,
+                                        size: 76),
+                                    const SizedBox(height: 18),
+                                    Text('@$_searchedUsername',
+                                        style: const TextStyle(
+                                            fontSize: 22,
+                                            fontWeight: FontWeight.w700)),
+                                    const SizedBox(height: 8),
+                                    const Text('Профиль найден',
+                                        style: TextStyle(
+                                            color: ShadeColors.greenAccent,
+                                            fontSize: 13)),
+                                    const SizedBox(height: 22),
+                                    SizedBox(
+                                        width: double.infinity,
+                                        child: FilledButton.icon(
+                                            onPressed:
+                                                _opening ? null : _startChat,
+                                            icon: const Icon(
+                                                Icons
+                                                    .chat_bubble_outline_rounded,
+                                                size: 19),
+                                            label: Text(_opening
+                                                ? 'Открываем…'
+                                                : 'Написать сообщение'),
+                                            style: FilledButton.styleFrom(
+                                                minimumSize:
+                                                    const Size.fromHeight(
+                                                        50)))),
+                                  ])))
                         else if (!_isSearching)
                           const ShadeEmptyState(
                               icon: Icons.waving_hand_outlined,

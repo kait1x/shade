@@ -1,5 +1,6 @@
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' as sqflite_ffi;
 import 'dart:convert';
+import 'package:flutter/services.dart';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
@@ -31,7 +32,7 @@ bool get _isMobile => Platform.isAndroid || Platform.isIOS;
 /// Desktop production storage is unsupported; tests inject their own factory.
 class DatabaseService {
   static const String _dbName = 'shade.db';
-  static const int _dbVersion = 6;
+  static const int _dbVersion = 8;
   static const String _dbKeyStorageKey = 'sqlcipher_db_key';
 
   final FlutterSecureStorage _secureStorage;
@@ -62,6 +63,8 @@ class DatabaseService {
               await service._createSchemaV3(db);
               if (version >= 5) await service._createSchemaV5(db);
               if (version >= 6) await service._createSchemaV6(db);
+              if (version >= 7) await service._createSchemaV7(db);
+              if (version >= 8) await service._createSchemaV8(db);
             },
             onUpgrade: service._onUpgrade));
     return service;
@@ -150,9 +153,20 @@ class DatabaseService {
           .encode(Uint8List(16).map((_) => random.nextInt(256)).toList());
     }
 
-    final key = await compute(_deriveDatabaseKey,
-        [masterKey, Uint8List.fromList(utf8.encode(deviceId))],
-        debugLabel: 'shade-database-key');
+    final salt = Uint8List.fromList(utf8.encode(deviceId));
+    final String key;
+    try {
+      if (Platform.isAndroid) {
+        key = (await const MethodChannel('com.shade.app/security')
+            .invokeMethod<String>(
+                'deriveDatabaseKey', {'password': masterKey, 'salt': salt}))!;
+      } else {
+        key = await compute(_deriveDatabaseKey, [masterKey, salt],
+            debugLabel: 'shade-database-key');
+      }
+    } finally {
+      masterKey.fillRange(0, masterKey.length, 0);
+    }
 
     await _secureStorage.write(key: _dbKeyStorageKey, value: key);
     debugPrint(
@@ -168,6 +182,8 @@ class DatabaseService {
     await _createSchemaV3(db);
     await _createSchemaV5(db);
     await _createSchemaV6(db);
+    await _createSchemaV7(db);
+    await _createSchemaV8(db);
   }
 
   Future<void> _createSchemaV1(Database db) async {
@@ -282,6 +298,71 @@ class DatabaseService {
     }
     if (oldVersion < 5) await _createSchemaV5(db);
     if (oldVersion < 6) await _createSchemaV6(db);
+    if (oldVersion < 7 && newVersion >= 7) await _createSchemaV7(db);
+    if (oldVersion < 8 && newVersion >= 8) await _createSchemaV8(db);
+  }
+
+  Future<void> _createSchemaV8(Database db) => db.execute(
+      'CREATE TABLE avatar_profiles(owner TEXT NOT NULL, server TEXT NOT NULL, username TEXT NOT NULL, body TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(owner,server,username))');
+
+  Future<Map<String, dynamic>?> readAvatarProfile(
+      String owner, String server, String username) async {
+    final rows = await (await database).query('avatar_profiles',
+        where: 'owner=? AND server=? AND username=?',
+        whereArgs: [owner, server, username],
+        limit: 1);
+    return rows.isEmpty
+        ? null
+        : jsonDecode(rows.first['body'] as String) as Map<String, dynamic>;
+  }
+
+  Future<void> cacheAvatarProfile(String owner, String server, String username,
+      Map<String, dynamic> profile) async {
+    await (await database).transaction((txn) async {
+      await txn.insert(
+          'avatar_profiles',
+          {
+            'owner': owner,
+            'server': server,
+            'username': username,
+            'body': jsonEncode(profile),
+            'updated_at': DateTime.now().millisecondsSinceEpoch
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace);
+      // Bounded cache, inside the existing SQLCipher database on mobile.
+      await txn.rawDelete(
+          'DELETE FROM avatar_profiles WHERE owner=? AND server=? AND username NOT IN (SELECT username FROM avatar_profiles WHERE owner=? AND server=? ORDER BY updated_at DESC LIMIT 100)',
+          [owner, server, owner, server]);
+    });
+  }
+
+  Future<void> _createSchemaV7(Database db) => db.execute(
+      'CREATE TABLE verified_keys(owner TEXT NOT NULL, peer TEXT NOT NULL, fingerprint TEXT NOT NULL, PRIMARY KEY(owner,peer))');
+
+  Future<bool> checkFingerprint(
+      String owner, String peer, String fingerprint, String? legacy) async {
+    final db = await database;
+    return db.transaction((txn) async {
+      if (legacy != null) {
+        await txn.insert('verified_keys',
+            {'owner': owner, 'peer': peer, 'fingerprint': legacy},
+            conflictAlgorithm: ConflictAlgorithm.ignore);
+      }
+      await txn.rawUpdate(
+          "UPDATE verified_keys SET fingerprint='' WHERE owner=? AND peer=? AND fingerprint<>?",
+          [owner, peer, fingerprint]);
+      return (await txn.query('verified_keys',
+              where: 'owner=? AND peer=? AND fingerprint=?',
+              whereArgs: [owner, peer, fingerprint]))
+          .isNotEmpty;
+    });
+  }
+
+  Future<void> confirmFingerprint(
+      String owner, String peer, String fingerprint) async {
+    await (await database).insert('verified_keys',
+        {'owner': owner, 'peer': peer, 'fingerprint': fingerprint},
+        conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<void> _createSchemaV5(Database db) async {
