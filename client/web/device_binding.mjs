@@ -1,0 +1,110 @@
+import { b64, unb64, check } from './protocol/device-v2.mjs';
+import { RECOVERY_WORDS } from './recovery-words.mjs';
+
+// Device binding replaces the invented device passphrase with a secret bound
+// to this device's platform authenticator (WebAuthn PRF extension, Safari 18+,
+// Chrome 118+). Security model is unchanged: the vault ciphertext format and
+// its PBKDF2/AES-GCM guarantees stay exactly the same — the PRF output merely
+// becomes the passphrase input, so passphrase vaults keep unlocking forever.
+// The PRF secret itself never leaves the authenticator and is never persisted;
+// only the non-secret credential id and evaluation salt are stored as metadata.
+
+const toB64Url = bytes => b64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+export async function platformAuthenticatorAvailable() {
+  try {
+    if (typeof window.PublicKeyCredential === 'undefined' || !window.isSecureContext) return false;
+    if (PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable) {
+      return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+    }
+    return false;
+  } catch { return false; }
+}
+
+// Deterministic passphrase for (credential, salt): one PRF evaluation at
+// registration and the identical evaluation at every unlock. userVerification
+// stays required, so the biometric/device-passcode gate is part of the secret.
+// The eval input MUST be AuthenticationExtensionsPRFValues ({first: BufferSource}):
+// a bare BufferSource makes Chromium fail dict parsing on the required `first`
+// member ("Required member is undefined") before any authenticator round-trip.
+async function prfPassphrase(credentialId, salt) {
+  check(salt instanceof Uint8Array && salt.byteLength >= 16 && salt.byteLength <= 64,
+    'Invalid PRF evaluation salt');
+  let assertion;
+  try {
+    assertion = await navigator.credentials.get({ publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rpId: location.hostname,
+      allowCredentials: [{ id: credentialId, type: 'public-key' }],
+      userVerification: 'required', timeout: 60000,
+      extensions: { prf: { eval: { first: salt } } },
+    } });
+  } catch (error) {
+    // A TypeError here is WebIDL dict/extension parsing, not user refusal:
+    // treat it as missing PRF support so callers fall back honestly.
+    if (error instanceof TypeError) throw Error('prf_unavailable');
+    throw error;
+  }
+  const first = assertion.getClientExtensionResults()?.prf?.results?.first;
+  if (!(first instanceof ArrayBuffer) || first.byteLength < 32) throw Error('prf_unavailable');
+  return toB64Url(new Uint8Array(first));
+}
+
+// Creates a discoverable platform passkey for the Shade origin, then derives
+// the vault passphrase from its PRF output. Two authenticator prompts is the
+// standard PRF onboarding (create, then evaluate); both are user-gesture driven.
+export async function createDeviceBinding(account) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  // Deterministic user.id per account: a setup retry (e.g. authenticator
+  // without PRF results) re-creates the SAME credential entry instead of
+  // piling up orphan passkeys for the origin.
+  const userId = new Uint8Array(await crypto.subtle.digest('SHA-256',
+    new TextEncoder().encode(`shade:${account}`))).slice(0, 16);
+  const credential = await navigator.credentials.create({ publicKey: {
+    challenge: crypto.getRandomValues(new Uint8Array(32)),
+    rp: { id: location.hostname, name: 'Shade' },
+    user: { id: userId, name: account, displayName: account },
+    pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+    authenticatorSelection: { authenticatorAttachment: 'platform',
+      residentKey: 'required', userVerification: 'required' },
+    timeout: 60000,
+    extensions: { prf: {} },
+  } });
+  const passphrase = await prfPassphrase(credential.rawId, salt);
+  return { binding: { method: 'prf', credentialId: b64(new Uint8Array(credential.rawId)), salt: b64(salt) }, passphrase };
+}
+
+export async function unlockDeviceBinding(binding) {
+  check(binding?.method === 'prf' && typeof binding.credentialId === 'string' &&
+    typeof binding.salt === 'string' && Object.keys(binding).sort().join(',') === 'credentialId,method,salt',
+    'Некорректная привязка устройства');
+  // Same stored salt bytes → the identical PRF evaluation as at registration.
+  const salt = unb64(binding.salt, 32);
+  check(salt instanceof Uint8Array && salt.byteLength >= 16, 'Invalid stored PRF salt');
+  return prfPassphrase(unb64(binding.credentialId, 4096), salt);
+}
+
+// User-facing text for the handful of WebAuthn failure modes; everything else
+// surfaces verbatim. The phrase fallback remains available after any failure.
+export function bindingErrorText(error) {
+  if (error?.name === 'NotAllowedError') return 'Защита устройства не подтверждена. Попробуйте снова или используйте фразу устройства.';
+  if (error?.name === 'InvalidStateError') return 'Ключ защиты для этого аккаунта уже существует на устройстве.';
+  if (error?.name === 'SecurityError') return 'Защита устройства недоступна для этого происхождения. Используйте фразу устройства.';
+  if (error?.message === 'prf_unavailable') return 'Аутентификатор не поддерживает вывод ключа (PRF).';
+  return null;
+}
+
+// Offline recovery phrase: 8 EFF-large words (~103 bits), generated locally.
+// The user never invents it — the screen shows it once for writing down.
+export function generateRecoveryPhrase() {
+  const limit = Math.floor(0x100000000 / RECOVERY_WORDS.length) * RECOVERY_WORDS.length;
+  const buffer = crypto.getRandomValues(new Uint32Array(16));
+  let index = 0;
+  const words = [];
+  while (words.length < 8) {
+    if (index >= buffer.length) { crypto.getRandomValues(buffer); index = 0; }
+    const value = buffer[index++];
+    if (value < limit) words.push(RECOVERY_WORDS[value % RECOVERY_WORDS.length]);
+  }
+  return words.join(' ');
+}

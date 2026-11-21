@@ -1,0 +1,96 @@
+# Shade production Caddy — STAGE 1 proposal (ADDITIVE, owner approval required).
+# Existing sslip.io production block is preserved VERBATIM. New hostnames:
+#   alpha.shadechat.ru -> isolated v2 staging (port 3101)
+#   api.shadechat.ru   -> CURRENT v1 backend (port 3000) so the API domain gets
+#                         a valid Let's Encrypt certificate and works without
+#                         changing any shipped app config. No traffic is moved.
+# Prerequisites: DNS A records alpha/api -> 13.143.207.108 (api already exists),
+# shade-alpha.service installed (deploy/staging/staging-deploy.sh).
+# Apply: merge blocks into /etc/caddy/Caddyfile, then
+#   caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+#   systemctl reload caddy
+# NEVER replace the file wholesale; keep a backup (deploy.sh does this).
+
+13-143-207-108.sslip.io {
+	encode gzip
+	request_body {
+		max_size 12MB
+	}
+	@admin path /admin* /dashboard* /logs /api/stats /api/dashboard-stats
+	respond @admin 404
+	reverse_proxy 127.0.0.1:3000 {
+		header_up X-Forwarded-For {remote_host}
+	}
+	log {
+		output file /var/log/caddy/shade-access.log {
+			mode 0600
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Session-Token delete
+				request>headers>X-Username delete
+			}
+		}
+	}
+}
+
+# STAGE 1: api domain mirrors the CURRENT v1 backend (certificate + readiness).
+api.shadechat.ru {
+	encode gzip
+	request_body {
+		max_size 12MB
+	}
+	@admin path /admin* /dashboard* /logs /api/stats /api/dashboard-stats
+	respond @admin 404
+	reverse_proxy 127.0.0.1:3000 {
+		header_up X-Forwarded-For {remote_host}
+	}
+	log {
+		output file /var/log/caddy/shade-api-access.log {
+			mode 0600
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Session-Token delete
+				request>headers>Authorization delete
+				request>headers>X-Username delete
+				request>headers>Cookie delete
+			}
+		}
+	}
+}
+
+# STAGE 1: isolated v2 staging (separate process/data/OAuth/secrets).
+alpha.shadechat.ru {
+	encode gzip
+	request_body {
+		max_size 12MB
+	}
+	@admin path /admin* /dashboard* /logs /api/stats /api/dashboard-stats
+	respond @admin 404
+	reverse_proxy 127.0.0.1:3101 {
+		header_up X-Forwarded-For {remote_host}
+	}
+	log {
+		output file /var/log/caddy/shade-alpha-access.log {
+			mode 0600
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Session-Token delete
+				request>headers>Authorization delete
+				request>headers>X-Username delete
+				request>headers>Cookie delete
+			}
+		}
+	}
+}

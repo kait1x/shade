@@ -167,6 +167,7 @@ export async function verifyHistory(history, trustedRoot, checkpoint, now = Date
     }
     for (const d of m.devices) {
       check(!retired.has(d.id) && !retiredKeys.has(d.encryptionKey) && !retiredKeys.has(d.signingKey), 'Revoked device resurrected');
+      // recovery-ключ genesis не может использоваться как ключ устройства.
       if (genesis) check(d.encryptionKey !== genesis.recoveryKey && d.signingKey !== genesis.recoveryKey, 'Recovery key cannot be a device key');
     }
     oldDevices = m.devices; issuedAt = m.issuedAt;
@@ -205,6 +206,30 @@ export async function verifyGenesis(g, trustedRoot) {
   check(await verify(text, g.signature, trustedRoot), 'Invalid genesis signature');
   return hash(text);
 }
+// Key rotation attestation (v1 RSA-2048 → v2 RSA-4096). The OLD private key
+// signs a binding statement over the NEW root; this is an auditable identity
+// CHANGE, never a claim of preserving the same cryptographic identity. The
+// old key stays on the device for decrypting legacy history/ciphertext.
+export function rotationText(a) {
+  fields(a, ['version', 'account', 'oldRootFingerprint', 'newRoot', 'genesisDigest', 'manifestDigest', 'createdAt', 'nonce', 'signature']);
+  check(a.version === 1 && typeof a.account === 'string' && ACCOUNT.test(a.account) &&
+    /^[a-f0-9]{64}$/.test(a.oldRootFingerprint) && Number.isSafeInteger(a.createdAt) &&
+    /^[a-f0-9]{64}$/.test(a.nonce) && /^[a-f0-9]{64}$/.test(a.genesisDigest) &&
+    /^[a-f0-9]{64}$/.test(a.manifestDigest));
+  unb64(a.newRoot, 2048); unb64(a.signature, 1024);
+  return JSON.stringify(['shade-rotation:v1', a.account, a.oldRootFingerprint, a.newRoot,
+    a.genesisDigest, a.manifestDigest, a.createdAt, a.nonce]);
+}
+// Possession proof verification against the OLD v1 root. v1 accepted RSA-2048;
+// 2048..4096 with e=65537 is accepted HERE ONLY (never for v2 device keys).
+export async function verifyRotation(a, oldRootSpki) {
+  const text = rotationText(a);
+  const key = await crypto.subtle.importKey('spki', unb64(oldRootSpki, 2048),
+    { name: 'RSA-PSS', hash: 'SHA-256' }, false, ['verify']);
+  check(key.algorithm.modulusLength >= 2048 && key.algorithm.modulusLength <= 4096 &&
+    b64(key.algorithm.publicExponent) === 'AQAB', 'Unsupported legacy RSA key');
+  return crypto.subtle.verify({ name: 'RSA-PSS', saltLength: 32 }, key, unb64(a.signature, 1024), signatureBytes(text));
+}
 // Канонический текст pairing-заявки нового устройства: id и пара ключей,
 // nonce и срок. Заявка ограничена по времени — переиграть её позже нельзя.
 export function pairingText(account, d, nonce, expiresAt) {
@@ -212,6 +237,19 @@ export function pairingText(account, d, nonce, expiresAt) {
     /^[a-f0-9]{64}$/.test(nonce) && Number.isSafeInteger(expiresAt));
   check(DEVICE.test(d.id) && d.id !== 'primary');
   return JSON.stringify(['shade-pair:v2', account, d.id, d.encryptionKey, d.signingKey, nonce, expiresAt]);
+}
+// Challenge-bound pairing proof text (security review 18.11, High finding):
+// the one-time challenge shown on the trusted device becomes part of the
+// signed data, so substituting the challenge — or the device keys — invalidates
+// the signature. Domain tag 'shade-pair:v3' separates it from the unbound text
+// above, which stays byte-identical for legacy clients and interop golden
+// vectors. Wire offer format version 2 (prefix shade-pair-v2:) carries it.
+export function pairingTextV2(account, d, nonce, expiresAt, challenge) {
+  check(typeof challenge === 'string' && /^[a-f0-9]{30}$/.test(challenge), 'Invalid pairing challenge');
+  check(typeof account === 'string' && ACCOUNT.test(account) && typeof nonce === 'string' &&
+    /^[a-f0-9]{64}$/.test(nonce) && Number.isSafeInteger(expiresAt));
+  check(DEVICE.test(d.id) && d.id !== 'primary');
+  return JSON.stringify(['shade-pair:v3', account, d.id, d.encryptionKey, d.signingKey, nonce, expiresAt, challenge]);
 }
 // Канонический текст запроса операции: подписывается устройством вместе
 // с nonce, выданным сервером как challenge, — повтор запроса невозможен.
@@ -228,10 +266,14 @@ export function messageText(m) {
     'fromDigest', 'toDigest', 'createdAt', 'envelopes', 'signature']);
   check(m.version === 2 && typeof m.id === 'string' && /^[a-f0-9]{64}$/.test(m.id) &&
     typeof m.from === 'string' && typeof m.to === 'string' && ACCOUNT.test(m.from) &&
-    ACCOUNT.test(m.to) && m.from !== m.to && typeof m.deviceId === 'string' && DEVICE.test(m.deviceId));
+    ACCOUNT.test(m.to) && typeof m.deviceId === 'string' && DEVICE.test(m.deviceId));
   check([m.fromRevision, m.toRevision].every(n => Number.isSafeInteger(n) && n >= 1) && Number.isSafeInteger(m.createdAt));
   check(/^[a-f0-9]{64}$/.test(m.fromDigest) && /^[a-f0-9]{64}$/.test(m.toDigest));
-  check(Array.isArray(m.envelopes) && m.envelopes.length >= 2 && m.envelopes.length <= MAX_DEVICES * 2);
+  // Self-chat («Избранное»): one roster, 1..MAX_DEVICES envelopes. Ordinary
+  // messages keep the exact previous canonical text (byte-compatible).
+  const self = m.from === m.to;
+  check(Array.isArray(m.envelopes) && m.envelopes.length >= (self ? 1 : 2) &&
+    m.envelopes.length <= (self ? MAX_DEVICES : MAX_DEVICES * 2));
   let previous = '';
   for (const e of m.envelopes) {
     fields(e, ['account', 'deviceId', 'payload']); fields(e.payload, ['k', 'd']);
@@ -251,13 +293,16 @@ export function messageText(m) {
 // отправителя, полный fanout конвертов и подпись ключом устройства.
 export async function verifyMessage(m, sender, recipient, now = Date.now()) {
   const text = messageText(m);
+  const self = m.from === m.to;
   check(m.from === sender.account && m.to === recipient.account, 'Wrong accounts');
   check(m.fromRevision === sender.revision && m.toRevision === recipient.revision &&
     m.fromDigest === await hash(manifestText(sender)) && m.toDigest === await hash(manifestText(recipient)), 'Stale device directory');
+  // Self-chat must reference one identical directory tip on both sides.
+  if (self) check(m.fromRevision === m.toRevision && m.fromDigest === m.toDigest, 'Stale device directory');
   check(m.createdAt <= now + 30000 && m.createdAt >= now - 7 * 24 * 60 * 60 * 1000, 'Expired message');
   const device = sender.devices.find(d => d.id === m.deviceId);
   check(device, 'Revoked or unknown sender device');
-  const expected = [sender, recipient].flatMap(roster => roster.devices.map(d => `${roster.account}:${d.id}`)).sort();
+  const expected = (self ? [sender] : [sender, recipient]).flatMap(roster => roster.devices.map(d => `${roster.account}:${d.id}`)).sort();
   check(JSON.stringify(m.envelopes.map(e => `${e.account}:${e.deviceId}`)) === JSON.stringify(expected), 'Incomplete recipient fanout');
   check(await verify(text, m.signature, device.signingKey), 'Invalid device message signature');
   return hash(text);

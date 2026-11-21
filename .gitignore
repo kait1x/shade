@@ -88,3 +88,7 @@ client/config/production.json
 /artifacts/
 /tools/
 *.bak
+
+# Agent tooling state (DeepSeek Harness / Serena), never committed
+.dsh/
+.serena/

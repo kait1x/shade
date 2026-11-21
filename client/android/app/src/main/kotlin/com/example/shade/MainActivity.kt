@@ -2,6 +2,7 @@ package com.example.shade
 
 import android.os.Bundle
 import android.view.WindowManager
+import android.content.Intent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -11,6 +12,10 @@ class MainActivity : FlutterActivity() {
     private val keyWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     private val CHANNEL = "com.shade.app/security"
+    private val PICK_RECOVERY_REQUEST = 4711
+    private var pendingPick: MethodChannel.Result? = null
+    private val SAVE_RECOVERY_REQUEST = 4712
+    private var pendingSave: Pair<MethodChannel.Result, ByteArray>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,6 +74,47 @@ class MainActivity : FlutterActivity() {
                     excludeFromRecents()
                     result.success(null)
                 }
+                "saveRecoveryPackage" -> {
+                    val bytes = call.argument<String>("json")?.toByteArray(Charsets.UTF_8)
+                    if (bytes == null || bytes.isEmpty() || bytes.size > 1024 * 1024) {
+                        result.error("INVALID_RECOVERY_FILE", "Неверный размер файла восстановления", null)
+                    } else if (pendingPick != null || pendingSave != null) {
+                        result.error("FILE_DIALOG_IN_PROGRESS", "Диалог файлов уже открыт", null)
+                    } else {
+                        pendingSave = Pair(result, bytes)
+                        try {
+                            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                addCategory(Intent.CATEGORY_OPENABLE)
+                                type = "application/json"
+                                putExtra(Intent.EXTRA_TITLE, "shade-recovery.json")
+                            }
+                            startActivityForResult(intent, SAVE_RECOVERY_REQUEST)
+                        } catch (e: Exception) {
+                            pendingSave = null
+                            result.error("SAVE_UNAVAILABLE", "Нет приложения для сохранения файла", null)
+                        }
+                    }
+                }
+                "pickRecoveryPackage" -> {
+                    // Системный выбор JSON-пакета восстановления без сторонних
+                    // плагинов: ACTION_OPEN_DOCUMENT, байты читаются здесь.
+                    if (pendingPick != null || pendingSave != null) {
+                        result.error("PICK_IN_PROGRESS", "Выбор файла уже открыт", null)
+                    } else {
+                        pendingPick = result
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "application/json"
+                            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
+                        }
+                        try {
+                            startActivityForResult(intent, PICK_RECOVERY_REQUEST)
+                        } catch (e: Exception) {
+                            pendingPick = null
+                            result.error("PICK_UNAVAILABLE", "Нет приложения для выбора файла", null)
+                        }
+                    }
+                }
                 else -> {
                     result.notImplemented()
                 }
@@ -88,5 +134,55 @@ class MainActivity : FlutterActivity() {
     private fun excludeFromRecents() {
         val recentsFlag = 0x00080000
         window.addFlags(recentsFlag)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == SAVE_RECOVERY_REQUEST) {
+            val (result, bytes) = pendingSave ?: return
+            pendingSave = null
+            val uri = data?.data
+            if (resultCode != RESULT_OK || uri == null) {
+                result.success(false)
+                return
+            }
+            try {
+                contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
+                    ?: throw java.io.IOException("No writable output stream")
+                result.success(true)
+            } catch (e: Exception) {
+                result.error("SAVE_FAILED", "Не удалось записать файл", null)
+            }
+            return
+        }
+        if (requestCode != PICK_RECOVERY_REQUEST) return
+        val result = pendingPick
+        pendingPick = null
+        if (result == null) return
+        if (resultCode != RESULT_OK || data?.data == null) {
+            result.success(null) // отмена выбора — не ошибка
+            return
+        }
+        val uri = data.data!!
+        try {
+            contentResolver.openInputStream(uri)?.use { stream ->
+                // Лимит пакета 1 МБ; читаем на байт больше, чтобы клиент честно
+                // отклонил превышение, а не обрезал молча.
+                val buffer = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(64 * 1024)
+                var total = 0
+                while (total <= 1024 * 1024) {
+                    val read = stream.read(chunk)
+                    if (read <= 0) break
+                    buffer.write(chunk, 0, read)
+                    total += read
+                }
+                val bytes = buffer.toByteArray()
+                val name = uri.lastPathSegment ?: "recovery-package.json"
+                result.success(mapOf("name" to name, "bytes" to bytes))
+            } ?: result.error("PICK_READ_FAILED", "Не удалось прочитать файл", null)
+        } catch (e: Exception) {
+            result.error("PICK_READ_FAILED", "Не удалось прочитать файл", null)
+        }
     }
 }

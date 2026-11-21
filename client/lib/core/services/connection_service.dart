@@ -209,6 +209,14 @@ class ConnectionService {
   final _statusCtrl = StreamController<UserStatusUpdate>.broadcast();
   final _deleteCtrl = StreamController<MessageDeletedEvent>.broadcast();
   final _messageStatusCtrl = StreamController<Map<String, dynamic>>.broadcast();
+  // Миграция v1→v2: сервер отвечает upgrade_required переведённым аккаунтам и
+  // отправителям, пишущим переведённому получателю. Это не ошибка сессии —
+  // автоматическое восстановление не запускается, UI показывает честное
+  // уведомление о необходимости перехода.
+  final _upgradeCtrl = StreamController<String>.broadcast();
+  bool _upgradeRequired = false;
+  Stream<String> get upgradeRequiredEvents => _upgradeCtrl.stream;
+  bool get upgradeRequired => _upgradeRequired;
 
   bool _isConnected = false;
 
@@ -627,6 +635,15 @@ class ConnectionService {
 
       _socket!.on('authError', (data) async {
         if (_signedOut || _isDisposed) return;
+        final error = (data is Map ? data['error'] : null)?.toString();
+        if (error == 'upgrade_required') {
+          _upgradeRequired = true;
+          _cancelReconnect();
+          _sessionToken = null;
+          disconnect();
+          if (!_upgradeCtrl.isClosed) _upgradeCtrl.add('account');
+          return;
+        }
         final username = _username;
         final generation = _sessionGeneration;
         _sessionToken = null;
@@ -700,7 +717,16 @@ class ConnectionService {
           if (!result.isCompleted) result.complete(data);
         });
         final ack = await result.future.timeout(const Duration(seconds: 10));
-        if (ack is! Map || ack['ok'] != true) break;
+        if (ack is! Map || ack['ok'] != true) {
+          if (ack is Map && ack['error'] == 'upgrade_required') {
+            // Получатель переведён на v2: сообщение не доставлено и не будет
+            // доставлено по v1. Честный статус вместо вечного ожидания.
+            await _db.updateMessageStatus(
+                row['network_id'] as String, 'upgrade_required');
+            if (!_upgradeCtrl.isClosed) _upgradeCtrl.add('peer');
+          }
+          break;
+        }
         final id = row['network_id'] as String;
         final status = ack['status'] as String? ?? 'sent';
         await _db.updateMessageStatus(id, status);
@@ -771,6 +797,7 @@ class ConnectionService {
     _statusCtrl.close();
     _deleteCtrl.close();
     _messageStatusCtrl.close();
+    _upgradeCtrl.close();
   }
 
   // ── Incoming message handler ────────────────────────────────
@@ -858,7 +885,7 @@ class ConnectionService {
   // ── Reconnection ────────────────────────────────────────────
 
   void _scheduleReconnect() {
-    if (_isDisposed) return;
+    if (_isDisposed || _upgradeRequired) return;
     _cancelReconnect();
     _reconnectTimer = Timer(const Duration(seconds: 3), () {
       if (_isDisposed) return;

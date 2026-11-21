@@ -30,16 +30,22 @@ Future<ui.Image> loadVinyl(String id) async {
 }
 
 Widget stamp(String id, {double size = 58}) =>
-    SizedBox.square(dimension: size, child: _Stamp(id));
+    SizedBox.square(dimension: size, child: _Stamp(id, size));
 
 class _Stamp extends StatelessWidget {
   final String id;
-  const _Stamp(this.id);
+  final double size;
+  const _Stamp(this.id, this.size);
   @override
   Widget build(BuildContext context) {
     if (id == 'flowers') {
+      // Decode at the device resolution the stamp actually paints at
+      // (<=110 logical px): the 1254px source costs ~6 MB RAM per decode.
+      final dpr = MediaQuery.devicePixelRatioOf(context);
       return Image.asset('assets/stickers/flowers.png',
-          fit: BoxFit.contain, filterQuality: FilterQuality.medium);
+          fit: BoxFit.contain,
+          filterQuality: FilterQuality.medium,
+          cacheWidth: (size * (dpr > 3 ? 3 : dpr)).round());
     }
     return CustomPaint(painter: _Legacy(id));
   }

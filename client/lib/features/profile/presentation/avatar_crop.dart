@@ -3,6 +3,9 @@ import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 
+import 'avatar_crop_decode_io.dart'
+    if (dart.library.html) 'avatar_crop_decode_web.dart';
+
 /// Source-space crop, shared by gesture preview and exported pixels.
 class AvatarCrop {
   final ui.Size source;
@@ -47,31 +50,9 @@ Future<ui.Image> decodeAvatarSource(Uint8List bytes) async {
   if (!png && !jpeg && !webp) {
     throw const FormatException('Поддерживаются JPEG, PNG и WebP');
   }
-  final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
-  ui.ImageDescriptor? descriptor;
-  ui.Codec? codec;
-  try {
-    descriptor = await ui.ImageDescriptor.encoded(buffer);
-    if (descriptor.width * descriptor.height > 32000000 ||
-        descriptor.width > 12000 ||
-        descriptor.height > 12000) {
-      throw const FormatException(
-          'Фотография слишком большая. Выберите изображение до 32 Мп');
-    }
-    final scale =
-        math.min(1.0, 2048 / math.max(descriptor.width, descriptor.height));
-    codec = await descriptor.instantiateCodec(
-        targetWidth: math.max(1, (descriptor.width * scale).round()),
-        targetHeight: math.max(1, (descriptor.height * scale).round()));
-    if (codec.frameCount != 1) {
-      throw const FormatException('Выберите статичное изображение');
-    }
-    return (await codec.getNextFrame()).image;
-  } finally {
-    codec?.dispose();
-    descriptor?.dispose();
-    buffer.dispose();
-  }
+  // Platform decode: native probes dimensions via ImageDescriptor; web cannot
+  // (UnsupportedError) and uses createImageBitmap + instantiateImageCodec.
+  return decodeGuardedAvatar(bytes);
 }
 
 Uint8List _jpeg(Uint8List png) {

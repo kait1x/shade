@@ -202,8 +202,12 @@ export async function sealMessage(text, senderHistory, recipientHistory, session
   await verifyHistory(recipientHistory, trust.recipientRoot, trust.recipientCheckpoint, now, trust.recipientGenesis);
   const sender = senderHistory.at(-1), recipient = recipientHistory.at(-1);
   check(sender.account === session.account && sender.devices.some(d => d.id === session.id));
+  // Self-chat: a single roster/tip; never deduplicate envelopes post-hoc.
+  const self = sender.account === recipient.account;
+  if (self) check(sender.revision === recipient.revision &&
+    await hash(manifestText(sender)) === await hash(manifestText(recipient)), 'Self directory mismatch');
   const envelopes = [];
-  for (const roster of [sender, recipient]) {
+  for (const roster of (self ? [sender] : [sender, recipient])) {
     for (const d of roster.devices) envelopes.push({ account: roster.account, deviceId: d.id, payload: await encryptLegacy(text, d.encryptionKey) });
   }
   envelopes.sort((a, b) => `${a.account}:${a.deviceId}` < `${b.account}:${b.deviceId}` ? -1 : 1);
@@ -251,28 +255,112 @@ export async function decryptRecord(session, recordId, record) {
 async function database() {
   check(typeof indexedDB !== 'undefined', 'IndexedDB unavailable; do not generate a replacement identity');
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('shade-device-v2', 1);
-    request.onupgradeneeded = () => request.result.createObjectStore('vaults', { keyPath: 'id' });
-    request.onsuccess = () => resolve(request.result);
+    const request = indexedDB.open('shade-device-v2', 2);
+    request.onupgradeneeded = event => {
+      const db = request.result;
+      if (event.oldVersion < 1) db.createObjectStore('vaults', { keyPath: 'id' });
+      // Meta store for durability flushes; never mixed with identity records.
+      if (event.oldVersion < 2) db.createObjectStore('meta', { keyPath: 'id' });
+    };
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
     request.onerror = () => reject(new Error('Encrypted browser storage unavailable'));
     request.onblocked = () => reject(new Error('Close other Shade tabs to open storage'));
   });
 }
+// WebKit may lose the last committed transaction on a process kill right
+// after oncomplete. A follow-up meta transaction forces the vault commit to
+// durable storage; losing a vault would lose the identity, so this is flush
+// plus read-back verification, not a timing assumption.
+async function flushVaultCommit(db, id) {
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction('meta', 'readwrite');
+    tx.objectStore('meta').put({ id: 'flush', at: Date.now() });
+    if (typeof tx.commit === 'function') tx.commit();
+    tx.oncomplete = resolve;
+    tx.onabort = () => reject(new Error('Vault durability flush failed'));
+    tx.onerror = () => {};
+  });
+  const stored = await new Promise((resolve, reject) => {
+    const tx = db.transaction('vaults', 'readonly');
+    const req = tx.objectStore('vaults').get(id);
+    tx.oncomplete = () => resolve(req.result);
+    tx.onabort = () => reject(new Error('Vault read-back failed'));
+  });
+  check(stored && stored.id === id, 'Vault was not durably stored; retry before use');
+}
+// Optional non-secret binding metadata (device_binding.mjs). Never part of the
+// ciphertext or AAD: swapping it cannot help an attacker decrypt (the PRF
+// passphrase is not stored anywhere), it only selects the local unlock factor.
+function validBinding(binding) {
+  if (binding === undefined) return true;
+  return !!binding && binding.method === 'prf' && typeof binding.credentialId === 'string' &&
+    typeof binding.salt === 'string' && Object.keys(binding).sort().join(',') === 'credentialId,method,salt';
+}
 export async function saveVault(vault) {
-  check(vault && Object.keys(vault).sort().join(',') === 'account,ciphertext,encryptionKey,id,iv,salt,signingKey,version', 'Unexpected vault fields');
+  check(vault && ['account,binding,ciphertext,encryptionKey,id,iv,salt,signingKey,version',
+    'account,ciphertext,encryptionKey,id,iv,salt,signingKey,version']
+    .includes(Object.keys(vault).sort().join(',')), 'Unexpected vault fields');
+  check(validBinding(vault.binding), 'Invalid binding metadata');
   check(vault.version === 2 && typeof vault.account === 'string' && /^[a-z0-9_]{3,32}$/.test(vault.account) &&
     vault.id === await deviceId(vault.encryptionKey, vault.signingKey), 'Invalid vault identity');
   check(unb64(vault.salt, 32).length === 16 && unb64(vault.iv, 24).length === 12 &&
     unb64(vault.ciphertext, 20000).length >= 16, 'Invalid encrypted vault');
   const db = await database();
   try {
-    await new Promise((resolve, reject) => {
+    const putVault = () => new Promise((resolve, reject) => {
       const tx = db.transaction('vaults', 'readwrite');
-      tx.objectStore('vaults').add(vault); // Never overwrite or regenerate an existing identity.
+      // put (not add) on the re-commit pass; the first pass uses add semantics
+      // via the existing-record check below to never overwrite an identity.
+      tx.objectStore('vaults').put(vault);
+      if (typeof tx.commit === 'function') tx.commit();
       tx.oncomplete = resolve;
       tx.onabort = () => reject(new Error('Vault already exists or storage is unavailable'));
       tx.onerror = () => {}; // The transaction's abort is the authoritative result.
     });
+    const existing = await new Promise((resolve, reject) => {
+      const tx = db.transaction('vaults', 'readonly');
+      const req = tx.objectStore('vaults').get(vault.id);
+      tx.oncomplete = () => resolve(req.result);
+      tx.onabort = () => reject(new Error('Cannot read encrypted vault'));
+    });
+    check(!existing, 'Vault already exists or storage is unavailable');
+    await putVault();
+    await flushVaultCommit(db, vault.id);
+    // Re-commit the identical vault: losing the LAST transaction must not
+    // lose the identity; the earlier identical commit survives. WebKit flushes
+    // asynchronously, so converge in the background while the page lives.
+    await putVault();
+    await flushVaultCommit(db, vault.id);
+    setTimeout(async () => {
+      try {
+        const fresh = await database();
+        let stored;
+        try {
+          stored = await new Promise((resolve, reject) => {
+            const tx = fresh.transaction('vaults', 'readonly');
+            const req = tx.objectStore('vaults').get(vault.id);
+            tx.oncomplete = () => resolve(req.result);
+            tx.onabort = () => reject(new Error('Vault read-back failed'));
+          });
+        } finally { fresh.close(); }
+        if (stored && stored.id === vault.id) return;
+        const db2 = await database();
+        try {
+          const tx = db2.transaction('vaults', 'readwrite');
+          tx.objectStore('vaults').put(vault);
+          if (typeof tx.commit === 'function') tx.commit();
+          await new Promise((resolve, reject) => {
+            tx.oncomplete = resolve;
+            tx.onabort = () => reject(new Error('Vault re-commit failed'));
+            tx.onerror = () => {};
+          });
+        } finally { db2.close(); }
+      } catch { /* best-effort; the double commit above is the primary guard */ }
+    }, 1200);
   } finally { db.close(); }
 }
 export async function loadVault(id) {

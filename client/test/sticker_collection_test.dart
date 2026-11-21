@@ -3,12 +3,12 @@ import 'package:flutter/services.dart';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shade/core/database/database_service.dart';
 import 'package:shade/core/services/connection_service.dart';
 import 'package:shade/core/services/crypto_service.dart';
 import 'package:shade/features/stickers/collection.dart';
+import 'package:shade/features/stickers/connection_stickers.dart';
 import 'package:shade/features/stickers/vinyl.dart';
 import 'package:shade/main.dart';
 
@@ -72,21 +72,21 @@ void main() {
     });
     const boundary = ValueKey('stage');
     Future<void> show(bool owner) async {
-      await t.pumpWidget(ProviderScope(
-          overrides: [connectionServiceProvider.overrideWithValue(service)],
-          child: RepaintBoundary(
-              key: boundary,
-              child: MaterialApp(
-                  debugShowCheckedModeBanner: false,
-                  theme: buildShadeTheme(),
-                  home: Scaffold(
-                      body: SafeArea(
-                          child: SingleChildScrollView(
-                              padding: const EdgeInsets.all(16),
-                              child: StickerCollection(
-                                  key: ValueKey(owner),
-                                  username: owner ? 'owner' : 'alex',
-                                  owner: owner))))))));
+      await t.pumpWidget(RepaintBoundary(
+          key: boundary,
+          child: MaterialApp(
+              debugShowCheckedModeBanner: false,
+              theme: buildShadeTheme(),
+              home: Scaffold(
+                  body: SafeArea(
+                      child: SingleChildScrollView(
+                          padding: const EdgeInsets.all(16),
+                          child: StickerCollection(
+                              key: ValueKey(owner),
+                              username: owner ? 'owner' : 'alex',
+                              owner: owner,
+                              backend: StickerRepository(service),
+                              reloadStream: service.connectionChanges)))))));
       await t.pumpAndSettle();
     }
 
