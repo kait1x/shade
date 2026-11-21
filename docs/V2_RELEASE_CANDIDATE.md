@@ -29,13 +29,17 @@
   builtInKotlin=true конфликтует с KGP остальных плагинов → убрали зависимость,
   свой тип PickedFile + метод pickRecoveryPackage (лимит 1 МБ читается на нативе).
 
-## Тесты (прогоны lead лично)
-- server npm test: **137/137** на 6698b3b (135 + 2 v1-wiring). Один транзиентный
-  ассерт (401≠200) наблюдался ТОЛЬКО при параллельном прогоне с flutter под
-  CPU-нагрузкой; два одиночных прогона чистые.
-- flutter test: **229/229** на 6698b3b (225 + 4 migration-UI).
-- flutter analyze: **0 errors / 0 warnings** (info — существующий baseline).
-- Browser-QA матрица: финальный прогон на 6698b3b — в разделе ниже после пака.
+## Тесты (прогоны lead лично, финал 21.11)
+- server npm test: **137/137** (--test-concurrency=1; параллельный раннер даёт
+  транзиентный 136/137 по migration-guard, см. Known limitations).
+- flutter test: **229/229**; analyze 0 errors / 0 warnings.
+- browser-QA (final2): edge ×2 PASS, edge hostile PASS, webkit PASS;
+  pwaRecovery=true, stickerGiftV2=true, pageErrors=[] во всех;
+  shimBranch=inactive-non-android, shimHttp=200 (desktop-ветка шима).
+- webkit-diag: RECOVERY SUCCESS; SHIM HTTP 200; SHIM PRECACHE
+  shade-alpha-flutter-e93a073b77d4423e59fe (бакет до финального пака; финальный
+  SW 50ab701fa4b957982e4c включает viewport-shim.js в FILES и digest).
+- restore-тест на копии staging-данных: PASS + NEG_REJECTED (fail-closed).
 
 ## Browser-QA результаты (прогон lead 20.11 ~23:40, локальный HTTPS-фикстур)
 - edge normal: passed=true, pageErrors=[] (registration, E2EE+WSS, ACK, offline
@@ -52,10 +56,16 @@
 - 429 при быстром прогоне: штатный лимит 300 req/min, клиент восстановился
   повтором (http429DuringRapidRun 14/23/6) — не дефект.
 
-## Manifest RC (перепак после фикс-коммита 960b457 + evidence 4e307e8)
-- Промежуточный пак 9998fc0 (133 файла, sw e5246847d6d00a2ee301) УСТАРЕЛ:
-  до фиксов квот/шима/backoff. Финальный пак выполняется на HEAD после
-  evidence-коммита; значения SHA/SW фиксируются ниже после пака.
+## Manifest RC (финальный перепак 21.11 ~10:17, локально, без деплоя)
+- MANIFEST.meta: commit **c5985ea0eb3b22bc2d2578973aa2acde76f10c68**,
+  branch v2-production, sw_version **50ab701fa4b957982e4c**, files **138**.
+- Пакет: build/staging-upload (28.1 MB), secrets check: no secret-like files.
+- Состав коммитов RC: 6698b3b (wiring) → 960b457 (fix: posture A + backoff +
+  shim + pacing + telemetry + diag) → 4e307e8 (evidence) → c5985ea (RC-док).
+- Switch-скрипт пакета забейкен на c5985ea; fail-closed сверка MANIFEST/commit/SW.
+- Деплой RC на staging — владелец (утро 21.11), отдельное «го»; prod/staging
+  до деплоя не тронуты. Физический QA A31 — после деплоя RC (рабочий шим).
+- Предыдущий пак 9998fc0 (sw e5246847d6d00a2ee301) устарел и не деплоится.
 - SHA256 всех файлов runtime — в MANIFEST.sha256 пакета; commit-bound fail-closed
   переключение ожидает точного совпадения commit при паке деплоя.
 - Backup-скрипт перехода: deploy/transition/backup-transition.sh (bash -n OK);
