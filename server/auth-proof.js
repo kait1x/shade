@@ -29,12 +29,15 @@ function createAuthProof({ audience = process.env.GOOGLE_WEB_CLIENT_ID, verifyGo
         Buffer.from(proof, 'base64'));
       } catch { return false; }
     },
-    async googleProfile(idToken) {
+    async googleProfile(idToken, expectedNonce = null) {
       if (!audience) throw new Error('Google sign-in is not configured on this server');
       const payload = verifyGoogle
-        ? await verifyGoogle(idToken, audience)
+        ? await verifyGoogle(idToken, audience, expectedNonce)
         : (await google.verifyIdToken({ idToken, audience })).getPayload();
       if (!payload?.sub || !payload.email_verified || !payload.email) throw new Error('Unverified Google account');
+      // Replay protection: when the server issued a login nonce, the ID token
+      // must carry exactly it (google_sign_in initialize(nonce:) embeds it).
+      if (expectedNonce != null && payload.nonce !== expectedNonce) throw new Error('Google nonce mismatch');
       return { googleSub: payload.sub, email: payload.email,
         displayName: (payload.name || '').slice(0, 120), avatarUrl: payload.picture || null };
     },

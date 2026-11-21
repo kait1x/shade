@@ -55,3 +55,4 @@ build/web/
 test/.dart_tool/
 
 /config/google.local.json
+/config/staging.json

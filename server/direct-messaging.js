@@ -15,9 +15,10 @@ const MAX_RECEIPTS = 10000;
 // One serialized transaction queue for ALL sockets. Queues and receipts are saved
 // in a single atomic snapshot, before any ACK, notification or delivery.
 // Фабрика обработчиков личных сообщений. Зависимости (io, persist, encrypt/
-// decrypt, push, receipts) внедряются снаружи — модуль тестируем изолированно.
+// decrypt, push, receipts, blocked/bridged) внедряются снаружи — модуль
+// тестируем изолированно, а blocked/bridged описывают миграцию v1→v2.
 function createDirectMessaging({ io, users, onlineUsers, offlineBuffer,
-  encrypt, decrypt, persist, push, receipts }) {
+  encrypt, decrypt, persist, push, receipts, blocked = () => false, bridged = () => false }) {
   let tail = Promise.resolve();
   // Общая serial-очередь: обработчики сокетов выполняются строго по очереди,
   // поэтому очереди и квитанции не страдают от гонок параллельных событий.
@@ -46,8 +47,8 @@ function createDirectMessaging({ io, users, onlineUsers, offlineBuffer,
     else socket.emit('error', { message: error });
   };
   // Транзакция: перед изменением снимаются копии очередей и квитанций,
-  // persist() (атомарный снапшот) выполняется ДО любых уведомлений; при
-  // сбое состояние полностью откатывается.
+  // persist() (атомарный снапшот; false = хранилище недоступно) выполняется
+  // ДО любых уведомлений; при сбое состояние полностью откатывается.
   async function transaction(change) {
     const previousQueues = new Map([...offlineBuffer].map(([user, queue]) => [user, [...queue]]));
     const previousReceipts = new Map(receipts);
@@ -103,6 +104,13 @@ function createDirectMessaging({ io, users, onlineUsers, offlineBuffer,
       if (!payload || typeof payload.to !== 'string' || typeof payload.data !== 'string') return fail(socket, ack, 'Invalid message');
       const to = payload.to.toLowerCase().trim(), id = payload.id;
       if (!users.has(to) || to === from) return fail(socket, ack, 'Unknown recipient');
+      // v2-migrated SENDERS must use v2. Migrated RECIPIENTS keep receiving
+      // v1 ciphertext through the one-way legacy inbox bridge: the envelope
+      // is encrypted to the same immutable root RSA, so E2EE is unchanged.
+      // The v2 process confirms delivery via the bridge-ack file; until then
+      // the queue holds the ciphertext (bounded, TTL-pruned, explicit full).
+      if (blocked(from)) return fail(socket, ack, 'upgrade_required');
+      const toBridged = bridged(to);
       if (typeof id !== 'string' || !/^[a-zA-Z0-9_-]{16,80}$/.test(id)) return fail(socket, ack, 'Invalid message ID');
       if (Buffer.byteLength(payload.data) > MAX_PAYLOAD_BYTES) return fail(socket, ack, 'Payload too large (max 10 MiB)');
       try {
@@ -134,8 +142,12 @@ function createDirectMessaging({ io, users, onlineUsers, offlineBuffer,
         receipts.set(keyOf(from, id), { from, to, id, digest, timestamp: envelope.timestamp, status: 'sent' });
       });
       if (full) return fail(socket, ack, 'Server or recipient queue is full; try later');
-      // Живая доставка онлайн-получателю; push — только если он офлайн.
-      emitTo(to, 'message', envelope);
+      // Живая доставка онлайн-получателю (мостнутым v2 — только через мост); push — если офлайн.
+      if (!toBridged) emitTo(to, 'message', envelope);
+      // v1 push is kept for bridged recipients: the updated Android app still
+      // holds its v1 FCM token and the wake notification drives a bridge sync.
+      // (PWA relies on foreground/reconnect/polling sync; a dedicated v2 wake
+      // push for bridge arrivals is a follow-up — documented limitation.)
       if (!onlineUsers.has(to)) Promise.resolve(push(to, from)).catch(() => {});
       if (typeof ack === 'function') ack({ ok: true, id, status: 'sent' });
     });
@@ -182,10 +194,47 @@ function createDirectMessaging({ io, users, onlineUsers, offlineBuffer,
       if (typeof ack === 'function') ack({ ok: true });
     });
   }
-  // Публичный API: attach — подключение сокетов, sweep — периодическая чистка
-  // по TTL, replay — досылка очереди и статусов после переподключения.
+  // Публичный API: attach — подключение сокетов, bridgeAck — приём квитанций
+  // от v2-процесса по мосту, sweep — периодическая чистка по TTL, replay —
+  // досылка очереди и статусов после переподключения.
   return {
     attach,
+    // Мост v1→v2: v2-процесс подтверждает доставку мигрированного аккаунта,
+    // v1 снимает конверты с очереди и отдаёт отправителю реальные статусы.
+    // Bridge-ack ingestion: the v2 process exports ACK tombstones for migrated
+    // accounts (additive file, v1 is the ONLY writer of v1 storage). Confirmed
+    // ciphertext leaves the v1 queue and the sender sees delivered/read status.
+    // Idempotent: refs already pruned are a no-op; deleted receipts stay deleted.
+    bridgeAck: entries => serial(async () => {
+      const updates = [];
+      let pruned = 0;
+      await transaction(() => {
+        for (const { account, acked, read } of entries) {
+          const ackedSet = new Set(acked), readSet = new Set(read || []);
+          const queue = offlineBuffer.get(account) || [];
+          if (!queue.length) continue;
+          const remaining = queue.filter(value => {
+            const item = unwrap(value);
+            if (!item) return true;
+            if (!ackedSet.has(keyOf(item.from, item.id))) return true;
+            pruned++;
+            const receipt = receipts.get(keyOf(item.from, item.id));
+            if (receipt && !receipt.deletedAt) {
+              const status = readSet.has(keyOf(item.from, item.id)) ? 'read'
+                : (receipt.status === 'read' ? 'read' : 'delivered');
+              if (receipt.status !== status) {
+                receipts.set(keyOf(item.from, item.id), { ...receipt, status });
+                updates.push({ msgId: item.id, status, from: account, sender: item.from });
+              }
+            }
+            return false;
+          });
+          if (remaining.length) offlineBuffer.set(account, remaining); else offlineBuffer.delete(account);
+        }
+      });
+      for (const u of updates) emitTo(u.sender, 'messageStatus', { msgId: u.msgId, status: u.status, from: u.from });
+      return { pruned, statuses: updates.length };
+    }),
     sweep: () => serial(() => transaction(prune)),
     replay: socket => serial(() => {
       if (!active(socket)) return;

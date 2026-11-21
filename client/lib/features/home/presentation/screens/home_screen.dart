@@ -27,6 +27,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   StreamSubscription? _messageSub;
   StreamSubscription? _deletionSub;
   StreamSubscription? _statusSub;
+  StreamSubscription? _upgradeSub;
+  bool _upgradeNoticeShown = false;
   final _search = TextEditingController();
   bool _savedOnly = false;
   @override
@@ -45,6 +47,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       _statusSub = conn.messageStatusUpdates.listen((_) {
         if (mounted) ref.invalidate(conversationsProvider);
       });
+      _upgradeSub = conn.upgradeRequiredEvents.listen((kind) {
+        if (!mounted || _upgradeNoticeShown) return;
+        _upgradeNoticeShown = true;
+        _showUpgradeNotice(kind);
+      });
       NotificationService.cancelAll();
     });
   }
@@ -57,9 +64,45 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       conn.disconnect();
     } else if (state == AppLifecycleState.resumed &&
         auth.status == AuthStatus.authenticated &&
-        auth.nickname != null) {
+        auth.nickname != null &&
+        !ref.read(connectionServiceProvider).upgradeRequired) {
       conn.connect(auth.nickname!);
     }
+  }
+
+  void _showUpgradeNotice(String kind) {
+    final account = kind == 'account';
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF111113),
+        title: Text(account ? 'Аккаунт переведён на Shade v2' : 'Собеседник перешёл на Shade v2',
+            style: const TextStyle(color: Color(0xFFF5F5F7), fontSize: 17)),
+        content: Text(
+          account
+              ? 'Этот аккаунт уже использует протокол v2. Войдите в раздел '
+                '«Устройства (v2)» с тем же ключом — история и ключи сохранены. '
+                'Новая регистрация не требуется.'
+              : 'Сообщение не доставлено: получатель использует Shade v2. '
+                'Обновите приложение и перейдите в раздел «Устройства (v2)», '
+                'чтобы продолжить переписку. Ключи и история сохраняются.',
+          style: const TextStyle(color: Color(0xFF8E8E93), fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Понятно', style: TextStyle(color: Color(0xFF8E8E93))),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              context.push('/profile');
+            },
+            child: const Text('Открыть профиль', style: TextStyle(color: Color(0xFFF5F5F7))),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -68,6 +111,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _messageSub?.cancel();
     _deletionSub?.cancel();
     _statusSub?.cancel();
+    _upgradeSub?.cancel();
     _search.dispose();
     super.dispose();
   }

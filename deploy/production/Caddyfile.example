@@ -1,0 +1,94 @@
+# Shade v2 PRODUCTION Caddy blocks — ШАБЛОН, НЕ ПРИМЕНЁН.
+# Применять ТОЛЬКО с отдельного разрешения владельца, ДОБАВЛЯЯ к существующему
+# /etc/caddy/Caddyfile (не заменяя его). Текущий production v1 блок
+# (13-143-207-108.sslip.io → 127.0.0.1:3000) НЕ трогать до этапа F.
+#
+# Диагноз 17.11.2026 (подтверждён внешними узлами check-host.net):
+#   - VPS 13.143.207.108 жив: SSH (OpenSSH 10.0p2 Debian 13), HTTP :80 (308),
+#     TLS для 13-143-207-108.sslip.io → 200 OK (Caddy + Let's Encrypt работают).
+#   - api.shadechat.ru: DNS A верна, но в Caddyfile НЕТ site-блока для этого
+#     SNI → TLS alert internal error. Исправление = добавить блок ниже.
+#   - app.shadechat.ru: DNS-записи НЕТ (NXDOMAIN) + нет site-блока.
+#   - shadechat.ru/www → 95.163.244.138 (ДРУГОЙ сервер): HTTP 200, TLS
+#     handshake failure (нет сертификата для SNI). Это не VPS v2.
+#
+# Предварительно:
+#   1. DNS REG.RU: A app → 13.143.207.108 (api уже есть). www/@ остаются
+#      на 95.163.244.138 до отдельного решения владельца о лендинге.
+#   2. shade-v2.service запущен (deploy/production/shade-v2.service.example),
+#      данные /var/lib/shade-v2/data, env /etc/shade-v2/v2.env.
+#   3. caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+#   4. systemctl reload caddy  (сертификаты Let's Encrypt выдадутся автоматически,
+#      HTTP-01 :80 доступен извне — подтверждено).
+#
+# PWA + API + WSS — один процесс v2. Канонический origin app.shadechat.ru
+# (OAuth redirect, __Host-cookie). api.shadechat.ru обслуживает native Android:
+# AlphaTransport отправляет Origin: https://api.shadechat.ru, поэтому в v2.env
+# обязательно ALPHA_ALLOWED_ORIGINS=https://api.shadechat.ru (проверено тестом
+# alpha-origins). Браузеры используют app.
+
+app.shadechat.ru {
+	encode gzip
+	request_body {
+		max_size 12MB
+	}
+	@admin path /admin* /dashboard* /logs /api/stats /api/dashboard-stats
+	respond @admin 404
+	reverse_proxy 127.0.0.1:3201 {
+		header_up X-Forwarded-For {remote_host}
+	}
+	log {
+		output file /var/log/caddy/shade-v2-access.log {
+			mode 0600
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Session-Token delete
+				request>headers>Authorization delete
+				request>headers>X-Username delete
+				request>headers>Cookie delete
+			}
+		}
+	}
+}
+
+api.shadechat.ru {
+	encode gzip
+	request_body {
+		max_size 12MB
+	}
+	@admin path /admin* /dashboard* /logs /api/stats /api/dashboard-stats
+	respond @admin 404
+	reverse_proxy 127.0.0.1:3201 {
+		header_up X-Forwarded-For {remote_host}
+	}
+	log {
+		output file /var/log/caddy/shade-v2-api-access.log {
+			mode 0600
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Session-Token delete
+				request>headers>Authorization delete
+				request>headers>X-Username delete
+				request>headers>Cookie delete
+			}
+		}
+	}
+}
+
+# Лендинг/редиректы — только если владелец переведёт @/www на этот VPS.
+# Сейчас @/www указывают на 95.163.244.138; НЕ менять DNS вслепую.
+# www.shadechat.ru {
+# 	redir https://shadechat.ru{uri} permanent
+# }
+# shadechat.ru {
+# 	root * /opt/shade-landing/current
+# 	file_server
+# }

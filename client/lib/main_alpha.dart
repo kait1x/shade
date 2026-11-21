@@ -5,8 +5,10 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
 import 'features/web/presentation/alpha_controller.dart';
 import 'features/web/presentation/alpha_app.dart';
+import 'features/web/services/web_image_picker.dart';
 
 @JS('shadeAction')
 external JSPromise<JSString> _action(JSString action, JSString payload);
@@ -23,6 +25,10 @@ extension type _FontResponse(JSObject _) implements JSObject {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Bytes-backed web picker: the stock plugin re-reads the picked file through
+  // a blob-URL XHR that dies on Android Chrome PWA before any upload (P1 photo
+  // bug). This override keeps native platforms on the stock plugin.
+  ImagePickerPlatform.instance = ShadeWebImagePicker();
   final response =
       await _fetch('/flutter-ui/fonts/NotoColorEmoji.ttf'.toJS).toDart;
   if (!response.ok) {
@@ -40,6 +46,8 @@ Future<void> main() async {
     if (result['ok'] != true) {
       throw StateError(result['error'] as String? ?? 'Операция не выполнена');
     }
+    // Actions may return data (e.g. profile.avatar) alongside the status.
+    return result['data'];
   });
   _receive = ((JSString snapshot) {
     controller.apply(jsonDecode(snapshot.toDart) as Map<String, dynamic>);

@@ -1,0 +1,36 @@
+# Shade v2 STAGING hostname only (alpha.shadechat.ru). ДОБАВИТЬ к существующему
+# /etc/caddy/Caddyfile после review; НИКОГДА не заменять production-блок.
+# Prerequisites:
+#   - DNS A alpha.shadechat.ru -> 13.143.207.108 (REG.RU, владелец)
+#   - /etc/shade-staging/staging.env с ALPHA_PUBLIC_ORIGIN=https://alpha.shadechat.ru
+#   - shade-staging.service running (deploy/staging/shade-staging.service.example)
+# Validate before reload: caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+alpha.shadechat.ru {
+	encode gzip
+	request_body {
+		max_size 12MB
+	}
+	# Admin/debug surfaces must never be public on staging either.
+	@admin path /admin* /dashboard* /logs /api/stats /api/dashboard-stats
+	respond @admin 404
+	reverse_proxy 127.0.0.1:3101 {
+		# Overwrite (never append) so clients cannot spoof their address.
+		header_up X-Forwarded-For {remote_host}
+	}
+	log {
+		output file /var/log/caddy/shade-staging-access.log {
+			mode 0600
+			roll_size 10MiB
+			roll_keep 5
+		}
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Session-Token delete
+				request>headers>Authorization delete
+				request>headers>X-Username delete
+				request>headers>Cookie delete
+			}
+		}
+	}
+}

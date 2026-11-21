@@ -1,32 +1,117 @@
-:root { color-scheme: dark; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#000; color:#f5f5f7; font-size:16px; }
+/* Shade Web Alpha — presentation tokens mirror the Android theme
+   (core/theme/shade_theme.dart): AMOLED black, #111113 surfaces, #29292D hairline
+   borders, #F5F5F7/#9C9CA3/#8E8E93 text. Auth screens use the WelcomeScreen
+   layout (36/1.12 title, 24px-radius card, 52px controls). */
+:root { color-scheme: dark; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:#000; color:#f5f5f7; font-size:16px;
+  --surface:#111113; --surface-elevated:#1c1c1f; --border:#29292d;
+  --text:#f5f5f7; --text-2:#9c9ca3; --text-3:#8e8e93; --error:#ef4444; }
 * { box-sizing:border-box; }
 body { margin:0; }
-button,input,textarea { font:inherit; }
-button,a.button { border:1px solid #29292d; border-radius:10px; background:#111113; color:#f5f5f7; padding:12px 16px; cursor:pointer; text-align:center; text-decoration:none; min-height:44px; }
+button,input,textarea,select { font:inherit; }
+button { border:1px solid var(--border); border-radius:14px; background:var(--surface); color:var(--text); padding:0 16px; cursor:pointer; text-align:center; text-decoration:none; min-height:44px; font-weight:600; }
 button:disabled { opacity:.45; cursor:wait; }
-button.primary { background:#f5f5f7; color:#000; font-weight:600; }
-button:hover { border-color:#8e8e93; }
-button:focus-visible,a:focus-visible { outline:2px solid #f5f5f7; outline-offset:3px; }
-input,textarea { width:100%; min-width:0; color:#f5f5f7; background:#111113; border:1px solid #29292d; border-radius:10px; padding:12px; }
+button:hover { border-color:var(--text-3); }
+button:focus-visible,a:focus-visible,summary:focus-visible,select:focus-visible { outline:2px solid var(--text); outline-offset:3px; }
+input,textarea,select { width:100%; min-width:0; color:var(--text); background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 16px; font-size:16px; }
 input[type=checkbox] { width:auto; }
 label { display:grid; gap:8px; margin:18px 0; line-height:1.5; }
 p { line-height:1.6; }
 h1 { font-size:36px; font-weight:600; letter-spacing:-1.5px; margin:0; }
 h2 { font-size:22px; margin:0 0 16px; }
-.muted,small { color:#8e8e93; }
-.eyebrow { font-size:12px; letter-spacing:2px; color:#8e8e93; }
-.welcome { max-width:480px; margin:0 auto; padding:max(48px,env(safe-area-inset-top)) 24px max(32px,env(safe-area-inset-bottom)); }
-.welcome form { margin-top:28px; }
-.welcome .button { display:block; }
-.welcome button { width:100%; margin:6px 0; }
-.card { background:#111113; border:1px solid #29292d; border-radius:14px; padding:20px; margin:24px 0; }
-dialog { background:#111113; color:#f5f5f7; border:1px solid #29292d; border-radius:16px; width:min(520px,calc(100vw - 32px)); max-height:85dvh; padding:24px; }
+.muted,small { color:var(--text-3); }
+
+/* ---- Onboarding frame (Android WelcomeScreen parity) ---- */
+.onboard { max-width:420px; margin:0 auto; padding:max(48px,env(safe-area-inset-top)) 24px max(32px,env(safe-area-inset-bottom)); min-height:100dvh; display:flex; }
+.onboard-inner { display:flex; flex-direction:column; margin:auto 0; width:100%; }
+.brand { display:flex; align-items:center; gap:8px; }
+.brand .ghost { flex:none; }
+.brand .ghost svg { display:block; width:100%; height:100%; }
+.brand-name { font-size:24px; font-weight:700; letter-spacing:-1px; }
+.medallion { width:100px; height:100px; margin:32px auto 24px; background:var(--surface); border:1px solid rgba(222,222,222,.15); border-radius:50%; display:flex; align-items:center; justify-content:center; }
+.medallion .ghost svg { display:block; width:100%; height:100%; }
+.onboard h1 { font-size:36px; font-weight:700; letter-spacing:-1.3px; line-height:1.12; text-align:center; white-space:pre-line; margin:0; }
+.subtitle { color:var(--text-2); font-size:15px; line-height:1.6; text-align:center; white-space:pre-line; margin:12px 0 0; }
+.onboard-card { background:rgba(17,17,19,.9); border:1px solid var(--border); border-radius:24px; padding:20px; margin-top:28px; }
+.onboard-card h2 { font-size:18px; font-weight:700; letter-spacing:-.3px; margin:0; }
+.card-sub { color:var(--text-2); font-size:12px; line-height:1.5; margin:6px 0 0; }
+.card-error { background:var(--surface); border:1px solid rgba(239,68,68,.5); border-radius:12px; padding:12px 14px; color:var(--error); font-size:12.5px; line-height:1.4; margin:14px 0 0; }
+.fineprint { color:var(--text-2); font-size:11px; line-height:1.6; text-align:center; white-space:pre-line; margin:24px 0 0; }
+.dots { display:flex; gap:8px; justify-content:center; margin:24px 0 0; }
+.dot { width:6px; height:6px; border-radius:50%; background:var(--border); }
+.dot.active { background:var(--text); }
+.expain { margin:16px 0 0; }
+.expain summary { cursor:pointer; color:var(--text-3); font-size:11px; font-weight:600; list-style:none; min-height:32px; display:flex; align-items:center; gap:6px; }
+.expain summary::-webkit-details-marker { display:none; }
+.expain summary::before { content:'+'; font-size:13px; width:12px; }
+.expain[open] summary::before { content:'–'; }
+.expain-body { color:var(--text-2); font-size:12px; line-height:1.6; margin:8px 0 0; }
+
+/* ---- Fields (Android InputDecoration: fill #111113, radius 14, #DEDEDE focus) ---- */
+.field-label { font-size:12px; font-weight:600; color:var(--text-2); letter-spacing:.2px; }
+.field-box { position:relative; display:flex; align-items:center; background:var(--surface); border:1px solid var(--border); border-radius:14px; }
+.field-box:focus-within { border-color:#dedede; box-shadow:inset 0 0 0 1px #dedede; }
+.field-box.invalid { border-color:var(--error); }
+.field-box .prefix { position:absolute; left:16px; color:var(--text-3); pointer-events:none; }
+.field-box.has-prefix input { padding-left:34px; }
+.field-box input { border:0; padding:13px 16px; background:transparent; border-radius:14px; }
+.field-box input:focus-visible { outline:none; }
+.field-error { color:var(--error); font-size:12px; line-height:1.5; margin:10px 0 0; }
+
+/* ---- Buttons (Android FilledButton: 52px, radius 14, w700 14px) ---- */
+.btn { width:100%; min-height:52px; border:1px solid var(--border); border-radius:14px; background:var(--surface); color:var(--text); padding:0 16px; font-size:14px; font-weight:700; display:flex; align-items:center; justify-content:center; gap:10px; cursor:pointer; text-align:center; text-decoration:none; }
+.btn.primary { background:var(--text); color:#000; border-color:var(--text); }
+.btn.outline { background:transparent; }
+.btn.google { background:#f1f1f1; color:#000; border-color:#f1f1f1; }
+.btn .mark { display:inline-flex; }
+.btn .mark svg { width:20px; height:20px; }
+.btn:disabled { opacity:.45; cursor:wait; }
+.btn-text { background:none; border:none; border-radius:12px; color:var(--text-3); font-size:12.5px; min-height:44px; width:100%; margin-top:4px; padding:0 8px; cursor:pointer; }
+.btn-text:hover { color:var(--text); }
+/* Recovery phrase: mono block, selectable, Android recovery-card styling. */
+.phrase-box { background:#000; border:1px solid var(--border); border-radius:12px; padding:12px 14px; margin:14px 0 0; }
+.phrase-box code { font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; user-select:all; }
+.gen-progress { display:flex; align-items:center; gap:10px; color:var(--text-2); font-size:13px; line-height:1.5; margin:14px 0 0; }
+.gen-progress[hidden] { display:none; }
+.spin { flex:none; border:2px solid #dedede; border-right-color:transparent; border-radius:50%; animation:shade-spin .8s linear infinite; }
+@keyframes shade-spin { to { transform:rotate(1turn); } }
+/* Checkbox row (Android recovery confirmation). */
+.check { display:flex; gap:12px; align-items:flex-start; margin:18px 0 8px; font-size:13px; line-height:1.5; }
+.check input[type=checkbox] { width:20px; height:20px; margin:1px 0 0; accent-color:var(--text); flex:none; }
+
+/* ---- Dialogs (Android DialogTheme: #111113, radius 20, hairline border) ---- */
+dialog { background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:20px; width:min(520px,calc(100vw - 32px)); max-height:85dvh; padding:24px; }
 dialog::backdrop { background:#000b; }
-dialog button { width:100%; margin-top:12px; }
-code { display:block; font:13px/1.7 ui-monospace,monospace; overflow-wrap:anywhere; user-select:all; padding:12px; background:#000; border-radius:8px; }
-#notice { position:fixed; bottom:max(20px,env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%); background:#29292d; border:1px solid #8e8e93; border-radius:10px; padding:12px 16px; width:max-content; max-width:calc(100vw - 32px); z-index:10; display:none; overflow-wrap:anywhere; }
+dialog h2 { font-size:18px; font-weight:700; margin:0 0 8px; }
+dialog p { font-size:13px; color:var(--text-2); line-height:1.6; margin:8px 0 0; }
+dialog button { width:100%; min-height:48px; margin-top:12px; border-radius:14px; font-size:14px; font-weight:700; }
+dialog button.primary { background:var(--text); color:#000; border-color:var(--text); }
+dialog button:hover { border-color:var(--text-3); }
+dialog .btn { margin-top:12px; }
+code { font:13px/1.7 ui-monospace,monospace; }
+
+#notice { position:fixed; bottom:max(20px,env(safe-area-inset-bottom)); left:50%; transform:translateX(-50%); background:var(--surface-elevated); border:1px solid var(--text-3); border-radius:12px; padding:12px 16px; width:max-content; max-width:calc(100vw - 32px); z-index:10; display:none; overflow-wrap:anywhere; font-size:13px; }
 #notice.visible { display:block; }
-@media(prefers-reduced-motion:no-preference) { button { transition:border-color .15s,background .15s; } }
+/* Floating in-app arrival toast, styled after the Shade SnackBar token. */
+#toast { position:fixed; bottom:max(76px,calc(env(safe-area-inset-bottom) + 64px)); left:50%; transform:translateX(-50%); background:var(--surface-elevated); border:1px solid var(--border); border-radius:12px; padding:12px 18px; width:max-content; max-width:calc(100vw - 32px); z-index:10; overflow-wrap:anywhere; font:inherit; color:var(--text); }
+#toast:not([hidden]) { display:block; }
+
+@media(hover:hover) {
+  .btn.primary:hover { background:#fff; }
+  .btn.google:hover { background:#fff; }
+  .btn.outline:hover { border-color:var(--text-3); background:var(--surface); }
+}
+@media(max-width:360px) { .onboard h1 { font-size:32px; } }
+@media(max-height:740px) {
+  .onboard { padding-top:max(32px,env(safe-area-inset-top)); }
+  .medallion { margin:24px auto 20px; }
+  .onboard-card { margin-top:24px; }
+}
+@media(prefers-reduced-motion:no-preference) {
+  button,.field-box,.btn { transition:border-color .15s ease-out,background .15s ease-out,box-shadow .15s ease-out; }
+  .btn:active { transform:scale(.97); }
+  .onboard.enter { animation:shade-step .22s cubic-bezier(.215,.61,.355,1); }
+  @keyframes shade-step { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
+}
 
 .flutter-ready { overflow: hidden; position: fixed; width: 100%; height: 100%; }
 .flutter-ready #root { position: fixed; top: var(--shade-top, 0px); left: 0; width: 100%; height: var(--shade-height, 100dvh); padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
@@ -34,3 +119,19 @@ code { display:block; font:13px/1.7 ui-monospace,monospace; overflow-wrap:anywhe
 .flutter-loading { position: absolute; inset: 35% 24px auto; text-align: center; pointer-events: none; }
 /* Native text editing stays >=16px, preventing Safari focus zoom. */
 flt-glass-pane input, flt-glass-pane textarea { font-size: 16px; }
+/* The Flutter web engine can leave an empty full-screen semantics leaf (no
+   role, label, action or tabindex) stacked above the app after focus changes
+   in the avatar editor; its pointer-events:auto then swallows every real tap.
+   Such nodes carry no accessibility meaning, so make them pointer-transparent
+   and let taps reach the controls below. Interactive/labeled/focusable nodes
+   are untouched. */
+flt-semantics-host flt-semantics:empty:not([role]):not([aria-label]):not([flt-tappable]):not([tabindex]) {
+  pointer-events: none !important;
+}
+/* Re-login overlay: session died, keys stay on the device. */
+.session-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .72);
+  display: flex; align-items: center; justify-content: center; z-index: 90; padding: 24px; }
+.session-card { background: #111113; border: 1px solid #29292D; border-radius: 16px;
+  padding: 24px; max-width: 360px; width: 100%; display: flex; flex-direction: column; gap: 12px; }
+.session-card h3 { margin: 0; font-size: 18px; font-weight: 700; color: #F5F5F7; }
+.session-card p { margin: 0; font-size: 14px; line-height: 1.5; color: #8E8E93; }

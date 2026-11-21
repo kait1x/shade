@@ -32,7 +32,7 @@ bool get _isMobile => Platform.isAndroid || Platform.isIOS;
 /// Desktop production storage is unsupported; tests inject their own factory.
 class DatabaseService {
   static const String _dbName = 'shade.db';
-  static const int _dbVersion = 8;
+  static const int _dbVersion = 12;
   static const String _dbKeyStorageKey = 'sqlcipher_db_key';
 
   final FlutterSecureStorage _secureStorage;
@@ -65,6 +65,10 @@ class DatabaseService {
               if (version >= 6) await service._createSchemaV6(db);
               if (version >= 7) await service._createSchemaV7(db);
               if (version >= 8) await service._createSchemaV8(db);
+              if (version >= 9) await service._createSchemaV9(db);
+            if (version >= 10) await service._createSchemaV10(db);
+            if (version >= 11) await service._createSchemaV11(db);
+            if (version >= 12) await service._createSchemaV12(db);
             },
             onUpgrade: service._onUpgrade));
     return service;
@@ -184,6 +188,10 @@ class DatabaseService {
     await _createSchemaV6(db);
     await _createSchemaV7(db);
     await _createSchemaV8(db);
+    await _createSchemaV9(db);
+    await _createSchemaV10(db);
+    await _createSchemaV11(db);
+    await _createSchemaV12(db);
   }
 
   Future<void> _createSchemaV1(Database db) async {
@@ -300,6 +308,166 @@ class DatabaseService {
     if (oldVersion < 6) await _createSchemaV6(db);
     if (oldVersion < 7 && newVersion >= 7) await _createSchemaV7(db);
     if (oldVersion < 8 && newVersion >= 8) await _createSchemaV8(db);
+    if (oldVersion < 9 && newVersion >= 9) await _createSchemaV9(db);
+    if (oldVersion < 10 && newVersion >= 10) await _createSchemaV10(db);
+    if (oldVersion < 11 && newVersion >= 11) await _createSchemaV11(db);
+    if (oldVersion < 12 && newVersion >= 12) await _createSchemaV12(db);
+  }
+
+  /// Аддитивная v12: pairing второго устройства. Журнал хранит долговечные
+  /// ключи НОВОГО устройства и проверенные артефакты (offer/манифест/
+  /// подтверждение) ДО сетевых вызовов — сбой после серверного коммита не
+  /// теряет идентичность и не создаёт второй манифест (образец enrollLegacy).
+  /// v2_device_keys — приватные ключи подключённого вторичного устройства
+  /// (SQLCipher at-rest, тот же класс защиты, что anchor_key rotation).
+  /// v2_contacts.history — последняя онлайн-проверенная цепочка каталога
+  /// контакта для offline-seal; отсутствие (старые записи) = offline-seal
+  /// недоступен до первой онлайн-верификации.
+  /// Существующие таблицы, ключи и история не переписываются.
+  Future<void> _createSchemaV12(Database db) async {
+    final contactCols = await db.rawQuery('PRAGMA table_info(v2_contacts)');
+    if (!contactCols.any((c) => c['name'] == 'history')) {
+      await db.execute('ALTER TABLE v2_contacts ADD COLUMN history TEXT');
+    }
+    await db.execute('''
+      CREATE TABLE v2_pairing_journal (
+        account            TEXT PRIMARY KEY,
+        role               TEXT NOT NULL,
+        phase              TEXT NOT NULL,
+        device_id          TEXT NOT NULL,
+        encryption_key     TEXT,
+        signing_key        TEXT,
+        encryption_private TEXT,
+        signing_private    TEXT,
+        offer_text         TEXT,
+        offer              TEXT,
+        manifest           TEXT,
+        proofs             TEXT,
+        confirmation_text  TEXT,
+        confirmation       TEXT,
+        root               TEXT,
+        genesis            TEXT,
+        created_at         INTEGER NOT NULL,
+        updated_at         INTEGER NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE v2_device_keys (
+        account            TEXT PRIMARY KEY,
+        device_id          TEXT NOT NULL,
+        encryption_key     TEXT NOT NULL,
+        signing_key        TEXT NOT NULL,
+        encryption_private TEXT NOT NULL,
+        signing_private    TEXT NOT NULL,
+        created_at         INTEGER NOT NULL
+      )
+    ''');
+  }
+
+  /// Аддитивная v11: RSA-rotation (v1 RSA-2048 → v2 RSA-4096).
+  /// anchor_key — новый приватный якорь (SQLCipher at-rest), legacy_key —
+  /// исходный v1-ключ для расшифровки старой истории/bridged-ciphertext.
+  /// rotation в журнале — аттестация старого ключа (без приватных ключей).
+  /// Существующие v1-таблицы, ключи и история не переписываются.
+  Future<void> _createSchemaV11(Database db) async {
+    final accountCols = await db.rawQuery('PRAGMA table_info(v2_accounts)');
+    if (!accountCols.any((c) => c['name'] == 'anchor_key')) {
+      await db.execute('ALTER TABLE v2_accounts ADD COLUMN anchor_key TEXT');
+    }
+    if (!accountCols.any((c) => c['name'] == 'legacy_key')) {
+      await db.execute('ALTER TABLE v2_accounts ADD COLUMN legacy_key TEXT');
+    }
+    final journalCols =
+        await db.rawQuery('PRAGMA table_info(v2_enrollment_journal)');
+    if (!journalCols.any((c) => c['name'] == 'rotation')) {
+      await db.execute(
+          'ALTER TABLE v2_enrollment_journal ADD COLUMN rotation TEXT');
+    }
+    if (!journalCols.any((c) => c['name'] == 'anchor_key')) {
+      await db.execute(
+          'ALTER TABLE v2_enrollment_journal ADD COLUMN anchor_key TEXT');
+    }
+  }
+
+  /// Аддитивные таблицы device-v2 (Android ↔ Web E2EE). Существующие v1
+  /// таблицы, ключи и история не переписываются.
+  Future<void> _createSchemaV9(Database db) async {
+    await db.execute('''
+      CREATE TABLE v2_accounts (
+        account     TEXT PRIMARY KEY,
+        root        TEXT NOT NULL,
+        genesis     TEXT NOT NULL,
+        history     TEXT NOT NULL,
+        checkpoint  TEXT NOT NULL,
+        recovery    TEXT,
+        session_id  TEXT NOT NULL,
+        created_at  INTEGER NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE v2_contacts (
+        account         TEXT PRIMARY KEY,
+        root            TEXT NOT NULL,
+        genesis         TEXT NOT NULL,
+        checkpoint      TEXT NOT NULL,
+        genesis_digest  TEXT NOT NULL,
+        confirmed       INTEGER NOT NULL DEFAULT 0,
+        updated_at      INTEGER NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE v2_messages (
+        ref         TEXT PRIMARY KEY,
+        peer        TEXT NOT NULL,
+        direction   TEXT NOT NULL,
+        message_id  TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        payload     TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'received',
+        acked       INTEGER NOT NULL DEFAULT 0
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE v2_outbox (
+        id          TEXT PRIMARY KEY,
+        peer        TEXT NOT NULL,
+        message     TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        attempts    INTEGER NOT NULL DEFAULT 0,
+        last_error  TEXT
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE v2_delivery (
+        ref             TEXT NOT NULL,
+        device_id       TEXT NOT NULL,
+        acknowledged_at INTEGER,
+        read_at         INTEGER,
+        PRIMARY KEY (ref, device_id)
+      )
+    ''');
+    await db.execute(
+        'CREATE INDEX idx_v2_messages_peer ON v2_messages(peer, created_at)');
+  }
+
+  /// Аддитивная таблица v10: долговечный журнал legacy-enrollment.
+  /// Genesis/manifest и зашифрованный recovery-пакет сохраняются ДО сетевого
+  /// вызова, поэтому сбой/убийство процесса после коммита на сервере не
+  /// теряет recovery-ключ и не создаёт второй genesis. Приватные ключи не
+  /// хранятся здесь: recovery-пакет зашифрован фразой пользователя.
+  Future<void> _createSchemaV10(Database db) async {
+    await db.execute('''
+      CREATE TABLE v2_enrollment_journal (
+        account         TEXT PRIMARY KEY,
+        root            TEXT NOT NULL,
+        genesis         TEXT NOT NULL,
+        manifest        TEXT NOT NULL,
+        recovery_backup TEXT NOT NULL,
+        phase           TEXT NOT NULL DEFAULT 'prepared',
+        created_at      INTEGER NOT NULL,
+        updated_at      INTEGER NOT NULL
+      )
+    ''');
   }
 
   Future<void> _createSchemaV8(Database db) => db.execute(

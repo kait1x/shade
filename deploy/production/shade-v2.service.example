@@ -1,0 +1,27 @@
+# Shade v2 PRODUCTION service — ШАБЛОН, НЕ ПРИМЕНЁН.
+# Отдельно от shade.service (v1) и shade-alpha.service (staging).
+# Применять только с разрешения владельца после staging-проверки.
+[Unit]
+Description=Shade v2 production (device protocol)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shade-v2
+Group=shade-v2
+WorkingDirectory=/opt/shade-v2/current/server
+EnvironmentFile=/etc/shade-v2/v2.env
+ExecStart=/usr/bin/node alpha.mjs
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# Данные + guard/bridge-ack exports + checkpoints.
+ReadWritePaths=/var/lib/shade-v2
+
+[Install]
+WantedBy=multi-user.target

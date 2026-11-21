@@ -573,10 +573,49 @@ const offlineBuffer = messagingSnapshot.has('queues')
 const directMessaging = require('./direct-messaging').createDirectMessaging({
   io, users, onlineUsers, offlineBuffer, receipts: directReceipts,
   encrypt: _encryptMetadata, decrypt: _decryptMetadata, push: sendFcmPush,
+  blocked: v2Migrated,
+  bridged: v2Migrated,
   persist: () => saveMap('messaging.json', new Map([
     ['queues', [...offlineBuffer]], ['receipts', [...directReceipts]],
   ])),
 });
+// ── Optional v2 bridge-ack ingestion (opt-in via SHADE_V2_BRIDGE_ACK_FILE) ──
+// The v2 process exports per-account ACK tombstones (additive file owned by
+// v2; this server only reads it). Confirmed bridged ciphertext is pruned from
+// the v1 queue and receipts advance to delivered/read, so v1 senders keep
+// seeing honest status while the recipient lives on v2. Absent file = no-op.
+const V2_BRIDGE_ACK_FILE = process.env.SHADE_V2_BRIDGE_ACK_FILE || '';
+let v2BridgeAckMtime = 0;
+const V2_BRIDGE_REF = /^[a-z0-9_]{3,32}:[a-zA-Z0-9_-]{16,80}$/;
+function readBridgeAcks() {
+  if (!V2_BRIDGE_ACK_FILE) return [];
+  try {
+    const stat = fs.statSync(V2_BRIDGE_ACK_FILE);
+    if (stat.mtimeMs === v2BridgeAckMtime) return [];
+    const parsed = JSON.parse(fs.readFileSync(V2_BRIDGE_ACK_FILE, 'utf8'));
+    v2BridgeAckMtime = stat.mtimeMs;
+    if (!parsed || parsed.version !== 1 || !parsed.accounts || typeof parsed.accounts !== 'object') return [];
+    const entries = [];
+    for (const [account, value] of Object.entries(parsed.accounts)) {
+      if (!v2Migrated(account)) continue; // only enrolled accounts are bridged
+      const acked = Array.isArray(value?.acked) ? value.acked.filter(r => typeof r === 'string' && V2_BRIDGE_REF.test(r)).slice(0, 1000) : [];
+      const read = Array.isArray(value?.read) ? value.read.filter(r => typeof r === 'string' && V2_BRIDGE_REF.test(r)).slice(0, 1000) : [];
+      if (acked.length) entries.push({ account, acked, read });
+    }
+    return entries;
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.error('[v2-bridge] ack file unreadable, keeping last known state:', e.code || 'parse error');
+    return [];
+  }
+}
+if (V2_BRIDGE_ACK_FILE) {
+  const timer = setInterval(() => {
+    const entries = readBridgeAcks();
+    if (entries.length) directMessaging.bridgeAck(entries).catch(e =>
+      console.error('[v2-bridge] ack ingestion failed:', e.message));
+  }, 2000);
+  timer.unref();
+}
 // MED-03: Offline message TTL 7 days
 const OFFLINE_MESSAGE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const sessions = new Map();
@@ -825,6 +864,258 @@ function revokeUserSessions(username) {
   for (const watcher of watchers.get(username) || []) io.to(watcher).emit('statusUpdate', { username, online: false, lastSeen: timestamp });
 }
 
+// ── Optional v2 migration guard (opt-in via SHADE_V2_GUARD_FILE) ──────────
+// Accounts enrolled into device protocol v2 must no longer authenticate or
+// SEND on v1 (upgrade_required). Incoming v1 messages TO enrolled accounts
+// are still accepted and bridged (see SHADE_V2_BRIDGE_ACK_FILE below): the
+// ciphertext is encrypted to the same immutable root RSA. The guard file is
+// an ADDITIVE export owned by the v2 process; this server only reads it.
+// Absent file = unchanged v1 behavior. mtime-cached; on read/parse errors the
+// last known set is kept.
+const V2_GUARD_FILE = process.env.SHADE_V2_GUARD_FILE || '';
+let v2GuardAccounts = new Set();
+// D1 (V2_COHORT_MIGRATION.md): аддитивная секция `dialogs` guard-экспорта несёт
+// per-dialog routing-флаг через мост. Ключ — отсортированная пара 'a|b'
+// (dialogKey migration.mjs). Отсутствие секции = пустая карта = прежнее
+// аккаунтное поведение байт-в-байт.
+let v2GuardDialogs = new Map();
+let v2GuardMtime = 0;
+let v2GuardCheckedAt = 0;
+const V2_ACCOUNT_REF = /^[a-z0-9_]{3,32}$/;
+const V2_DIALOG_STATES = new Set(['v1_active', 'migration_pending', 'transferring', 'v2_active']);
+function refreshV2Guard() {
+  if (!V2_GUARD_FILE) return;
+  const now = Date.now();
+  if (now - v2GuardCheckedAt < 1000) return;
+  v2GuardCheckedAt = now;
+  try {
+    const stat = fs.statSync(V2_GUARD_FILE);
+    if (stat.mtimeMs === v2GuardMtime) return;
+    const parsed = JSON.parse(fs.readFileSync(V2_GUARD_FILE, 'utf8'));
+    if (parsed && parsed.version === 1 && parsed.accounts && typeof parsed.accounts === 'object') {
+      v2GuardAccounts = new Set(Object.keys(parsed.accounts));
+      // Аддитивный разбор dialogs: невалидные записи пропускаются; секция
+      // отсутствует или невалидна → per-dialog уточнений нет (прежнее поведение).
+      const dialogs = new Map();
+      if (parsed.dialogs && typeof parsed.dialogs === 'object' && !Array.isArray(parsed.dialogs)) {
+        for (const [key, value] of Object.entries(parsed.dialogs)) {
+          const pair = key.split('|');
+          if (pair.length !== 2 || pair[0] === pair[1] || !pair.every(a => V2_ACCOUNT_REF.test(a))) continue;
+          if (!value || !V2_DIALOG_STATES.has(value.state)) continue;
+          dialogs.set(key, { state: value.state, rolledBackAt: Number(value.rolledBackAt) || null });
+        }
+      }
+      v2GuardDialogs = dialogs;
+      v2GuardMtime = stat.mtimeMs;
+    }
+  } catch (e) {
+    if (e.code === 'ENOENT') { v2GuardAccounts = new Set(); v2GuardDialogs = new Map(); v2GuardMtime = 0; return; }
+    console.error('[v2-guard] guard file unreadable, keeping last known state:', e.code || 'parse error');
+  }
+}
+// Гранулярность v1-guard — аккаунт (ограничение v1-протокола, задокументировано):
+// диалог v2_active запрещает v1-send его участников; аккаунт снимается с guard
+// только когда ВСЕ его диалоги откатаны (v1_active + rolledBackAt). Смешанные
+// диалоги (v2_active + rollback) держат аккаунт под guard. Enrolled-аккаунты
+// без journal остаются под guard — поведение enrollment не меняется.
+function v2Migrated(username) {
+  refreshV2Guard();
+  if (!v2GuardDialogs.size) return v2GuardAccounts.has(username);
+  let listed = false, allRolledBack = true, anyV2Active = false;
+  for (const [key, record] of v2GuardDialogs) {
+    const [a, b] = key.split('|');
+    if (a !== username && b !== username) continue;
+    listed = true;
+    if (record.state !== 'v1_active' || !record.rolledBackAt) allRolledBack = false;
+    if (record.state === 'v2_active') anyV2Active = true;
+  }
+  if (v2GuardAccounts.has(username)) return !(listed && allRolledBack);
+  // Fail-closed per-dialog routing: v2_active диалог запрещает v1-send даже
+  // если аккаунт не listed в accounts (рассинхрон экспорта). Pending/transferring
+  // не блокируют аккаунт без journal-записи: v1 остаётся текущим окружением.
+  return anyV2Active;
+}
+
+// ── Optional v2 reverse-replay ingestion (opt-in via SHADE_V2_REVERSE_REPLAY_FILE) ──
+// D1 rollback: v2-процесс экспортирует v2-origine конверты диалога (формат
+// reverseReplay() migration.mjs: {version, accounts: {account: [{id, from,
+// timestamp, data:{k,d}}]}}) для v1-очередей legacy-устройств. v1 только
+// ДОБАВЛЯЕТ пакеты в существующие очереди (дедуп по from:id), ciphertext не
+// расшифровывает и формат v1 не меняет. После успешного ingestion файл
+// помечается consumed: атомарный журнал `${file}.consumed` (tmp+rename, по
+// образцу guard/bridgeAck экспортов) + удаление экспорта. Журнал — источник
+// дедупа, переживающий prune очередей/квитанций и повторные экспорты v2.
+// Отсутствие файла = no-op; сбой парсинга = честный лог без падения сервиса.
+const V2_REVERSE_REPLAY_FILE = process.env.SHADE_V2_REVERSE_REPLAY_FILE || '';
+const V2_REPLAY_CONSUMED = V2_REVERSE_REPLAY_FILE ? `${V2_REVERSE_REPLAY_FILE}.consumed` : '';
+const V2_REPLAY_ID = /^[a-zA-Z0-9_-]{16,80}$/;
+const V2_REPLAY_MAX_BYTES = 10 * 1024 * 1024; // лимит конверта как в v1-send
+let v2ReplayMtime = 0;
+let v2ReplayBusy = false;
+// Fail-closed валидация: весь файл должен быть валиден, иначе ingestion нет.
+function parseReverseReplay(raw) {
+  const parsed = JSON.parse(raw);
+  if (!parsed || parsed.version !== 1 || !parsed.accounts ||
+    typeof parsed.accounts !== 'object' || Array.isArray(parsed.accounts)) throw new Error('invalid format');
+  const batches = [];
+  for (const [account, list] of Object.entries(parsed.accounts)) {
+    if (!V2_ACCOUNT_REF.test(account)) throw new Error('invalid account');
+    if (!Array.isArray(list)) throw new Error('invalid entries');
+    const entries = [];
+    for (const e of list) {
+      if (!e || typeof e.id !== 'string' || !V2_REPLAY_ID.test(e.id) ||
+        typeof e.from !== 'string' || !V2_ACCOUNT_REF.test(e.from) || e.from === account ||
+        typeof e.timestamp !== 'number' || !Number.isFinite(e.timestamp) || e.timestamp <= 0 ||
+        typeof e.data !== 'string' || !e.data || Buffer.byteLength(e.data) > V2_REPLAY_MAX_BYTES) throw new Error('invalid entry');
+      let payload;
+      try { payload = JSON.parse(e.data); } catch { throw new Error('invalid ciphertext'); }
+      if (!payload || typeof payload.k !== 'string' || !payload.k ||
+        typeof payload.d !== 'string' || !payload.d) throw new Error('invalid ciphertext');
+      entries.push({ id: e.id, from: e.from, timestamp: e.timestamp, data: e.data });
+    }
+    batches.push({ account, entries });
+  }
+  return batches;
+}
+// Журнал consumed читается мягко: повреждение не роняет сервис, дедуп в этом
+// случае опирается на очереди и квитанции (честный лог).
+function readReplayLedger() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(V2_REPLAY_CONSUMED, 'utf8'));
+    const refs = new Map();
+    if (!parsed || parsed.version !== 1 || !parsed.accounts || typeof parsed.accounts !== 'object') return refs;
+    for (const [account, list] of Object.entries(parsed.accounts)) {
+      if (Array.isArray(list)) refs.set(account, list.filter(e => e && typeof e.id === 'string' && typeof e.from === 'string'));
+    }
+    return refs;
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.error('[v2-replay] consumed journal unreadable, falling back to queue/receipt dedup:', e.code || 'parse error');
+    return new Map();
+  }
+}
+async function ingestReverseReplay() {
+  if (!V2_REVERSE_REPLAY_FILE || v2ReplayBusy) return;
+  let stat;
+  try { stat = fs.statSync(V2_REVERSE_REPLAY_FILE); }
+  catch (e) {
+    if (e.code === 'ENOENT') { v2ReplayMtime = 0; return; }
+    console.error('[v2-replay] export file unreadable:', e.code || e.message);
+    return;
+  }
+  if (stat.mtimeMs === v2ReplayMtime) return;
+  let batches;
+  try {
+    batches = parseReverseReplay(fs.readFileSync(V2_REVERSE_REPLAY_FILE, 'utf8'));
+  } catch (e) {
+    // mtime кэшируется, чтобы не повторять одну и ту же ошибку каждые 2 с;
+    // новый экспорт v2 (другой mtime) повторит попытку.
+    v2ReplayMtime = stat.mtimeMs;
+    console.error('[v2-replay] export invalid, ingestion skipped:', e.message);
+    return;
+  }
+  v2ReplayBusy = true;
+  try {
+    const ledger = readReplayLedger();
+    const knownRefs = new Set();
+    for (const list of ledger.values()) for (const e of list) knownRefs.add(`${e.from}:${e.id}`);
+    const added = [];
+    const unknown = [];
+    for (const { account, entries } of batches) {
+      if (!users.has(account)) { if (entries.length) unknown.push(account); continue; }
+      const queuedRefs = new Set();
+      for (const value of offlineBuffer.get(account) || []) {
+        const item = _decryptMetadata(value);
+        if (item) queuedRefs.add(`${item.from}:${item.id}`);
+      }
+      for (const e of entries) {
+        const refKey = `${e.from}:${e.id}`;
+        // Дедуп по id+from: журнал consumed, очередь и квитанции (включая
+        // deletedAt — отозванное сообщение не воскрешаем).
+        if (knownRefs.has(refKey) || queuedRefs.has(refKey) || directReceipts.has(refKey)) continue;
+        added.push({ account, envelope: e });
+        queuedRefs.add(refKey);
+        knownRefs.add(refKey);
+      }
+    }
+    if (unknown.length) console.error('[v2-replay] unknown accounts skipped:', unknown.join(', '));
+    if (added.length) {
+      // Транзакция по образцу direct-messaging: копии → мутация → persist ДО
+      // пометки consumed; при сбое хранилища состояние полностью откатывается,
+      // экспорт остаётся для идемпотентного повтора.
+      const previousQueues = new Map([...offlineBuffer].map(([u, q]) => [u, [...q]]));
+      const previousReceipts = new Map(directReceipts);
+      try {
+        for (const { account, envelope } of added) {
+          offlineBuffer.set(account, [...(offlineBuffer.get(account) || []), _encryptMetadata(envelope)]);
+          const digest = crypto.createHash('sha256').update(envelope.data).digest('hex');
+          directReceipts.set(`${envelope.from}:${envelope.id}`,
+            { from: envelope.from, to: account, id: envelope.id, digest, timestamp: envelope.timestamp, status: 'sent' });
+        }
+        if (await saveMap('messaging.json', new Map([
+          ['queues', [...offlineBuffer]], ['receipts', [...directReceipts]],
+        ])) === false) throw new Error('Server storage unavailable');
+      } catch (e) {
+        offlineBuffer.clear(); previousQueues.forEach((v, k) => offlineBuffer.set(k, v));
+        directReceipts.clear(); previousReceipts.forEach((v, k) => directReceipts.set(k, v));
+        console.error('[v2-replay] ingestion failed, export kept for retry:', e.message);
+        return;
+      }
+      // Защита от гонки с откатом параллельной транзакции: consumed только
+      // если пакеты действительно остались в очереди после persist.
+      const survived = added.every(({ account, envelope }) =>
+        (offlineBuffer.get(account) || []).some(value => {
+          const item = _decryptMetadata(value);
+          return item && item.id === envelope.id && item.from === envelope.from;
+        }));
+      if (!survived) {
+        console.error('[v2-replay] concurrent rollback detected, export kept for retry');
+        return;
+      }
+      // Живая доставка онлайн-получателю v1; аккаунты под guard — через мост.
+      for (const { account, envelope } of added) {
+        const target = onlineUsers.get(account);
+        if (target && !v2Migrated(account)) io.to(target).emit('message', envelope);
+      }
+    }
+    // Пометка consumed: журнал сливается с предыдущим и пишется атомарно
+    // (tmp+rename), затем экспорт удаляется. Краш между шагами лечится
+    // идемпотентным повтором: журнал уже содержит принятые refs.
+    const merged = {};
+    for (const [account, list] of ledger) merged[account] = [...list];
+    for (const { account, entries } of batches) {
+      // Неизвестные аккаунты в журнал не пишем: будущий повторный экспорт
+      // должен иметь шанс доставить пакеты, если аккаунт появится в v1.
+      if (!users.has(account)) continue;
+      const list = merged[account] ||= [];
+      for (const e of entries) if (!list.some(x => x.id === e.id && x.from === e.from)) list.push(e);
+    }
+    const tmp = `${V2_REPLAY_CONSUMED}.${crypto.randomBytes(6).toString('hex')}.tmp`;
+    try {
+      fs.writeFileSync(tmp, JSON.stringify({ version: 1, updatedAt: Date.now(), accounts: merged }), { mode: 0o600 });
+      try { fs.renameSync(tmp, V2_REPLAY_CONSUMED); }
+      catch (e) {
+        // Windows: rename не перезаписывает существующую цель.
+        if (e.code !== 'EPERM' && e.code !== 'EEXIST') throw e;
+        fs.unlinkSync(V2_REPLAY_CONSUMED);
+        fs.renameSync(tmp, V2_REPLAY_CONSUMED);
+      }
+      // Свежий экспорт v2 (другой mtime) не удаляем — его заберёт следующий poll.
+      if (fs.statSync(V2_REVERSE_REPLAY_FILE).mtimeMs === stat.mtimeMs) fs.unlinkSync(V2_REVERSE_REPLAY_FILE);
+      v2ReplayMtime = 0;
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch { /* tmp мог не создаться */ }
+      if (e.code === 'ENOENT') { v2ReplayMtime = 0; return; }
+      console.error('[v2-replay] consumed marking failed, export kept for retry:', e.code || e.message);
+    }
+  } finally { v2ReplayBusy = false; }
+}
+if (V2_REVERSE_REPLAY_FILE) {
+  const timer = setInterval(() => {
+    ingestReverseReplay().catch(e => console.error('[v2-replay] ingestion failed:', e.message));
+  }, 2000);
+  timer.unref();
+}
+
 // ── Middleware ──────────────────────────────────────────────
 function requireUserAuth(req, res, next) {
   const sessionToken = req.headers['x-session-token'];
@@ -834,6 +1125,9 @@ function requireUserAuth(req, res, next) {
   }
   if (!validateSessionToken(username, sessionToken)) {
     return res.status(403).json({ error: 'Invalid or expired session' });
+  }
+  if (v2Migrated(username)) {
+    return res.status(403).json({ error: 'upgrade_required' });
   }
   req.auth = Object.freeze({ username });
   next();
@@ -1348,6 +1642,10 @@ app.post('/register', async (req, res) => {
         }
       }
       if (existing) {
+        if (v2Migrated(username_norm)) {
+          release();
+          return res.status(403).json({ error: 'upgrade_required' });
+        }
         if (googleProfile && existing.googleSub && existing.googleSub !== googleProfile.googleSub) {
           release();
           return res.status(403).json({ error: 'Google account does not match this profile' });
@@ -1444,6 +1742,9 @@ app.post('/refresh', async (req, res) => {
     // HIGH-07: Handle family reuse detection
     if (data.error && data.error === 'TOKEN_FAMILY_REUSE_DETECTED') {
       return res.status(403).json({ error: data.message, code: 'TOKEN_FAMILY_REUSE_DETECTED' });
+    }
+    if (v2Migrated(data.username)) {
+      return res.status(403).json({ error: 'upgrade_required' });
     }
     // Token rotation: delete old and generate new with family tracking
     const newSessionToken = generateSessionToken(data.username);
@@ -1749,6 +2050,11 @@ io.on('connection', (socket) => {
     if (!gracePeriodReconnect && (!expected || token !== expected)) {
       console.warn('[ws] auth failed');
       socket.emit('authError', { error: 'Invalid session token' });
+      setTimeout(() => socket.disconnect(true), 1000);
+      return;
+    }
+    if (v2Migrated(username)) {
+      socket.emit('authError', { error: 'upgrade_required' });
       setTimeout(() => socket.disconnect(true), 1000);
       return;
     }

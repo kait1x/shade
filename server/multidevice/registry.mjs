@@ -4,7 +4,7 @@
 // atomic server storage and introduce separate device-scoped transport routes.
 import { createPublicKey, randomBytes } from 'node:crypto';
 import { check, hash, manifestText, deviceId,
-  pairingText, requestText, verify, verifyMessage, messageText, verifyGenesis, verifyHistory } from '../../client/web/protocol/device-v2.mjs';
+  pairingText, pairingTextV2, requestText, verify, verifyMessage, messageText, verifyGenesis, verifyHistory } from '../../client/web/protocol/device-v2.mjs';
 
 export const operationDigest = (operation, body = null) => hash(JSON.stringify([operation, body]));
 export const messageRef = m => `${m.from}:${m.deviceId}:${m.id}`;
@@ -16,10 +16,13 @@ export function legacyRoot(pem) {
   return key.export({ type: 'spki', format: 'der' }).toString('base64');
 }
 
-export async function createDeviceRegistry({ users, persist, snapshot, clock = Date.now, verifyGoogle }) {
+export async function createDeviceRegistry({ users, persist, snapshot, clock = Date.now, verifyGoogle, pairingV1 = true }) {
   check(users instanceof Map && typeof persist === 'function');
   // Additive snapshot: never rewrite users, legacy messages, tokens or keys.
-  let state = { format: 2, accounts: {}, queues: {}, receipts: {}, delivery: {} };
+  let state = { format: 2, accounts: {}, queues: {}, receipts: {}, receiptAt: {}, delivery: {}, stickers: {}, retractions: {}, pushSubscriptions: {}, historyStaging: {},
+    // Когортная миграция (D1): per-dialog routing journal. Аддитивная секция;
+    // содержимым управляет migration.mjs через сериализованные транзакции.
+    dialogRouting: { format: 1, dialogs: {} } };
   const initialAccounts = [];
   for (const [account, user] of users) {
     check(/^[a-z0-9_]{3,32}$/.test(account), 'Invalid legacy account');
@@ -29,6 +32,7 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
   state.accounts = Object.fromEntries(initialAccounts);
   if (snapshot) {
     check(snapshot.format === 2 && snapshot.accounts && snapshot.queues && snapshot.receipts, 'Invalid snapshot');
+    check(snapshot.stickers === undefined || (snapshot.stickers && typeof snapshot.stickers === 'object' && !Array.isArray(snapshot.stickers)), 'Invalid stickers snapshot');
     for (const [account, record] of Object.entries(snapshot.accounts)) {
       if (Object.hasOwn(state.accounts, account)) {
         check(state.accounts[account].root === record.root && record.legacy === true, 'Snapshot root substitution');
@@ -55,6 +59,18 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     check([...users.keys()].every(account => Object.hasOwn(snapshot.accounts, account)), 'Incomplete migration snapshot');
     state = structuredClone(snapshot);
     state.delivery ||= {};
+    state.stickers ||= {};
+    state.retractions ||= {};
+    state.pushSubscriptions ||= {};
+    state.receiptAt ||= {};
+    state.historyStaging ||= {};
+    // Когортный routing journal (D1): аддитивная секция, старые снапшоты без неё.
+    state.dialogRouting ||= { format: 1, dialogs: {} };
+    // Legacy-снапшоты без меток времени receipt: консервативно stamps временем
+    // загрузки (старые квитанции живут ещё TTL от загрузки, не исчезают сразу).
+    for (const key of Object.keys(state.receipts)) {
+      if (!Object.hasOwn(state.receiptAt, key)) state.receiptAt[key] = clock();
+    }
   }
   const challenges = new Map();
   let tail = Promise.resolve();
@@ -83,13 +99,17 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
   }
   return {
     exportSnapshot: () => structuredClone(state),
+    // Generic serialized transaction for adapter-owned sections (stickers/
+    // profiles). Single writer: persist happens before state is visible.
+    updateState: work => serial(() => transaction(async next => { await work(next); })),
     accountForGoogle: sub => Object.entries(state.accounts).find(([, r]) => r.googleSub === sub)?.[0] || null,
     list: () => Object.entries(state.accounts).filter(([, r]) => r.history.length)
       .map(([account]) => ({ account })),
     authorize: (auth, operation) => serial(() => authenticate(auth, operation)),
     directory: account => {
       const record = recordOf(state, account); check(record, 'Unknown account');
-      return { root: record.root, genesis: structuredClone(record.genesis), history: structuredClone(record.history) };
+      return { root: record.root, genesis: structuredClone(record.genesis), history: structuredClone(record.history),
+        rotation: record.rotation ? structuredClone(record.rotation) : null };
     },
     // The first device can be any platform. Google verifies account ownership;
     // genesis + the complete roster are signed by that device, not the relay.
@@ -119,7 +139,12 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     challenge(account, id, operation) {
       for (const [key, value] of challenges) if (value.expiresAt <= clock()) challenges.delete(key);
       check(active(state, account, id), 'Revoked or unknown device');
-      check(/^[a-f0-9]{64}$/.test(operation) && challenges.size < 1000, 'Invalid operation or challenge limit');
+      check(/^[a-f0-9]{64}$/.test(operation) && challenges.size < 4000, 'Invalid operation or challenge limit');
+      // Per-account quota: one account cannot exhaust the global capacity.
+      // 240/мин/аккаунт (posture-решение владельца 21.11): до 8 устройств за NAT.
+      let perAccount = 0;
+      for (const value of challenges.values()) if (value.account === account) perAccount++;
+      check(perAccount < 240, 'Challenge quota reached');
       const nonce = randomBytes(32).toString('hex');
       challenges.set(nonce, { account, id, operation, expiresAt: clock() + 60000 });
       return nonce;
@@ -143,14 +168,77 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
           const key = `${e.account}:${e.deviceId}`;
           const queue = next.queues[key] ||= [];
           check(queue.length < 200 && JSON.stringify(queue).length + JSON.stringify(message).length <= 8 * 1024 * 1024, 'Device queue full');
-          queue.push(structuredClone(message));
+          // Повторная доставка того же id не плодит копии в очереди (дедуп на
+          // сервере, независимо от окна receipts).
+          if (!queue.some(q => q.id === message.id)) queue.push(structuredClone(message));
         }
         next.receipts[receiptKey] = digest;
+        next.receiptAt[receiptKey] = clock();
         next.delivery[receiptKey] = { from: message.from, devices: message.envelopes
           .filter(e => e.account === message.to).map(e => ({ account: e.account, id: e.deviceId, acknowledgedAt: null })) };
         return { accepted: true, duplicate: false };
       });
     }),
+    // history.transfer (SYNC_PLAN §5.2): per-device staging E2EE-пакетов истории
+    // между устройствами ОДНОГО аккаунта. Сервер хранит ciphertext как есть и
+    // никогда не расшифровывает; в receipts/очереди сообщений не учитывается.
+    historyTransfer: (body, auth) => serial(() => transaction(async next => {
+      await authenticate(auth, await operationDigest('history.transfer', body));
+      check(body && typeof body.to === 'string' && Array.isArray(body.packages) && body.packages.length <= 50, 'Invalid transfer body');
+      check(active(next, auth.account, auth.id), 'Revoked or unknown sender device');
+      check(active(next, auth.account, body.to), 'Revoked or unknown target device');
+      const key = `${auth.account}:${body.to}`;
+      const staging = next.historyStaging[key] ||= { packages: [], bytes: 0 };
+      check(staging.packages.length < 2000, 'History staging capacity reached');
+      let added = 0;
+      for (const p of body.packages) {
+        check(p && typeof p.id === 'string' && /^[a-f0-9]{64}$/.test(p.id) &&
+          Number.isSafeInteger(p.seq) && p.seq >= 1 &&
+          typeof p.payload === 'string' && p.payload.length <= 87384, 'Invalid history package');
+        if (staging.packages.some(q => q.id === p.id)) continue; // идемпотентный ретрай
+        check(staging.bytes + p.payload.length <= 64 * 1024 * 1024, 'History staging volume reached');
+        staging.packages.push({ id: p.id, seq: p.seq, payload: p.payload });
+        staging.bytes += p.payload.length;
+        added++;
+      }
+      staging.packages.sort((a, b) => a.seq - b.seq);
+      return { added, duplicate: body.packages.length - added };
+    })),
+    historyFetch: (body, auth) => serial(async () => {
+      await authenticate(auth, await operationDigest('history.fetch', body));
+      const since = Number.isSafeInteger(body?.since) ? body.since : 0;
+      const staging = state.historyStaging[`${auth.account}:${auth.id}`];
+      const packages = (staging?.packages || []).filter(p => p.seq > since).slice(0, 50);
+      return { packages: structuredClone(packages), cursor: packages.at(-1)?.seq ?? since };
+    }),
+    historyAck: (body, auth) => serial(() => transaction(async next => {
+      await authenticate(auth, await operationDigest('history.ack', body));
+      check(Array.isArray(body?.ids) && body.ids.length <= 200, 'Invalid ack body');
+      const key = `${auth.account}:${auth.id}`;
+      const staging = next.historyStaging[key];
+      if (!staging) return { acked: 0 };
+      const ids = new Set(body.ids);
+      const kept = staging.packages.filter(p => !ids.has(p.id));
+      const acked = staging.packages.length - kept.length;
+      if (kept.length) {
+        staging.packages = kept;
+        staging.bytes = kept.reduce((s, p) => s + p.payload.length, 0);
+      } else delete next.historyStaging[key];
+      return { acked };
+    })),
+    // Pruning старых квитанций: окно дедупа = TTL очередей (7 дней); иначе
+    // глобальный cap 10000 исчерпывается навсегда (SYNC_PLAN §5.3).
+    pruneReceipts: () => serial(() => transaction(async next => {
+      const cutoff = clock() - 7 * 24 * 60 * 60 * 1000;
+      let pruned = 0;
+      for (const [key, at] of Object.entries(next.receiptAt || {})) {
+        if (at <= cutoff) {
+          delete next.receipts[key]; delete next.receiptAt[key]; delete next.delivery[key];
+          pruned++;
+        }
+      }
+      return pruned;
+    })),
     fetch: auth => serial(async () => {
       await authenticate(auth, await operationDigest('fetch'));
       const own = current(state, auth.account);
@@ -182,6 +270,86 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
       return Object.fromEntries(refs.map(ref => [ref, state.delivery[ref]?.from === auth.account
         ? structuredClone(state.delivery[ref].devices) : []]));
     }),
+    // Read-ACK (contract C5): recipient-device-only, idempotent, projected to
+    // the sender through status. Never reveals whether an unknown ref exists.
+    read: (refs, auth) => serial(async () => {
+      check(Array.isArray(refs) && refs.length <= 200 && refs.every(ref => typeof ref === 'string' &&
+        /^[a-z0-9_]{3,32}:(primary|[a-f0-9]{64}):[a-f0-9]{64}$/.test(ref)), 'Invalid read refs');
+      await authenticate(auth, await operationDigest('read', refs));
+      return transaction(next => {
+        let read = 0;
+        for (const ref of refs) {
+          const device = next.delivery[ref]?.devices?.find(d => d.account === auth.account && d.id === auth.id);
+          if (device && !device.readAt) { device.readAt = clock(); read++; }
+        }
+        return { read };
+      });
+    }),
+    // Delete-for-all (contract C3): sender-only, idempotent, purges offline
+    // queues and leaves a bounded tombstone for already-delivered copies.
+    retract: (refs, auth) => serial(async () => {
+      check(Array.isArray(refs) && refs.length <= 200 && refs.every(ref => typeof ref === 'string' &&
+        /^[a-z0-9_]{3,32}:(primary|[a-f0-9]{64}):[a-f0-9]{64}$/.test(ref)), 'Invalid retraction refs');
+      await authenticate(auth, await operationDigest('retract', refs));
+      check(refs.every(ref => ref.split(':')[0] === auth.account), 'Only the sender can retract');
+      return transaction(next => {
+        const now = clock();
+        for (const [ref, t] of Object.entries(next.retractions)) {
+          if (t.deletedAt <= now - 7 * 24 * 60 * 60 * 1000) delete next.retractions[ref];
+        }
+        let retracted = 0;
+        let ownTombstones = 0;
+        for (const t of Object.values(next.retractions)) if (t.from === auth.account) ownTombstones++;
+        for (const ref of refs) {
+          if (next.retractions[ref]) continue;
+          // Only actually-sent messages get tombstones: unknown refs are a
+          // no-op, so a valid device cannot exhaust the cap with fabricated refs.
+          if (!next.receipts[ref]) continue;
+          check(ownTombstones < 2000, 'Retraction quota reached');
+          check(Object.keys(next.retractions).length < 10000, 'Retraction capacity reached');
+          next.retractions[ref] = { from: auth.account, deletedAt: now };
+          ownTombstones++;
+          retracted++;
+        }
+        const refSet = new Set(refs);
+        for (const [key, queue] of Object.entries(next.queues)) {
+          next.queues[key] = queue.filter(m => !refSet.has(messageRef(m)));
+        }
+        return { retracted };
+      });
+    }),
+    // Tombstones are visible only to the sender account and recipient devices.
+    retractions: (body, auth) => serial(async () => {
+      const since = body?.since ?? 0;
+      check(Number.isSafeInteger(since) && since >= 0, 'Invalid cursor');
+      await authenticate(auth, await operationDigest('retractions', body ?? null));
+      const out = [];
+      for (const [ref, t] of Object.entries(state.retractions)) {
+        if (t.deletedAt <= since) continue;
+        const recipient = state.delivery[ref]?.devices?.some(d => d.account === auth.account && d.id === auth.id);
+        if (t.from === auth.account || recipient) out.push({ ref, deletedAt: t.deletedAt, from: t.from });
+        if (out.length >= 500) break;
+      }
+      return { retractions: out };
+    }),
+    // Web Push subscriptions (contract C6): one per device, encrypted at rest
+    // inside the snapshot, bound to the authenticated account/device.
+    pushSubscribe: (auth, subscription) => serial(() => transaction(next => {
+      const key = `${auth.account}:${auth.id}`;
+      check(Object.hasOwn(next.pushSubscriptions, key) ||
+        Object.keys(next.pushSubscriptions).length < 10000, 'Push capacity reached');
+      next.pushSubscriptions[key] = { ...subscription, createdAt: clock() };
+      return { subscribed: true };
+    })),
+    pushUnsubscribe: auth => serial(() => transaction(next => {
+      delete next.pushSubscriptions[`${auth.account}:${auth.id}`];
+      return { subscribed: false };
+    })),
+    pushSubscription: (account, id) => state.pushSubscriptions[`${account}:${id}`]
+      ? structuredClone(state.pushSubscriptions[`${account}:${id}`]) : null,
+    dropPushSubscription: (account, id) => serial(() => transaction(next => {
+      delete next.pushSubscriptions[`${account}:${id}`];
+    })),
     assertLegacyAllowed(account) {
       check(!current(state, account), 'Client upgrade required: account uses device protocol v2');
     },
@@ -202,8 +370,20 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
         const proof = proofs.find(p => p.id === d.id);
         check(proof && proof.expiresAt > clock() && proof.expiresAt <= clock() + 300000, 'Fresh pairing proof required');
         check(d.id === await deviceId(d.encryptionKey, d.signingKey));
-        check(await verify(pairingText(manifest.account, d, proof.nonce, proof.expiresAt),
-          proof.signature, d.signingKey), 'Invalid pairing possession proof');
+        if (proof.pairingVersion === 2) {
+          // Challenge-bound proof: the signature must cover the challenge the
+          // trusted device displayed. A v1 signature here fails (downgrade).
+          check(typeof proof.challenge === 'string' && /^[a-f0-9]{30}$/.test(proof.challenge), 'Invalid pairing challenge');
+          check(await verify(pairingTextV2(manifest.account, d, proof.nonce, proof.expiresAt, proof.challenge),
+            proof.signature, d.signingKey), 'Invalid pairing possession proof');
+        } else {
+          check(proof.pairingVersion === undefined && proof.challenge === undefined, 'Invalid pairing proof version');
+          // Cutoff applies to roster growth (the pairing approval UX). Genesis
+          // enrollment has no trusted-device challenge and keeps v1 proofs.
+          check(pairingV1 || !old, 'Pairing v1 proofs are disabled; update the client');
+          check(await verify(pairingText(manifest.account, d, proof.nonce, proof.expiresAt),
+            proof.signature, d.signingKey), 'Invalid pairing possession proof');
+        }
       }
       for (const d of old?.devices || []) {
         if (!manifest.devices.some(next => next.id === d.id)) record.retired.push(d.id);
@@ -212,6 +392,13 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
       // Drop undelivered ciphertext for revoked recipients and revoked senders.
       for (const [key, queue] of Object.entries(next.queues)) {
         next.queues[key] = queue.filter(m => active(next, key.split(':')[0], key.split(':')[1]) && active(next, m.from, m.deviceId));
+      }
+      // Revoked devices lose their push subscriptions too.
+      for (const key of Object.keys(next.pushSubscriptions)) {
+        const [account, id] = key.split(':');
+        if (account === manifest.account && !manifest.devices.some(d => d.id === id)) {
+          delete next.pushSubscriptions[key];
+        }
       }
       return { revision: manifest.revision, digest };
   }
