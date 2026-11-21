@@ -120,7 +120,7 @@
 
 Плюс защита от подмены ключей: отпечаток ключа собеседника (genesis digest) сверяется по независимому каналу — до сверки отправка этому контакту заблокирована. Ключ сервера проверяется по отпечатку (TOFU + `SERVER_PUBLIC_KEY_FINGERPRINT` при сборке).
 
-Подробности с листингами — в [пояснительной записке](Пояснительная_записка_Shade_Messenger.docx) и в комментариях к `client/lib/core/services/crypto_service.dart`, `client/web/alpha-client.mjs`, `client/web/protocol/device-v2.mjs`, `server/direct-messaging.js`.
+Подробности с листингами — в комментариях к `client/lib/core/services/crypto_service.dart`, `client/web/alpha-client.mjs`, `client/web/protocol/device-v2.mjs`, `server/direct-messaging.js` — прямо в репозитории.
 
 ## 🛠️ Стек технологий
 
@@ -260,7 +260,6 @@ cd client && flutter analyze   # статический анализ
 | Презентация (шаблон ТЗ, ≤ 7 минут) | [docs/hackathon/Shade_Защита_ТехноНаставники.pptx](docs/hackathon/Shade_Защита_ТехноНаставники.pptx) |
 | Вопросы жюри и ответы (шпаргалка для репетиции) | [docs/hackathon/DEFENSE_QA.md](docs/hackathon/DEFENSE_QA.md) |
 | Сценарий демо-видео 1–2 минуты | [docs/hackathon/DEMO_VIDEO_SCRIPT.md](docs/hackathon/DEMO_VIDEO_SCRIPT.md) |
-| Пояснительная записка (теория + листинги) | [Пояснительная_записка_Shade_Messenger.docx](Пояснительная_записка_Shade_Messenger.docx) |
 
 ---
 
