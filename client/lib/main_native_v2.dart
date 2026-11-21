@@ -1,9 +1,4 @@
-/// Native v2 entry point (решение D2, вариант A): полноценный Flutter/Dart UI
-/// поверх существующего device-v2 стека без дублирования архитектуры.
-///
-/// Собирается через `flutter build/run --target lib/main_native_v2.dart`.
-/// v1 entry (main_native.dart) остаётся default до cutover и не изменяется.
-/// Firebase инициализируется как в v1; push-уведомления подключаются позже.
+/// Shade v2 for Android. The default APK entry point dispatches here.
 library;
 
 import 'package:firebase_core/firebase_core.dart';
@@ -13,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shade/core/theme/shade_theme.dart';
 import 'package:shade/features/v2/presentation/v2_providers.dart';
 import 'package:shade/services/security_service.dart';
+import 'package:shade/features/v2/presentation/v2_push.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -34,6 +30,7 @@ class ShadeV2App extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    ref.watch(androidPushProvider);
     return MaterialApp.router(
       title: 'Shade',
       debugShowCheckedModeBanner: false,

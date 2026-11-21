@@ -20,6 +20,7 @@ import 'package:shade/core/widgets/shade_ui.dart';
 import 'package:shade/features/chats/presentation/widgets/message_bubble.dart';
 import 'package:shade/features/chats/presentation/widgets/message_input.dart';
 
+import 'v2_social.dart';
 import 'v2_providers.dart';
 
 class V2ChatScreen extends ConsumerStatefulWidget {
@@ -98,6 +99,7 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
     final notifier = ref.read(v2ConversationProvider(peer).notifier);
     final account = ref.watch(v2SyncProvider)?.account ?? '';
     final isSelf = peer == account;
+    final profile = ref.watch(publicProfileProvider(peer)).asData?.value;
     ref.listen(v2ConversationProvider(peer), _trackArrivals);
 
     final subtitle = state.peerTyping
@@ -120,6 +122,8 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
         titleSpacing: 0,
         title: Row(children: [
           AvatarView(
+              image: profile?.image,
+              frame: profile?.frame ?? AvatarFrame.none,
               name: peer,
               size: 40,
               saved: isSelf,
@@ -129,7 +133,12 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                Text(isSelf ? 'Избранное' : '@$peer',
+                Text(
+                    isSelf
+                        ? 'Избранное'
+                        : (profile?.name.isNotEmpty == true
+                            ? profile!.name
+                            : '@$peer'),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
@@ -150,6 +159,13 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
               ])),
         ]),
         actions: [
+          if (!isSelf && ref.watch(v2SocialProvider) != null)
+            IconButton(
+                tooltip: 'Профиль собеседника',
+                icon: const Icon(Icons.person_outline),
+                onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                        builder: (_) => PeerProfile(peer)))),
           IconButton(
               tooltip: 'Обновить переписку',
               icon: const Icon(Icons.refresh_rounded, size: 22),
@@ -163,8 +179,7 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
                 child: _messagesArea(context, state, notifier, account))),
         if (state.blocked)
           Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
               child: Text(
                   'Собеседник ещё не перешёл на v2. Сообщения остаются в подписанной очереди и будут доставлены после перехода.',
                   style: TextStyle(
@@ -172,16 +187,17 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
                       fontSize: 12))),
         if (state.error != null && state.messages.isNotEmpty)
           Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
               child: Text(
                   'Не удалось выполнить действие. Проверьте подключение и повторите.',
                   style: TextStyle(
                       color: Theme.of(context).colorScheme.error,
                       fontSize: 12))),
-        if (state.replyTo != null) _replyPreview(context, state, notifier, peer, account),
+        if (state.replyTo != null)
+          _replyPreview(context, state, notifier, peer, account),
         MessageInput(
             onSend: notifier.send,
+            onImageSelected: notifier.sendImage,
             onTyping: notifier.notifyTyping),
       ]),
     );
@@ -197,20 +213,19 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
         Container(width: 3, height: 40, color: ShadeColors.cyan),
         const SizedBox(width: 12),
         Expanded(
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-              Text(reply.mine ? 'Вы' : '@$peer',
-                  style: const TextStyle(
-                      color: ShadeColors.cyan,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600)),
-              Text(reply.isImage ? 'Фото' : reply.text,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                      color: ShadeColors.textSecondary, fontSize: 13)),
-            ])),
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(reply.mine ? 'Вы' : '@$peer',
+              style: const TextStyle(
+                  color: ShadeColors.cyan,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600)),
+          Text(reply.isImage ? 'Фото' : reply.text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  color: ShadeColors.textSecondary, fontSize: 13)),
+        ])),
         IconButton(
             tooltip: 'Отменить ответ',
             icon: const Icon(Icons.close_rounded,
@@ -288,17 +303,14 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
             }
             final msg = msgs[reversed];
             final previous = reversed > 0 ? msgs[reversed - 1] : null;
-            final next =
-                reversed + 1 < msgs.length ? msgs[reversed + 1] : null;
+            final next = reversed + 1 < msgs.length ? msgs[reversed + 1] : null;
             final time = DateTime.fromMillisecondsSinceEpoch(msg.createdAt);
             final startsDay = previous == null ||
                 DateTime.fromMillisecondsSinceEpoch(previous.createdAt).day !=
                     time.day ||
-                DateTime.fromMillisecondsSinceEpoch(previous.createdAt)
-                        .month !=
+                DateTime.fromMillisecondsSinceEpoch(previous.createdAt).month !=
                     time.month ||
-                DateTime.fromMillisecondsSinceEpoch(previous.createdAt)
-                        .year !=
+                DateTime.fromMillisecondsSinceEpoch(previous.createdAt).year !=
                     time.year;
             final retracted = msg.status == 'retracted';
             final reply = msg.reply;
@@ -329,9 +341,8 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
                           groupedWithNext: next != null && grouped(msg, next),
                           onLongPress: () =>
                               _messageMenu(context, msg, notifier, retracted),
-                          replyText: reply == null
-                              ? null
-                              : reply['text'] as String?,
+                          replyText:
+                              reply == null ? null : reply['text'] as String?,
                           replySender: reply == null
                               ? null
                               : reply['from'] == account
@@ -374,8 +385,7 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
               child: Column(mainAxisSize: MainAxisSize.min, children: [
         if (!retracted)
           ListTile(
-              leading:
-                  const Icon(Icons.reply_rounded, color: ShadeColors.cyan),
+              leading: const Icon(Icons.reply_rounded, color: ShadeColors.cyan),
               title: const Text('Ответить'),
               onTap: () {
                 Navigator.pop(ctx);
@@ -430,8 +440,7 @@ class _TypingBubble extends StatelessWidget {
         child: Align(
             alignment: Alignment.centerLeft,
             child: Container(
-                margin:
-                    const EdgeInsets.symmetric(vertical: 4, horizontal: 16),
+                margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 16),
                 padding:
                     const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
                 decoration: BoxDecoration(
@@ -445,8 +454,7 @@ class _TypingBubble extends StatelessWidget {
                         (i) => Container(
                             width: 7,
                             height: 7,
-                            margin:
-                                const EdgeInsets.symmetric(horizontal: 2.5),
+                            margin: const EdgeInsets.symmetric(horizontal: 2.5),
                             decoration: BoxDecoration(
                                 shape: BoxShape.circle,
                                 color: ShadeColors.textSecondary

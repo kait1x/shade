@@ -189,6 +189,17 @@ class V2SessionNotifier extends StateNotifier<V2SessionState> {
     }
   }
 
+  Future<void> logout() async {
+    final transport = _transport;
+    if (transport == null) return;
+    await transport.logout();
+    const secure = FlutterSecureStorage(
+        aOptions: AndroidOptions(encryptedSharedPreferences: true));
+    await secure.delete(key: 'alpha_v2_cookie');
+    _teardown();
+    state = const V2SessionState(status: V2SessionStatus.disconnected);
+  }
+
   Future<void> refresh() => restore();
 
   void _teardown() {
@@ -237,6 +248,7 @@ class V2ChatListState {
   final List<V2ChatSummary> chats;
   final String query;
   final String selfAccount;
+  final bool savedOnly;
 
   const V2ChatListState({
     this.loading = true,
@@ -244,6 +256,7 @@ class V2ChatListState {
     this.chats = const [],
     this.query = '',
     this.selfAccount = '',
+    this.savedOnly = false,
   });
 
   V2ChatListState copyWith({
@@ -252,6 +265,7 @@ class V2ChatListState {
     List<V2ChatSummary>? chats,
     String? query,
     String? selfAccount,
+    bool? savedOnly,
     bool clearError = false,
   }) =>
       V2ChatListState(
@@ -260,15 +274,18 @@ class V2ChatListState {
         chats: chats ?? this.chats,
         query: query ?? this.query,
         selfAccount: selfAccount ?? this.selfAccount,
+        savedOnly: savedOnly ?? this.savedOnly,
       );
 
   /// Локальный поиск: по аккаунту и по «Избранному».
   List<V2ChatSummary> get filtered {
     final q = query.trim().toLowerCase();
-    if (q.isEmpty) return chats;
-    return chats
+    final visible =
+        savedOnly ? chats.where((c) => c.peer == selfAccount) : chats;
+    return visible
         .where((c) =>
             c.peer.toLowerCase().contains(q) ||
+            (c.lastText ?? '').toLowerCase().contains(q) ||
             (c.peer == selfAccount && 'избранное'.contains(q)))
         .toList();
   }
@@ -278,6 +295,7 @@ class V2ChatListNotifier extends StateNotifier<V2ChatListState> {
   final V2SyncService _sync;
   StreamSubscription<void>? _sub;
   bool _disposed = false;
+  int _loadVersion = 0;
 
   V2ChatListNotifier(this._sync) : super(const V2ChatListState()) {
     _sub = _sync.changes.listen((_) => _load());
@@ -286,25 +304,30 @@ class V2ChatListNotifier extends StateNotifier<V2ChatListState> {
 
   Future<void> _load() async {
     if (_disposed) return;
+    final version = ++_loadVersion;
     try {
       final chats = await _sync.chats();
-      if (_disposed) return;
+      if (_disposed || version != _loadVersion) return;
       state = state.copyWith(
           chats: chats,
           loading: false,
           clearError: true,
           selfAccount: _sync.account);
     } catch (error) {
-      if (_disposed) return;
+      if (_disposed || version != _loadVersion) return;
       state = state.copyWith(loading: false, error: '$error');
     }
   }
 
+  void filterSaved(bool value) => state = state.copyWith(savedOnly: value);
   void setQuery(String query) => state = state.copyWith(query: query);
-  Future<void> refresh() => _load();
+  Future<void> refresh() async {
+    await _sync.syncNow();
+    await _load();
+  }
 
   /// Сверка genesis digest вне relay — только после явного подтверждения.
-  Future<void> addContact(String peer, String genesisDigest) async {
+  Future<void> addContact(String peer, String? genesisDigest) async {
     await _sync.confirmContact(peer, genesisDigest);
     await _load();
   }
@@ -373,6 +396,7 @@ class V2ConversationNotifier extends StateNotifier<V2ConversationState> {
   Timer? _typingTimer;
   final _readSent = <String>{};
   bool _disposed = false;
+  int _loadVersion = 0;
 
   V2ConversationNotifier(this._sync, this.peer)
       : super(const V2ConversationState()) {
@@ -398,10 +422,11 @@ class V2ConversationNotifier extends StateNotifier<V2ConversationState> {
 
   Future<void> _load() async {
     if (_disposed) return;
+    final version = ++_loadVersion;
     try {
       final messages = await _sync.conversation(peer);
       final blocked = await _sync.peerUpgradeBlocked(peer);
-      if (_disposed) return;
+      if (_disposed || version != _loadVersion) return;
       state = state.copyWith(
           messages: messages,
           loading: false,
@@ -409,7 +434,7 @@ class V2ConversationNotifier extends StateNotifier<V2ConversationState> {
           clearError: true);
       _markRead(messages);
     } catch (error) {
-      if (_disposed) return;
+      if (_disposed || version != _loadVersion) return;
       state = state.copyWith(loading: false, error: '$error');
     }
   }
@@ -418,12 +443,15 @@ class V2ConversationNotifier extends StateNotifier<V2ConversationState> {
   void _markRead(List<V2MessageView> messages) {
     final refs = [
       for (final m in messages)
-        if (!m.mine && m.status != 'retracted' && !_readSent.contains(m.ref))
-          m.ref
+        if (!m.mine && m.status != 'retracted')
+          for (final ref in m.refs)
+            if (!_readSent.contains(ref) && !ref.startsWith('v1:')) ref
     ];
     if (refs.isEmpty) return;
     _readSent.addAll(refs);
-    unawaited(_sync.markRead(refs));
+    unawaited(_sync.markRead(refs).catchError((Object _) {
+      _readSent.removeAll(refs);
+    }));
   }
 
   Future<void> send(String text) async {
@@ -440,17 +468,34 @@ class V2ConversationNotifier extends StateNotifier<V2ConversationState> {
     state = state.copyWith(clearReply: true);
   }
 
+  Future<void> sendImage(List<int> bytes) => _sync.sendImage(peer, bytes);
+
   void setReply(V2MessageView message) =>
       state = state.copyWith(replyTo: message);
   void clearReply() => state = state.copyWith(clearReply: true);
 
-  Future<void> deleteLocal(String ref) => _sync.deleteLocal(ref);
-  Future<void> retract(String ref) => _sync.retract(ref);
+  Future<void> deleteLocal(String ref) async {
+    final message = state.messages.where((m) => m.ref == ref).firstOrNull;
+    for (final part in message?.refs ?? [ref]) {
+      await _sync.deleteLocal(part);
+    }
+  }
+
+  Future<void> retract(String ref) async {
+    final message = state.messages.where((m) => m.ref == ref).firstOrNull;
+    for (final part in message?.refs ?? [ref]) {
+      await _sync.retract(part);
+    }
+  }
+
   void notifyTyping() {
     if (!isSelf) _sync.sendTyping(peer);
   }
 
-  Future<void> refresh() => _load();
+  Future<void> refresh() async {
+    await _sync.syncNow();
+    await _load();
+  }
 
   @override
   void dispose() {
@@ -465,8 +510,8 @@ class V2ConversationNotifier extends StateNotifier<V2ConversationState> {
 }
 
 final v2ConversationProvider = StateNotifierProvider.autoDispose
-    .family<V2ConversationNotifier, V2ConversationState, String>(
-        (ref, peer) => V2ConversationNotifier(ref.watch(v2SyncProvider)!, peer));
+    .family<V2ConversationNotifier, V2ConversationState, String>((ref, peer) =>
+        V2ConversationNotifier(ref.watch(v2SyncProvider)!, peer));
 
 // ── Профиль и устройства ──────────────────────────────────────────────────
 
@@ -498,7 +543,9 @@ final v2RouterProvider = Provider<GoRouter>((ref) {
         case V2SessionStatus.disconnected:
         case V2SessionStatus.needsEnrollment:
         case V2SessionStatus.error:
-          return (path == '/connect' || path == '/enrollment') ? null : '/connect';
+          return (path == '/connect' || path == '/enrollment')
+              ? null
+              : '/connect';
         case V2SessionStatus.ready:
           return (path == '/loading' || path == '/connect') ? '/' : null;
       }
@@ -506,13 +553,12 @@ final v2RouterProvider = Provider<GoRouter>((ref) {
     routes: [
       GoRoute(
           path: '/loading',
-          builder: (context, state) => const Scaffold(
-              body: Center(child: ShadeLoadingIndicator()))),
+          builder: (context, state) =>
+              const Scaffold(body: Center(child: ShadeLoadingIndicator()))),
       GoRoute(
           path: '/connect',
           builder: (context, state) => const V2ConnectScreen()),
-      GoRoute(
-          path: '/', builder: (context, state) => const V2ChatsScreen()),
+      GoRoute(path: '/', builder: (context, state) => const V2ChatsScreen()),
       GoRoute(
           path: '/chat/:peer',
           pageBuilder: (context, state) {
@@ -556,9 +602,9 @@ CustomTransitionPage<void> _v2Page(
           return FadeTransition(
               opacity: curve,
               child: SlideTransition(
-                  position: Tween(
-                          begin: const Offset(.035, 0), end: Offset.zero)
-                      .animate(curve),
+                  position:
+                      Tween(begin: const Offset(.035, 0), end: Offset.zero)
+                          .animate(curve),
                   child: child));
         });
 

@@ -21,6 +21,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shade/core/database/database_service.dart';
 import 'package:shade/core/services/crypto_service.dart';
 import 'package:shade/core/services/device_v2/crypto.dart';
+import 'package:shade/core/services/device_v2/device_history.dart';
 import 'package:shade/core/services/device_v2/pairing.dart';
 import 'package:shade/core/services/device_v2/protocol.dart';
 import 'package:shade/core/services/device_v2/repository.dart';
@@ -45,6 +46,41 @@ void main() {
   // каждый тест получает свежую БД и свежий in-memory реестр.
   Future<_Fixture>? fixtureFuture;
   Future<_Fixture> shared() => fixtureFuture ??= _buildFixture();
+
+  test(
+      'old history transfers only to a linked device, deduplicates and survives re-open',
+      () async {
+    final f = await shared();
+    final reg = _Registry(f.crypto)..seed(f.own);
+    final (storeA, dbA, _, closeA) = await openStore('shade-history-a-');
+    final (storeB, _, _, closeB) = await openStore('shade-history-b-');
+    final a = _SessionTransport(reg, f.crypto),
+        b = _SessionTransport(reg, f.crypto);
+    addTearDown(() async {
+      a.dispose();
+      b.dispose();
+      await closeA();
+      await closeB();
+    });
+    final primary = await _seedPrimary(f, f.own, storeA, a);
+    await primary.sendMessage(_account, 'saved before pairing');
+    final second = V2ChatRepository.pairing(
+        transport: b, crypto: f.crypto, store: storeB, account: _account);
+    final device = await _pairSecondary(f, primary, second);
+    expect(await primary.transferDeviceHistory(device), 1);
+    expect(await second.receiveDeviceHistory(), 1);
+    expect((await second.getMessages(_account)).single['text'],
+        'saved before pairing');
+    await primary.transferDeviceHistory(device);
+    expect(await second.receiveDeviceHistory(), 0);
+    final other = await dbA.chatDatabase('another_account');
+    expect(await other.query('v2_messages'), isEmpty);
+    expect((await primary.getMessages(_account)).single['text'],
+        'saved before pairing');
+    await primary.revokeDevice(device);
+    await expectLater(primary.transferDeviceHistory(device),
+        throwsA(isA<ProtocolException>()));
+  }, timeout: const Timeout(Duration(minutes: 3)));
 
   test(
       'вторичное устройство: send→fetch→ack→delivered/read своей сессией, '
@@ -805,6 +841,7 @@ List<dynamic> _copyList(List value) =>
 /// send — verifyMessage, install — verifyHistory + possession proofs,
 /// legacy-мост разрешён только primary (контракт server/alpha.mjs).
 class _Registry {
+  final staged = <String, List<dynamic>>{};
   final CryptoService crypto;
   final DeviceV2Verifier verifier;
   final Map<String, Map<String, dynamic>> accounts = {};
@@ -1024,6 +1061,17 @@ class _SessionTransport extends AlphaTransport {
     reg.authLog.add((op, account, id));
     final now = DateTime.now().millisecondsSinceEpoch;
     switch (op) {
+      case 'history.transfer':
+        final batch = body as Map;
+        (reg.staged['$account:${batch['to']}'] ??= [])
+            .addAll(batch['packages'] as List);
+        return {};
+      case 'history.fetch':
+        return {'packages': reg.staged['$account:$id'] ?? []};
+      case 'history.ack':
+        reg.staged['$account:$id']?.removeWhere(
+            (p) => ((body as Map)['ids'] as List).contains(p['id']));
+        return {};
       case 'directory':
         final target = body as String;
         if (!reg.accounts.containsKey(target)) {

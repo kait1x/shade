@@ -14,6 +14,7 @@ import 'package:shade/core/widgets/avatar_view.dart';
 import 'package:shade/core/widgets/shade_motion.dart';
 import 'package:shade/core/widgets/shade_ui.dart';
 
+import 'v2_social.dart';
 import 'v2_providers.dart';
 
 class V2ChatsScreen extends ConsumerWidget {
@@ -23,7 +24,8 @@ class V2ChatsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(v2ChatListProvider);
     final notifier = ref.read(v2ChatListProvider.notifier);
-    final account = ref.watch(v2SyncProvider)?.account ?? '';
+    final sync = ref.watch(v2SyncProvider);
+    final account = sync?.account ?? '';
 
     return Scaffold(
       appBar: AppBar(
@@ -45,6 +47,15 @@ class V2ChatsScreen extends ConsumerWidget {
         ],
       ),
       body: Column(children: [
+        if (sync?.lastError case final String error)
+          ListTile(
+              dense: true,
+              leading: const Icon(Icons.cloud_off_outlined),
+              title: Text(error),
+              trailing: IconButton(
+                  tooltip: 'Повторить синхронизацию',
+                  icon: const Icon(Icons.refresh),
+                  onPressed: notifier.refresh)),
         Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
             child: TextField(
@@ -58,6 +69,14 @@ class V2ChatsScreen extends ConsumerWidget {
                     isDense: true,
                     contentPadding:
                         EdgeInsets.symmetric(horizontal: 16, vertical: 12)))),
+        Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Align(
+                alignment: Alignment.centerLeft,
+                child: FilterChip(
+                    label: const Text('Только избранное'),
+                    selected: state.savedOnly,
+                    onSelected: notifier.filterSaved))),
         Expanded(child: _content(context, ref, state, notifier, account)),
       ]),
     );
@@ -98,8 +117,8 @@ class V2ChatsScreen extends ConsumerWidget {
                   ? 'Начните разговор'
                   : 'Ничего не найдено',
               description: state.query.trim().isEmpty
-                  ? 'Добавьте собеседника, сверив его genesis digest, или откройте «Избранное» — личные заметки, синхронизированные между вашими устройствами.'
-                  : 'Попробуйте другой запрос: поиск идёт по имени аккаунта.'));
+                  ? 'Найдите собеседника по нику или откройте «Избранное» — личные заметки, синхронизированные между вашими устройствами.'
+                  : 'Попробуйте другой запрос: поиск идёт по нику и последнему сообщению.'));
     }
     return ListView.builder(
         keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
@@ -116,8 +135,8 @@ class V2ChatsScreen extends ConsumerWidget {
 
   /// Добавление контакта: явная сверка genesis digest вне relay.
   Future<void> _showNewChatDialog(BuildContext context, WidgetRef ref) async {
-    final accountController = TextEditingController();
-    final digestController = TextEditingController();
+    var enteredAccount = '';
+    var enteredDigest = '';
     var error = '';
     var busy = false;
     final peer = await showDialog<String>(
@@ -131,7 +150,7 @@ class V2ChatsScreen extends ConsumerWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                            'Попросите друга скопировать код из профиля Shade и передать вам лично или через другой мессенджер.',
+                            'Введите ник друга. Если вы уже обменялись кодами безопасности, здесь можно сразу сверить ключ.',
                             style: TextStyle(
                                 fontSize: 13,
                                 color: ShadeColors.textSecondary,
@@ -139,7 +158,7 @@ class V2ChatsScreen extends ConsumerWidget {
                         const SizedBox(height: 16),
                         TextField(
                             key: const Key('new-chat-account'),
-                            controller: accountController,
+                            onChanged: (text) => enteredAccount = text,
                             autocorrect: false,
                             decoration: const InputDecoration(
                                 labelText: 'Никнейм друга',
@@ -147,11 +166,11 @@ class V2ChatsScreen extends ConsumerWidget {
                         const SizedBox(height: 12),
                         TextField(
                             key: const Key('new-chat-digest'),
-                            controller: digestController,
+                            onChanged: (text) => enteredDigest = text,
                             autocorrect: false,
                             maxLines: 2,
                             decoration: const InputDecoration(
-                                labelText: 'Код из профиля друга',
+                                labelText: 'Код безопасности (необязательно)',
                                 hintText: 'Вставьте скопированный код')),
                         if (error.isNotEmpty) ...[
                           const SizedBox(height: 12),
@@ -170,11 +189,11 @@ class V2ChatsScreen extends ConsumerWidget {
                         onPressed: busy
                             ? null
                             : () async {
-                                final peer = accountController.text
+                                final peer = enteredAccount
                                     .trim()
                                     .toLowerCase()
                                     .replaceFirst(RegExp(r'^@'), '');
-                                final digest = digestController.text
+                                final digest = enteredDigest
                                     .toLowerCase()
                                     .replaceAll(RegExp(r'\s+'), '');
                                 if (!accountPattern.hasMatch(peer)) {
@@ -182,7 +201,8 @@ class V2ChatsScreen extends ConsumerWidget {
                                       'Проверьте никнейм. Можно использовать латинские буквы, цифры и подчёркивания.');
                                   return;
                                 }
-                                if (!hex64Pattern.hasMatch(digest)) {
+                                if (digest.isNotEmpty &&
+                                    !hex64Pattern.hasMatch(digest)) {
                                   setDialogState(() => error =
                                       'Вставьте код целиком. Он состоит из 64 символов.');
                                   return;
@@ -192,9 +212,11 @@ class V2ChatsScreen extends ConsumerWidget {
                                   error = '';
                                 });
                                 try {
-                                  await ref
-                                      .read(v2ChatListProvider.notifier)
-                                      .addContact(peer, digest);
+                                  if (peer != ref.read(v2SyncProvider)?.account)
+                                    await ref
+                                        .read(v2ChatListProvider.notifier)
+                                        .addContact(peer,
+                                            digest.isEmpty ? null : digest);
                                   if (ctx.mounted) Navigator.pop(ctx, peer);
                                 } catch (e) {
                                   if (!ctx.mounted) return;
@@ -213,13 +235,11 @@ class V2ChatsScreen extends ConsumerWidget {
                             : const Text('Открыть чат')),
                   ],
                 )));
-    accountController.dispose();
-    digestController.dispose();
     if (context.mounted && peer != null) context.push('/chat/$peer');
   }
 }
 
-class _ChatTile extends StatelessWidget {
+class _ChatTile extends ConsumerWidget {
   final V2ChatSummary chat;
   final bool isSelf;
   final VoidCallback onTap;
@@ -228,8 +248,13 @@ class _ChatTile extends StatelessWidget {
       {required this.chat, required this.isSelf, required this.onTap});
 
   @override
-  Widget build(BuildContext context) {
-    final title = isSelf ? 'Избранное' : '@${chat.peer}';
+  Widget build(BuildContext context, WidgetRef ref) {
+    final profile = isSelf
+        ? null
+        : ref.watch(publicProfileProvider(chat.peer)).asData?.value;
+    final title = isSelf
+        ? 'Избранное'
+        : (profile?.name.isNotEmpty == true ? profile!.name : '@${chat.peer}');
     final preview = chat.lastText == null
         ? (isSelf ? 'Ваши личные заметки' : 'Нет сообщений')
         : chat.lastMine && !isSelf
@@ -244,7 +269,12 @@ class _ChatTile extends StatelessWidget {
                 padding:
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
                 child: Row(children: [
-                  AvatarView(name: chat.peer, size: 52, saved: isSelf),
+                  AvatarView(
+                      name: chat.peer,
+                      size: 52,
+                      saved: isSelf,
+                      image: profile?.image,
+                      frame: profile?.frame ?? AvatarFrame.none),
                   const SizedBox(width: 14),
                   Expanded(
                       child: Column(
@@ -258,6 +288,10 @@ class _ChatTile extends StatelessWidget {
                                   style: const TextStyle(
                                       fontSize: 16,
                                       fontWeight: FontWeight.w600))),
+                          if (chat.unread > 0)
+                            Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: Badge(label: Text('${chat.unread}'))),
                           if (chat.lastAt != null)
                             Text(_formatTime(chat.lastAt!),
                                 style: const TextStyle(
@@ -272,7 +306,7 @@ class _ChatTile extends StatelessWidget {
                           ],
                           if (!chat.confirmed) ...[
                             const Tooltip(
-                                message: 'Genesis digest не сверен',
+                                message: 'Код безопасности пока не сверен',
                                 child: Icon(Icons.gpp_maybe_outlined,
                                     size: 15,
                                     color: ShadeColors.textSecondary)),

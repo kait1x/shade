@@ -43,6 +43,8 @@ class V2MessageView {
   final bool isImage;
   final Uint8List? imageData;
   final bool mediaPending;
+  final List<String> chunkRefs;
+  Iterable<String> get refs => chunkRefs.isEmpty ? [ref] : chunkRefs;
 
   /// queued | blocked | sent | delivered | read | received | retracted.
   final String status;
@@ -58,6 +60,7 @@ class V2MessageView {
     this.isImage = false,
     this.imageData,
     this.mediaPending = false,
+    this.chunkRefs = const [],
     required this.status,
     this.statusLabel,
   });
@@ -73,6 +76,7 @@ class V2ChatSummary {
   final bool lastIsImage;
   final String? lastStatus;
   final int pendingCount;
+  final int unread;
 
   const V2ChatSummary({
     required this.peer,
@@ -83,6 +87,7 @@ class V2ChatSummary {
     this.lastIsImage = false,
     this.lastStatus,
     this.pendingCount = 0,
+    this.unread = 0,
   });
 }
 
@@ -142,7 +147,7 @@ abstract class V2SyncService {
     required V2ChatRepository repository,
     required DatabaseService database,
   }) =>
-      _V2SyncService(repository, database);
+      _V2SyncService(repository);
 
   String get account;
   bool get syncing;
@@ -163,7 +168,8 @@ abstract class V2SyncService {
 
   /// Отправка с долговечной очередью: сетевой сбой не теряет сообщение.
   Future<String> send(String peer, String text, {Map<String, dynamic>? reply});
-  Future<void> confirmContact(String peer, String genesisDigest);
+  Future<void> sendImage(String peer, List<int> bytes);
+  Future<void> confirmContact(String peer, String? genesisDigest);
   Future<bool> peerUpgradeBlocked(String peer);
   Future<void> markRead(List<String> refs);
   Future<void> deleteLocal(String ref);
@@ -210,7 +216,6 @@ String _errorText(Object error) {
 
 class _V2SyncService implements V2SyncService {
   final V2ChatRepository _repository;
-  final DatabaseService _database;
 
   final _changes = StreamController<void>.broadcast();
   final _typing = StreamController<V2TypingEvent>.broadcast();
@@ -228,7 +233,7 @@ class _V2SyncService implements V2SyncService {
   /// успел ли repository закоммитить конверт до сетевого сбоя.
   Future<void> _sendQueue = Future.value();
 
-  _V2SyncService(this._repository, this._database);
+  _V2SyncService(this._repository);
 
   V2Store get _store => _repository.store;
   AlphaTransport get _transport => _repository.transport;
@@ -334,10 +339,10 @@ class _V2SyncService implements V2SyncService {
   }
 
   Future<List<String>> _recentOutRefs() async {
-    final db = await _database.database;
-    final rows = await db.rawQuery(
-        "SELECT ref FROM v2_messages WHERE direction='out' "
-        'ORDER BY created_at DESC LIMIT 200');
+    final db = await _store.chatDatabase;
+    final rows =
+        await db.rawQuery("SELECT ref FROM v2_messages WHERE direction='out' "
+            'ORDER BY created_at DESC LIMIT 200');
     return [for (final row in rows) row['ref'] as String];
   }
 
@@ -347,8 +352,8 @@ class _V2SyncService implements V2SyncService {
       Map<String, dynamic> message) async {
     final own = (message['envelopes'] as List)
         .cast<Map<String, dynamic>>()
-        .firstWhere((e) =>
-            e['account'] == account && e['deviceId'] == _sessionId);
+        .firstWhere(
+            (e) => e['account'] == account && e['deviceId'] == _sessionId);
     final plain = await _repository.crypto
         .decryptData(jsonEncode(own['payload']), _session.encryptionPrivateKey);
     return decodePayload(plain);
@@ -376,9 +381,9 @@ class _V2SyncService implements V2SyncService {
       for (final c in await _store.listContacts())
         c['account'] as String: c['confirmed'] == true
     };
-    final db = await _database.database;
-    final peerRows = await db
-        .rawQuery('SELECT peer FROM v2_messages GROUP BY peer');
+    final db = await _store.chatDatabase;
+    final peerRows =
+        await db.rawQuery('SELECT peer FROM v2_messages GROUP BY peer');
     final outbox = await _store.outboxAll();
     final peers = <String>{
       account, // «Избранное» доступно всегда, без подтверждения контакта
@@ -387,6 +392,7 @@ class _V2SyncService implements V2SyncService {
       for (final entry in outbox) entry['peer'] as String,
     };
 
+    final unread = await _store.unreadCounts();
     final summaries = <V2ChatSummary>[];
     for (final peer in peers) {
       final pending =
@@ -407,8 +413,9 @@ class _V2SyncService implements V2SyncService {
         lastMine = true;
         lastIsImage = decoded['media'] != null;
         lastText = lastIsImage ? 'Фото' : decoded['text'] as String? ?? '';
-        lastStatus =
-            _isBlockedCode(entry['lastError'] as String?) ? 'blocked' : 'queued';
+        lastStatus = _isBlockedCode(entry['lastError'] as String?)
+            ? 'blocked'
+            : 'queued';
       } else {
         final rows = await db.query('v2_messages',
             where: 'peer=?',
@@ -445,6 +452,7 @@ class _V2SyncService implements V2SyncService {
         lastIsImage: lastIsImage,
         lastStatus: lastStatus,
         pendingCount: pending.length,
+        unread: unread[peer] ?? 0,
       ));
     }
 
@@ -482,13 +490,13 @@ class _V2SyncService implements V2SyncService {
         isImage: row['isImage'] == true,
         imageData: row['imageData'] as Uint8List?,
         mediaPending: row['mediaPending'] == true,
+        chunkRefs: (row['chunkRefs'] as List?)?.cast<String>() ?? const [],
         status: status,
       ));
     }
 
     // Долговечная очередь: запечатанные, но ещё не принятые сервером.
-    final entries =
-        (await _store.outboxAll()).where((e) => e['peer'] == peer);
+    final entries = (await _store.outboxAll()).where((e) => e['peer'] == peer);
     final mediaParts = <String, List<Map<String, dynamic>>>{};
     final mediaStatus = <String, String>{};
     for (final entry in entries) {
@@ -499,8 +507,11 @@ class _V2SyncService implements V2SyncService {
       final media = decoded['media'];
       if (media is Map<String, dynamic>) {
         final id = media['id'] as String;
-        (mediaParts[id] ??= []).add({...decoded, 'ref': messageRef(message),
-          'createdAt': message['createdAt']});
+        (mediaParts[id] ??= []).add({
+          ...decoded,
+          'ref': messageRef(message),
+          'createdAt': message['createdAt']
+        });
         // Агрегация статуса медиа: blocked любого чанка блокирует запись.
         if (status == 'blocked' || mediaStatus[id] != 'blocked') {
           mediaStatus[id] = status;
@@ -534,6 +545,7 @@ class _V2SyncService implements V2SyncService {
         isImage: assembled != null,
         imageData: assembled,
         mediaPending: assembled == null,
+        chunkRefs: [for (final p in parts) p['ref'] as String],
         status: mediaStatus[entry.key] ?? 'queued',
       ));
     }
@@ -543,8 +555,7 @@ class _V2SyncService implements V2SyncService {
   }
 
   @override
-  Future<String> send(String peer, String text,
-      {Map<String, dynamic>? reply}) {
+  Future<String> send(String peer, String text, {Map<String, dynamic>? reply}) {
     final result = _sendQueue.then((_) => _send(peer, text, reply: reply));
     _sendQueue = result.then((_) {}, onError: (Object _) {});
     return result;
@@ -559,13 +570,14 @@ class _V2SyncService implements V2SyncService {
       _emit();
       return id;
     } catch (error) {
-      if (_isNetworkError(error)) {
+      if (_isNetworkError(error) ||
+          error is AlphaTransportException && error.status == 429) {
         // repository коммитит конверт в outbox ДО flush: сетевой сбой
         // доставки не отменяет отправку — сообщение остаётся в очереди
         // тем же ciphertext/ID и будет доставлено повторным sync.
         final after = await _store.outboxAll();
-        final added = after.where(
-            (e) => e['peer'] == peer && !before.contains(e['id']));
+        final added =
+            after.where((e) => e['peer'] == peer && !before.contains(e['id']));
         if (added.isNotEmpty) {
           _emit();
           return added.last['id'] as String;
@@ -626,7 +638,18 @@ class _V2SyncService implements V2SyncService {
   }
 
   @override
-  Future<void> confirmContact(String peer, String genesisDigest) async {
+  Future<void> sendImage(String peer, List<int> bytes) {
+    final result = _sendQueue.then((_) async {
+      await _repository.queueMedia(peer, Uint8List.fromList(bytes));
+      _emit();
+      _scheduleSync();
+    });
+    _sendQueue = result.then((_) {}, onError: (Object _) {});
+    return result;
+  }
+
+  @override
+  Future<void> confirmContact(String peer, String? genesisDigest) async {
     await _repository.confirmContact(peer, genesisDigest);
     _emit();
   }
@@ -638,11 +661,10 @@ class _V2SyncService implements V2SyncService {
   @override
   Future<void> markRead(List<String> refs) async {
     if (refs.isEmpty) return;
-    try {
-      await _repository.markRead(refs);
-    } catch (_) {
-      // Read-ACK идемпотентен и best-effort: сбой не ломает диалог,
-      // непрочитанные refs будут отправлены при следующем открытии.
+    for (var i = 0; i < refs.length; i += 100) {
+      final batch = refs.skip(i).take(100).toList();
+      await _store.rememberRead(batch);
+      await _repository.markRead(batch);
     }
   }
 

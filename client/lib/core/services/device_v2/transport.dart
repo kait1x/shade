@@ -36,6 +36,7 @@ class AlphaTransport {
   Timer? _reconnectTimer;
   bool _disposed = false;
   bool _connecting = false;
+  DateTime? _retryAfter;
 
   /// Вызывается при hint inbox/receipts/retracted, reconnect и каждом периоде
   /// опроса. Владелец (репозиторий) выполняет подписанный fetch/receipts сам.
@@ -57,12 +58,18 @@ class AlphaTransport {
 
   bool get hasSession => sessionCookie != null;
 
-  Future<dynamic> _send(String method, String path, {Object? body}) async {
+  Future<dynamic> _send(String method, String path,
+      {Object? body, String? deviceAuth}) async {
+    if (_retryAfter?.isAfter(DateTime.now()) == true &&
+        path == '/api/v2/challenge') {
+      throw AlphaTransportException(429, 'rate_limited');
+    }
     final request = await _client.openUrl(method, Uri.parse('$origin$path'));
     request.headers.set('Content-Type', 'application/json');
     request.headers.set('Origin', origin);
+    if (deviceAuth != null) request.headers.set('x-device-auth', deviceAuth);
     if (sessionCookie != null) request.headers.set('Cookie', sessionCookie!);
-    if (body != null) request.write(jsonEncode(body));
+    if (body != null) request.add(utf8.encode(jsonEncode(body)));
     final response = await request.close();
     for (final cookie in response.cookies) {
       if (cookie.name == 'shade-alpha' || cookie.name == '__Host-shade-alpha') {
@@ -70,8 +77,20 @@ class AlphaTransport {
       }
     }
     final text = await response.transform(utf8.decoder).join();
-    final dynamic decoded = text.isEmpty ? null : jsonDecode(text);
-    if (response.statusCode != 200) {
+    if (response.statusCode == 429) {
+      final seconds =
+          int.tryParse(response.headers.value('retry-after') ?? '') ?? 15;
+      _retryAfter =
+          DateTime.now().add(Duration(seconds: seconds.clamp(1, 3600)));
+      throw AlphaTransportException(429, 'rate_limited');
+    }
+    dynamic decoded;
+    try {
+      decoded = text.isEmpty ? null : jsonDecode(text);
+    } on FormatException {
+      throw AlphaTransportException(response.statusCode, 'invalid_response');
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
       final code = decoded is Map && decoded['error'] is String
           ? decoded['error'] as String
           : 'http_${response.statusCode}';
@@ -170,7 +189,11 @@ class AlphaTransport {
           body: {'idToken': idToken, 'nonce': nonce}) as Map<String, dynamic>;
 
   Future<void> logout() async {
-    await _send('POST', '/api/logout');
+    try {
+      await _send('POST', '/api/logout');
+    } on AlphaTransportException catch (error) {
+      if (error.code != 'login_required') rethrow;
+    }
     sessionCookie = null;
     _disconnectSocket();
   }
@@ -210,6 +233,29 @@ class AlphaTransport {
         'manifest': manifest
       }) as Map<String, dynamic>;
 
+  Future<Map<String, dynamic>> _proof(
+      String operation, String account, String id, String privateKey) async {
+    final challenge = await _send('POST', '/api/v2/challenge',
+            body: {'account': account, 'id': id, 'operation': operation})
+        as Map<String, dynamic>;
+    final nonce = challenge['nonce'] as String;
+    final proof = await crypto.signData(
+        requestText(account, id, nonce, operation), privateKey);
+    return {'account': account, 'id': id, 'nonce': nonce, 'proof': proof};
+  }
+
+  Future<Map<String, dynamic>> profileRequest(String method, String path,
+      {Object? body,
+      required String account,
+      required String id,
+      required String privateKey}) async {
+    final digest = operationDigest(
+        'stickers', {'method': method, 'path': path, 'body': body});
+    final proof = await _proof(digest, account, id, privateKey);
+    return await _send(method, '/api/v2$path',
+        body: body, deviceAuth: jsonEncode(proof)) as Map<String, dynamic>;
+  }
+
   Future<dynamic> operation(String op, Object? body,
       {required String account,
       required String id,
@@ -219,16 +265,10 @@ class AlphaTransport {
         op == 'send'
             ? sha256Hex(messageText(body as Map<String, dynamic>))
             : body);
-    final challenge = await _send('POST', '/api/v2/challenge',
-            body: {'account': account, 'id': id, 'operation': operation})
-        as Map<String, dynamic>;
-    final nonce = challenge['nonce'] as String;
-    final proof = await crypto.signData(
-        requestText(account, id, nonce, operation), privateKey);
     return await _send('POST', '/api/v2/operation', body: {
       'op': op,
       'body': body,
-      'auth': {'account': account, 'id': id, 'nonce': nonce, 'proof': proof}
+      'auth': await _proof(operation, account, id, privateKey)
     });
   }
 

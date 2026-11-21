@@ -13,6 +13,7 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 
 import 'package:shade/core/services/device_v2/repository.dart';
+import 'package:shade/core/services/device_v2/device_history.dart';
 import 'package:shade/core/theme/shade_theme.dart';
 import 'package:shade/core/widgets/shade_motion.dart';
 import 'package:shade/core/widgets/shade_ui.dart';
@@ -31,6 +32,30 @@ class V2DevicesScreen extends ConsumerStatefulWidget {
 
 class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
   bool _serverRefresh = false;
+  bool _copying = false;
+  Future<void> _history([String? target]) async {
+    final repo = ref.read(v2SessionProvider.notifier).repository;
+    if (repo == null || _copying) return;
+    setState(() => _copying = true);
+    try {
+      final count = target == null
+          ? await repo.receiveDeviceHistory()
+          : await repo.transferDeviceHistory(target);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(target == null
+              ? 'Добавлено записей: $count'
+              : 'Подготовлено записей: $count. На втором Android откройте «Получить переписку».')));
+      if (target == null) await ref.read(v2SyncProvider)?.syncNow();
+    } catch (_) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                'Перенос прерван. Проверьте подключение и повторите — сохранённые сообщения останутся на месте.')));
+    } finally {
+      if (mounted) setState(() => _copying = false);
+    }
+  }
 
   void _refreshFromServer() {
     setState(() => _serverRefresh = true);
@@ -104,6 +129,13 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
                               'Покажем одноразовый код для входа на новом устройстве',
                           onTap: () => _openPairing((repository) =>
                               PairingApproveScreen(repository: repository))),
+                      ListTile(
+                          leading: const Icon(Icons.move_to_inbox_outlined),
+                          title: const Text('Получить переписку'),
+                          subtitle:
+                              const Text('Со связанного Android-устройства'),
+                          onTap: _copying ? null : () => _history()),
+                      if (_copying) const LinearProgressIndicator(),
                       if (backup != null && genesis != null) ...[
                         const SizedBox(height: 10),
                         _pairingTile(
@@ -135,6 +167,35 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
                         ),
                       ],
                     ])));
+  }
+
+  Future<void> _revoke(V2DeviceView device) async {
+    final repo = ref.read(v2SessionProvider.notifier).repository;
+    if (repo == null) return;
+    final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+                title: const Text('Отозвать устройство?'),
+                content: Text(
+                    'Устройство с ключом ${device.fingerprint.substring(0, 16)}… перестанет получать новые сообщения.'),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('Отмена')),
+                  FilledButton(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('Отозвать'))
+                ]));
+    if (confirmed != true || !mounted) return;
+    try {
+      await repo.revokeDevice(device.id);
+      if (mounted) _refreshFromServer();
+    } catch (_) {
+      if (mounted)
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text(
+                'Не удалось отозвать устройство. Обновите каталог и повторите.')));
+    }
   }
 
   Widget _deviceTile(BuildContext context, V2DeviceView device) {
@@ -195,6 +256,25 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
                             color: ShadeColors.textSecondary,
                             letterSpacing: 0.3)),
                   ])),
+              if (!device.current)
+                PopupMenuButton<String>(
+                    tooltip: 'Действия с устройством',
+                    enabled: !_copying,
+                    onSelected: (action) {
+                      if (action == 'history') {
+                        _history(device.id);
+                      } else {
+                        _revoke(device);
+                      }
+                    },
+                    itemBuilder: (_) => const [
+                          PopupMenuItem(
+                              value: 'history',
+                              child: Text('Передать переписку на Android')),
+                          PopupMenuItem(
+                              value: 'revoke',
+                              child: Text('Отозвать устройство'))
+                        ]),
             ])));
   }
 

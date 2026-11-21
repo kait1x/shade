@@ -15,6 +15,9 @@ class V2Store {
   final DatabaseService _service;
   V2Store(this._service);
 
+  String? _owner;
+  Future<Database> get chatDatabase =>
+      _owner == null ? _db : _service.chatDatabase(_owner!);
   Future<Database> get _db => _service.database;
 
   Future<void> saveAccount({
@@ -28,6 +31,8 @@ class V2Store {
     String? anchorKey,
     String? legacyKey,
   }) async {
+    _owner = account;
+    await chatDatabase;
     await (await _db).insert(
         'v2_accounts',
         {
@@ -51,6 +56,7 @@ class V2Store {
         where: 'account=?', whereArgs: [account], limit: 1);
     if (rows.isEmpty) return null;
     final row = rows.first;
+    _owner = account;
     return {
       'account': row['account'],
       'root': row['root'],
@@ -75,7 +81,7 @@ class V2Store {
     required bool confirmed,
     List<dynamic>? history,
   }) async {
-    await (await _db).insert(
+    await (await chatDatabase).insert(
         'v2_contacts',
         {
           'account': account,
@@ -93,7 +99,7 @@ class V2Store {
   }
 
   Future<Map<String, dynamic>?> loadContact(String account) async {
-    final rows = await (await _db).query('v2_contacts',
+    final rows = await (await chatDatabase).query('v2_contacts',
         where: 'account=?', whereArgs: [account], limit: 1);
     if (rows.isEmpty) return null;
     final row = rows.first;
@@ -104,20 +110,21 @@ class V2Store {
       'checkpoint': jsonDecode(row['checkpoint'] as String),
       'genesisDigest': row['genesis_digest'],
       'confirmed': row['confirmed'] == 1,
-      'history': row['history'] == null
-          ? null
-          : jsonDecode(row['history'] as String)
+      'history':
+          row['history'] == null ? null : jsonDecode(row['history'] as String)
     };
   }
 
   Future<List<Map<String, dynamic>>> listContacts() async {
-    final rows = await (await _db).query('v2_contacts', orderBy: 'account');
+    final rows =
+        await (await chatDatabase).query('v2_contacts', orderBy: 'account');
     return [
       for (final row in rows)
         {
           'account': row['account'],
           'genesisDigest': row['genesis_digest'],
-          'confirmed': row['confirmed'] == 1
+          'confirmed': row['confirmed'] == 1 &&
+              jsonDecode(row['checkpoint'] as String)['manual'] != false
         }
     ];
   }
@@ -130,10 +137,10 @@ class V2Store {
     required int createdAt,
     required Map<String, dynamic> payload,
   }) async {
-    final db = await _db;
+    final db = await chatDatabase;
     return db.transaction((txn) async {
-      final existing = await txn
-          .query('v2_messages', where: 'ref=?', whereArgs: [ref], limit: 1);
+      final existing = await txn.query('v2_messages',
+          where: 'ref=?', whereArgs: [ref], limit: 1);
       if (existing.isNotEmpty) return false;
       await txn.insert('v2_messages', {
         'ref': ref,
@@ -151,7 +158,7 @@ class V2Store {
 
   Future<void> markAcked(List<String> refs) async {
     if (refs.isEmpty) return;
-    final db = await _db;
+    final db = await chatDatabase;
     await db.transaction((txn) async {
       for (final ref in refs) {
         await txn.update('v2_messages', {'acked': 1},
@@ -161,7 +168,7 @@ class V2Store {
   }
 
   Future<Map<String, dynamic>?> messageByRef(String ref) async {
-    final rows = await (await _db)
+    final rows = await (await chatDatabase)
         .query('v2_messages', where: 'ref=?', whereArgs: [ref], limit: 1);
     if (rows.isEmpty) return null;
     final row = rows.first;
@@ -179,7 +186,7 @@ class V2Store {
 
   /// Локальное удаление («Удалить у себя»): другие устройства сохраняют копию.
   Future<void> deleteMessage(String ref) async {
-    final db = await _db;
+    final db = await chatDatabase;
     await db.transaction((txn) async {
       await txn.delete('v2_messages', where: 'ref=?', whereArgs: [ref]);
       await txn.delete('v2_delivery', where: 'ref=?', whereArgs: [ref]);
@@ -193,7 +200,7 @@ class V2Store {
     required int createdAt,
     required Map<String, dynamic> payload,
   }) async {
-    await (await _db).insert(
+    await (await chatDatabase).insert(
         'v2_messages',
         {
           'ref': ref,
@@ -208,12 +215,12 @@ class V2Store {
         conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  Future<bool> hasRef(String ref) async => (await (await _db)
+  Future<bool> hasRef(String ref) async => (await (await chatDatabase)
           .query('v2_messages', where: 'ref=?', whereArgs: [ref], limit: 1))
       .isNotEmpty;
 
   Future<List<Map<String, dynamic>>> messagesByPeer(String peer) async {
-    final rows = await (await _db).query('v2_messages',
+    final rows = await (await chatDatabase).query('v2_messages',
         where: 'peer=?', whereArgs: [peer], orderBy: 'created_at, ref');
     return [
       for (final row in rows)
@@ -230,9 +237,79 @@ class V2Store {
     ];
   }
 
+  Future<List<Map<String, Object?>>> historyPage(String after) async =>
+      (await chatDatabase).query('v2_messages',
+          where: 'ref > ? AND ref NOT LIKE ?',
+          whereArgs: [after, 'v1:%'],
+          orderBy: 'ref',
+          limit: 16);
+
+  Future<bool> hasImportedPeer(String peer) async =>
+      (await (await chatDatabase).query('v2_messages',
+              columns: ['ref'],
+              where: "peer=? AND status='imported'",
+              whereArgs: [peer],
+              limit: 1))
+          .isNotEmpty;
+
+  Future<bool> importHistoryRow(
+      Map<String, dynamic> row, String payload) async {
+    final db = await chatDatabase;
+    return db.transaction((txn) async {
+      final ref = row['ref'] as String;
+      if ((await txn.query('v2_messages',
+              columns: ['ref'], where: 'ref=?', whereArgs: [ref]))
+          .isNotEmpty) return false;
+      await txn.insert('v2_messages', {
+        'ref': ref,
+        'peer': row['peer'],
+        'direction': row['direction'],
+        'message_id': row['id'],
+        'created_at': row['createdAt'],
+        'status': row['status'] == 'retracted' ? 'retracted' : 'imported',
+        'payload': payload,
+        'acked': 1
+      });
+      return true;
+    });
+  }
+
+  Future<Map<String, int>> unreadCounts() async {
+    final db = await chatDatabase;
+    await db.execute(
+        'CREATE TABLE IF NOT EXISTS v2_chat_read(peer TEXT PRIMARY KEY, until_ms INTEGER NOT NULL)');
+    final rows = await db.rawQuery(
+        "SELECT m.peer, COUNT(*) AS unread FROM v2_messages m LEFT JOIN v2_chat_read r ON m.peer=r.peer WHERE m.direction='in' AND m.status!='retracted' AND m.created_at>COALESCE(r.until_ms,0) GROUP BY m.peer");
+    return {for (final r in rows) r['peer'] as String: r['unread'] as int};
+  }
+
+  Future<void> rememberRead(List<String> refs) async {
+    if (refs.isEmpty) return;
+    final db = await chatDatabase;
+    await db.execute(
+        'CREATE TABLE IF NOT EXISTS v2_chat_read(peer TEXT PRIMARY KEY, until_ms INTEGER NOT NULL)');
+    await db.rawInsert(
+        "INSERT INTO v2_chat_read(peer,until_ms) SELECT peer,MAX(created_at) FROM v2_messages WHERE ref IN (${List.filled(refs.length, '?').join(',')}) AND direction='in' GROUP BY peer ON CONFLICT(peer) DO UPDATE SET until_ms=MAX(until_ms,excluded.until_ms)",
+        refs);
+  }
+
+  Future<void> putMediaOutbox(
+      String peer, List<Map<String, dynamic>> messages) async {
+    final batch = (await chatDatabase).batch();
+    for (final message in messages) {
+      batch.insert('v2_outbox', {
+        'id': message['id'],
+        'peer': peer,
+        'message': jsonEncode(message),
+        'created_at': DateTime.now().millisecondsSinceEpoch
+      });
+    }
+    await batch.commit(noResult: true);
+  }
+
   Future<void> putOutbox(
       String id, String peer, Map<String, dynamic> message) async {
-    await (await _db).insert(
+    await (await chatDatabase).insert(
         'v2_outbox',
         {
           'id': id,
@@ -244,7 +321,8 @@ class V2Store {
   }
 
   Future<List<Map<String, dynamic>>> outboxAll() async {
-    final rows = await (await _db).query('v2_outbox', orderBy: 'created_at');
+    final rows =
+        await (await chatDatabase).query('v2_outbox', orderBy: 'created_at');
     return [
       for (final row in rows)
         {
@@ -258,20 +336,20 @@ class V2Store {
   }
 
   Future<void> removeOutbox(String id) async =>
-      (await _db).delete('v2_outbox', where: 'id=?', whereArgs: [id]);
+      (await chatDatabase).delete('v2_outbox', where: 'id=?', whereArgs: [id]);
 
   Future<void> markOutboxAttempt(String id, String error) async =>
-      (await _db).rawUpdate(
+      (await chatDatabase).rawUpdate(
           'UPDATE v2_outbox SET attempts=attempts+1, last_error=? WHERE id=?',
           [error, id]);
 
-  Future<void> markRetracted(String ref) async => (await _db).rawUpdate(
-      "UPDATE v2_messages SET status='retracted' WHERE ref=?", [ref]);
+  Future<void> markRetracted(String ref) async =>
+      (await chatDatabase).rawUpdate(
+          "UPDATE v2_messages SET status='retracted' WHERE ref=?", [ref]);
 
-  Future<void> upsertDelivery(
-      String ref, String deviceId, int? acknowledgedAt,
+  Future<void> upsertDelivery(String ref, String deviceId, int? acknowledgedAt,
       {int? readAt}) async {
-    await (await _db).insert(
+    await (await chatDatabase).insert(
         'v2_delivery',
         {
           'ref': ref,
@@ -283,7 +361,7 @@ class V2Store {
   }
 
   Future<List<Map<String, dynamic>>> deliveryFor(String ref) async {
-    final rows = await (await _db)
+    final rows = await (await chatDatabase)
         .query('v2_delivery', where: 'ref=?', whereArgs: [ref]);
     return [
       for (final row in rows)
@@ -417,9 +495,8 @@ class V2Store {
     };
   }
 
-  Future<void> deletePairingJournal(String account) async =>
-      (await _db).delete('v2_pairing_journal',
-          where: 'account=?', whereArgs: [account]);
+  Future<void> deletePairingJournal(String account) async => (await _db)
+      .delete('v2_pairing_journal', where: 'account=?', whereArgs: [account]);
 
   /// Долговечные ключи подключённого вторичного устройства: без них сессия
   /// устройства не переживёт перезапуск приложения. Пишутся в completePairing

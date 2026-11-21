@@ -10,6 +10,9 @@ import 'package:shade/core/widgets/shade_key_identicon.dart';
 import 'package:shade/core/widgets/shade_motion.dart';
 import 'package:shade/core/widgets/shade_ui.dart';
 
+import 'package:shade/features/stickers/collection.dart';
+import 'v2_social.dart';
+import 'v2_push.dart';
 import 'v2_providers.dart';
 
 class V2ProfileScreen extends ConsumerWidget {
@@ -44,17 +47,24 @@ class V2ProfileScreen extends ConsumerWidget {
   }
 }
 
-class _ProfileBody extends StatelessWidget {
+class _ProfileBody extends ConsumerWidget {
   const _ProfileBody({required this.profile});
 
   final V2ProfileView profile;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final social = ref.watch(v2SocialProvider);
+    final push = ref.watch(androidPushProvider);
+    final remote =
+        ref.watch(publicProfileProvider(profile.account)).asData?.value;
     final handle = '@${profile.account}';
     final name = profile.account;
-    final visibleName =
-        name.isEmpty ? 'Shade' : name[0].toUpperCase() + name.substring(1);
+    final visibleName = remote?.name.isNotEmpty == true
+        ? remote!.name
+        : name.isEmpty
+            ? 'Shade'
+            : name[0].toUpperCase() + name.substring(1);
     final fingerprint = profile.genesisDigest;
     final pairs = RegExp(r'[0-9a-fA-F]{2}').allMatches(fingerprint);
     final bytes =
@@ -73,7 +83,12 @@ class _ProfileBody extends StatelessWidget {
         child: ListView(
           padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
           children: [
-            Center(child: AvatarView(name: visibleName, size: 108)),
+            Center(
+                child: AvatarView(
+                    name: visibleName,
+                    size: 108,
+                    image: remote?.image,
+                    frame: remote?.frame ?? AvatarFrame.none)),
             const SizedBox(height: 12),
             Text(
               visibleName,
@@ -88,7 +103,8 @@ class _ProfileBody extends StatelessWidget {
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                     color: ShadeColors.textSecondary, fontSize: 15)),
-            const SizedBox(height: 24),
+            ProfileEditorActions(profile.account),
+            const SizedBox(height: 16),
             Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Expanded(
                   child: _action(Icons.devices_outlined, 'Устройства',
@@ -121,6 +137,23 @@ class _ProfileBody extends StatelessWidget {
                   : 'Подключено к аккаунту'),
             ),
             const SizedBox(height: 24),
+            if (push != null)
+              SwitchListTile(
+                  title: const Text('Уведомления о сообщениях'),
+                  value: push.enabled,
+                  onChanged: push.busy
+                      ? null
+                      : (value) async {
+                          try {
+                            await push.setEnabled(value);
+                          } catch (e) {
+                            if (context.mounted)
+                              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                  content: Text(e is StateError
+                                      ? e.message
+                                      : 'Не удалось изменить уведомления. Проверьте разрешение и доступность сервера.')));
+                          }
+                        }),
             const _SectionLabel('Безопасность'),
             const SizedBox(height: 10),
             Material(
@@ -145,6 +178,9 @@ class _ProfileBody extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 12),
+            if (social != null)
+              StickerCollection(
+                  username: profile.account, owner: true, backend: social),
             ExpansionTile(
               title: const Text('Сведения об устройствах'),
               leading: const Icon(Icons.info_outline_rounded),
@@ -164,6 +200,35 @@ class _ProfileBody extends StatelessWidget {
                 ),
               ],
             ),
+            TextButton(
+                onPressed: () async {
+                  final ok = await showDialog<bool>(
+                      context: context,
+                      builder: (ctx) => AlertDialog(
+                              title: const Text('Выйти из Shade?'),
+                              content: const Text(
+                                  'История останется на этом телефоне. Откройте её при следующем входе в тот же аккаунт.'),
+                              actions: [
+                                TextButton(
+                                    onPressed: () => Navigator.pop(ctx, false),
+                                    child: const Text('Отмена')),
+                                FilledButton(
+                                    onPressed: () => Navigator.pop(ctx, true),
+                                    child: const Text('Выйти'))
+                              ]));
+                  if (ok != true || !context.mounted) return;
+                  final session = ref.read(v2SessionProvider.notifier);
+                  try {
+                    if (push?.enabled == true) await push!.setEnabled(false);
+                    await session.logout();
+                  } catch (_) {
+                    if (context.mounted)
+                      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                          content: Text(
+                              'Не удалось завершить сессию. Проверьте подключение.')));
+                  }
+                },
+                child: const Text('Выйти из аккаунта')),
           ],
         ),
       ),

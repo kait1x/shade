@@ -34,7 +34,8 @@ test('push subscriptions are device-bound, wake-only, SSRF-guarded and pruned on
     if (failNext) { const error = failNext; failNext = null; throw error; }
     pushes.push({ sub, payload, opts });
   };
-  const f = await fixture({ dataDir, storageSecret, vapidKeys, pushSender });
+  const androidTokens = [];
+  const f = await fixture({ dataDir, storageSecret, vapidKeys, pushSender, androidPushSender: token => androidTokens.push(token) });
   const alice = await identity('alice_push'), bob = await identity('bob_push');
   const ac = await f.login('synthetic-alice'), bc = await f.login('synthetic-bob');
   await register(f, alice, ac); await register(f, bob, bc);
@@ -64,6 +65,14 @@ test('push subscriptions are device-bound, wake-only, SSRF-guarded and pruned on
     assert.equal((await operation(f, bob, bc, 'push.unsubscribe', null)).result.subscribed, false);
     await sendText(f, alice, bob, ac, 'third');
     assert.equal(pushes.length, 2);
+
+    const token = 'synthetic-android-device-token';
+    assert.equal((await operation(f, bob, bc, 'push.android.subscribe', {token})).result.subscribed, true);
+    await sendText(f, alice, bob, ac, 'mobile wake');
+    assert.deepEqual(androidTokens, [token]);
+    assert.equal((await operation(f, bob, bc, 'push.android.unsubscribe', null)).result.subscribed, false);
+    await sendText(f, alice, bob, ac, 'after mobile opt-out');
+    assert.equal(androidTokens.length, 1);
 
     // SSRF guard and shape validation.
     for (const endpoint of ['http://push.example.com/x', 'https://127.0.0.1/x',

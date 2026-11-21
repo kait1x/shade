@@ -37,7 +37,7 @@ const RECOVERY_WINDOW_MS = 60 * 60 * 1000, RECOVERY_LIMIT = 5;
 // route, environment bypass or fake identity provider is shipped to users.
 export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   clientId = '', clientSecret = '', oauthProvider, verifyGoogle, legacyUsers = new Map(), tls,
-  vapidKeys = null, pushSender = null, pushAllowedHosts = null,
+  vapidKeys = null, pushSender = null, pushAllowedHosts = null, androidPushSender = null,
   legacySource = null, guardFile = null, bridgeAckFile = null, reverseReplayFile = null, checkpointDir = null, checkpointKeep = 20,
   allowedOrigins = [], oauthAllowlist = [], handoffTtlMs = 60000,
   recoverySessionMs = RECOVERY_SESSION_MS_MAX } = {}) {
@@ -676,15 +676,19 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       if (migration && routing?.state === 'v2_active') await migration.journalV2Send(body);
       relations.add(pairKey(body.from, body.to));
       for (const e of body.envelopes) io.to(room(e.account, e.deviceId)).emit('inbox');
-      if (pushEnabled) {
+      if (pushEnabled || androidPushSender) {
         for (const e of body.envelopes) {
           if (e.account === body.from) continue;
           const sub = registry.pushSubscription(e.account, e.deviceId);
           if (!sub) continue;
-          try { await sendPush(sub, { type: 'wake' }, { TTL: 60 }); }
+          try {
+            if (sub.format === 'fcm') {
+              if (androidPushSender) await androidPushSender(sub.token);
+            } else if (pushEnabled) await sendPush(sub, { type: 'wake' }, { TTL: 60 });
+          }
           catch (error) {
             // Gone endpoints are pruned; push never fails the E2EE send.
-            if (error?.statusCode === 404 || error?.statusCode === 410) {
+            if (error?.statusCode === 404 || error?.statusCode === 410 || error?.code === 'messaging/registration-token-not-registered') {
               await registry.dropPushSubscription(e.account, e.deviceId);
             }
           }
@@ -773,6 +777,13 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
             state: result.state, revision: result.revision });
         }
       }
+    } else if (op === 'push.android.subscribe' || op === 'push.android.unsubscribe') {
+      await registry.authorize(auth, await operationDigest(op, body));
+      if (op === 'push.android.subscribe') {
+        check(androidPushSender, 'Push is not configured');
+        check(typeof body?.token === 'string' && /^[a-zA-Z0-9_:.-]{16,4096}$/.test(body.token), 'Invalid FCM token');
+        result = await registry.pushSubscribe(auth, { format: 'fcm', token: body.token });
+      } else result = await registry.pushUnsubscribe(auth);
     } else if (op === 'push.subscribe' || op === 'push.unsubscribe') {
       check(pushEnabled, 'Push is not configured');
       await registry.authorize(auth, await operationDigest(op, body));
@@ -936,7 +947,17 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   check(process.env.SHADE_ENV === 'alpha', 'Set SHADE_ENV=alpha; production startup forbidden');
-  const instance = await createAlphaServer({ dataDir: process.env.ALPHA_DATA_DIR,
+  let androidPushSender = null;
+  if (process.env.ALPHA_FCM_ENABLED === 'true') {
+    const { initializeApp, applicationDefault } = await import('firebase-admin/app');
+    const { getMessaging } = await import('firebase-admin/messaging');
+    const messaging = getMessaging(initializeApp({ credential: applicationDefault() }));
+    androidPushSender = token => messaging.send({
+      token, notification: { title: 'Shade', body: 'Новое сообщение' },
+      android: { priority: 'high', ttl: 60000, notification: { tag: 'shade-inbox' } }
+    });
+  }
+  const instance = await createAlphaServer({ androidPushSender, dataDir: process.env.ALPHA_DATA_DIR,
     storageSecret: process.env.ALPHA_STORAGE_SECRET, publicOrigin: process.env.ALPHA_PUBLIC_ORIGIN,
     clientId: process.env.ALPHA_GOOGLE_CLIENT_ID, clientSecret: process.env.ALPHA_GOOGLE_CLIENT_SECRET,
     // Optional read-only v1 bridge (staging copy; production only with owner

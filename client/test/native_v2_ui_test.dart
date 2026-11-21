@@ -144,7 +144,9 @@ class FakeSync implements V2SyncService {
   }
 
   @override
-  Future<void> confirmContact(String peer, String genesisDigest) async =>
+  Future<void> sendImage(String peer, List<int> bytes) async {}
+  @override
+  Future<void> confirmContact(String peer, String? genesisDigest) async =>
       confirmed.add('$peer:$genesisDigest');
   @override
   Future<bool> peerUpgradeBlocked(String peer) async => blocked;
@@ -381,6 +383,16 @@ void main() {
     expect(find.text('@queued_peer'), findsNothing);
     expect(find.text('Избранное'), findsNothing);
 
+    await tester.enterText(find.byKey(const Key('v2-chat-search')), 'привет');
+    await tester.pumpAndSettle();
+    expect(find.text('@native_web'), findsOneWidget);
+    expect(find.text('@queued_peer'), findsNothing);
+    await tester.enterText(find.byKey(const Key('v2-chat-search')), '');
+    await tester.tap(find.text('Только избранное'));
+    await tester.pumpAndSettle();
+    expect(find.text('@native_web'), findsNothing);
+    expect(find.text('Избранное'), findsOneWidget);
+    await tester.tap(find.text('Только избранное'));
     // «Избранное» ищется по названию.
     await tester.enterText(find.byKey(const Key('v2-chat-search')), 'избран');
     await tester.pumpAndSettle();

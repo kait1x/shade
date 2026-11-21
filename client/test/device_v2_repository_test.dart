@@ -99,9 +99,25 @@ void main() {
     // Сверка genesis digest: верный подтверждает, подменённый отклоняется.
     final webDigest =
         sha256Hex(genesisText(web['genesis'] as Map<String, dynamic>));
-    expect(() => repo.confirmContact('native_web', 'ab' * 32),
-        throwsA(predicate((e) => e.toString().contains('Genesis digest mismatch'))));
+    expect(
+        () => repo.confirmContact('native_web', 'ab' * 32),
+        throwsA(predicate(
+            (e) => e.toString().contains('Genesis digest mismatch'))));
+    await repo.confirmContact('native_web', null);
+    expect((await store.listContacts()).single['confirmed'], false);
     await repo.confirmContact('native_web', webDigest);
+    expect((await store.listContacts()).single['confirmed'], true);
+    Future<Map<String, dynamic>> profile(String method, String path,
+            [Object? body]) =>
+        transport.profileRequest(method, path,
+            body: body,
+            account: repo.account,
+            id: repo.session.id,
+            privateKey: repo.session.signingPrivateKey);
+    await profile('PUT', '/profile/name', {'displayName': 'Тест Android'});
+    expect((await profile('GET', '/user/native_android/avatar'))['displayName'],
+        'Тест Android');
+    expect((await profile('GET', '/stickers/inventory'))['inventory'], isList);
 
     // Исходящее: outbox → сервер → Web расшифровывает и ACK-ает.
     const toWeb = 'Android → Web через репозиторий 🌍';

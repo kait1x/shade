@@ -40,6 +40,47 @@ class DatabaseService {
   /// Holds the database handle.
   Database? _db;
   Future<Database>? _opening;
+  DatabaseFactory? _testFactory;
+  final _chatDatabases = <String, Future<Database>>{};
+  Future<Database> chatDatabase(String account) {
+    if (!RegExp(r'^[a-z0-9_]{3,32}$').hasMatch(account))
+      throw ArgumentError('Invalid chat account');
+    return _chatDatabases.putIfAbsent(
+        account,
+        () => _openChats(account).catchError((Object error) {
+              _chatDatabases.remove(account);
+              throw error;
+            }));
+  }
+
+  Future<Database> _openChats(String account) async {
+    final base = await database;
+    // Keep the original SQLCipher file for its existing account. Additional
+    // accounts must never enumerate another account's contacts or outbox.
+    final owner = await base.transaction((txn) async {
+      await txn.execute(
+          'CREATE TABLE IF NOT EXISTS v2_chat_owner(id INTEGER PRIMARY KEY, account TEXT NOT NULL)');
+      final known = await txn.query('v2_chat_owner', limit: 1);
+      if (known.isNotEmpty) return known.first['account'];
+      final users =
+          await txn.query('v2_accounts', columns: ['account'], limit: 2);
+      final first = users.isEmpty
+          ? account
+          : users.length == 1
+              ? users.first['account'] as String
+              : '';
+      await txn.insert('v2_chat_owner', {'id': 1, 'account': first});
+      return first;
+    });
+    if (owner == account) return base;
+    final path = p.join(p.dirname(base.path), 'shade-v2-$account.db');
+    final factory = _testFactory;
+    if (factory != null)
+      return factory.openDatabase(path,
+          options: OpenDatabaseOptions(
+              version: _dbVersion, onCreate: _onCreate, onUpgrade: _onUpgrade));
+    return _open(path);
+  }
 
   DatabaseService({FlutterSecureStorage? secureStorage})
       : _secureStorage = secureStorage ??
@@ -52,7 +93,7 @@ class DatabaseService {
   static Future<DatabaseService> openForTest(
       DatabaseFactory factory, String path,
       {bool createVersion4 = false, int? schemaVersion}) async {
-    final service = DatabaseService();
+    final service = DatabaseService().._testFactory = factory;
     final version = schemaVersion ?? (createVersion4 ? 4 : _dbVersion);
     service._db = await factory.openDatabase(path,
         options: OpenDatabaseOptions(
@@ -89,14 +130,14 @@ class DatabaseService {
     return _db!;
   }
 
-  Future<Database> _open() async {
+  Future<Database> _open([String? path]) async {
     if (!_isMobile) {
       throw UnsupportedError(
           'Shade currently supports encrypted production storage on Android/iOS only. Desktop SQLCipher is not configured.');
     }
     final dir = await sqlcipher.getDatabasesPath();
     final key = await _getOrCreateKey();
-    final db = await sqlcipher.openDatabase(p.join(dir, _dbName),
+    final db = await sqlcipher.openDatabase(path ?? p.join(dir, _dbName),
         version: _dbVersion,
         password: key,
         onCreate: _onCreate,
@@ -852,6 +893,11 @@ class DatabaseService {
 
   Future<void> close() async {
     final db = _db;
+    for (final future in _chatDatabases.values.toList()) {
+      final scoped = await future;
+      if (!identical(scoped, db)) await scoped.close();
+    }
+    _chatDatabases.clear();
     if (db != null) {
       await db.close();
     }

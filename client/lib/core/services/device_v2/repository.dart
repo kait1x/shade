@@ -7,6 +7,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import '../crypto_service.dart';
@@ -1119,6 +1120,31 @@ class V2ChatRepository {
     // Ростер мог измениться другим устройством (revoke/recovery): продлевать
     // каталог имеет право только устройство, присутствующее в ростере.
     if (!(last['devices'] as List).any((d) => d['id'] == current.id)) return;
+    await _installRoster(acc, history, last['devices'] as List);
+  }
+
+  Future<void> revokeDevice(String id) async {
+    final acc = _requireAccount();
+    check(id != session.id, 'Нельзя отозвать текущее устройство');
+    final dir = await transport.directory(account,
+        account: account,
+        id: session.id,
+        privateKey: session.signingPrivateKey);
+    final history = dir['history'] as List;
+    await v2.verifier.verifyHistory(
+        history, root, acc['checkpoint'] as Map<String, dynamic>,
+        genesis: acc['genesis'] as Map<String, dynamic>);
+    final devices = history.last['devices'] as List;
+    check(devices.any((d) => d['id'] == id), 'Устройство не найдено');
+    await _installRoster(
+        acc, history, devices.where((d) => d['id'] != id).toList());
+  }
+
+  Future<void> _installRoster(
+      Map<String, dynamic> acc, List history, List devices) async {
+    final last = history.last as Map<String, dynamic>;
+    final current = session;
+    final now = DateTime.now().millisecondsSinceEpoch;
     final manifest = <String, dynamic>{
       'account': account,
       'rootFingerprint': spkiFingerprint(root),
@@ -1126,7 +1152,7 @@ class V2ChatRepository {
       'previous': sha256Hex(manifestText(last)),
       'issuedAt': now,
       'expiresAt': now + maxLeaseMs,
-      'devices': last['devices'],
+      'devices': devices,
       'signer': current.id,
       'signature': ''
     };
@@ -1157,17 +1183,26 @@ class V2ChatRepository {
 
   /// Сверка genesis digest собеседника (введён пользователем вне relay).
   /// До подтверждения отправка и ACK входящих заблокированы.
-  Future<void> confirmContact(String peer, String expectedGenesisDigest) async {
+  Future<void> confirmContact(
+      String peer, String? expectedGenesisDigest) async {
     final dir = await transport.directory(peer,
         account: account,
         id: session.id,
         privateKey: session.signingPrivateKey);
+    final existing = await store.loadContact(peer);
     final peerRoot = dir['root'] as String;
     final genesis = dir['genesis'] as Map<String, dynamic>;
+    check(genesis['account'] == peer, 'Wrong contact account');
     final digest = await v2.verifier.verifyGenesis(genesis, peerRoot);
-    check(digest == expectedGenesisDigest, 'Genesis digest mismatch');
-    final verified = await v2.verifier.verifyHistory(
-        dir['history'] as List, peerRoot, null,
+    check(
+        existing == null ||
+            (existing['genesisDigest'] == digest &&
+                existing['root'] == peerRoot),
+        'Pinned contact changed');
+    check(expectedGenesisDigest == null || digest == expectedGenesisDigest,
+        'Genesis digest mismatch');
+    final verified = await v2.verifier.verifyHistory(dir['history'] as List,
+        peerRoot, existing?['checkpoint'] as Map<String, dynamic>?,
         genesis: genesis);
     await store.saveContact(
         account: peer,
@@ -1178,7 +1213,9 @@ class V2ChatRepository {
           'rootFingerprint': verified['rootFingerprint'],
           'revision': verified['revision'],
           'digest': verified['digest'],
-          'genesisDigest': digest
+          'genesisDigest': digest,
+          'manual': expectedGenesisDigest != null ||
+              (existing != null && existing['checkpoint']['manual'] != false),
         },
         genesisDigest: digest,
         confirmed: true,
@@ -1187,7 +1224,13 @@ class V2ChatRepository {
   }
 
   Future<Map<String, dynamic>> _peerDirectory(String peer) async {
-    final contact = await store.loadContact(peer);
+    var contact = await store.loadContact(peer);
+    if (contact == null && await store.hasImportedPeer(peer)) {
+      // A signed copy from our other device can create a conversation before
+      // this installation has seen the peer's directory. Pin on first reply.
+      await confirmContact(peer, null);
+      contact = await store.loadContact(peer);
+    }
     if (contact == null || contact['confirmed'] != true) {
       throw StateError('Контакт не подтверждён: сверьте genesis digest');
     }
@@ -1256,16 +1299,50 @@ class V2ChatRepository {
   /// получатель собирает по id/index. EXIF срезается на клиенте до шифрования.
   Future<String> sendMedia(String peer, Uint8List bytes,
       {String mime = 'image/jpeg'}) async {
+    final mediaId = await queueMedia(peer, bytes, mime: mime);
+    await flushOutbox();
+    return mediaId;
+  }
+
+  Future<String> queueMedia(String peer, Uint8List bytes,
+      {String mime = 'image/jpeg'}) async {
     final mediaId = randomHex(16);
     final payloads = splitMediaPayloads(bytes, id: mediaId, mime: mime);
+    final seal = await _messageSealer(peer, allowCached: true);
+    final messages = <Map<String, dynamic>>[];
     for (final payload in payloads) {
-      await _sealAndQueue(peer, payload);
+      messages.add(await seal(payload));
     }
+    await store.putMediaOutbox(peer, messages);
     return mediaId;
   }
 
   Future<String> _sealAndQueue(String peer, String payload) async {
-    await renewLease();
+    final seal = await _messageSealer(peer);
+    final message = await seal(payload);
+    await store.putOutbox(message['id'] as String, peer, message);
+    await flushOutbox();
+    return message['id'] as String;
+  }
+
+  Future<Future<Map<String, dynamic>> Function(String)> _messageSealer(
+      String peer,
+      {bool allowCached = false}) async {
+    Map<String, dynamic>? directory;
+    try {
+      await renewLease();
+      if (peer != account) directory = await _peerDirectory(peer);
+    } catch (error) {
+      final offline = error is SocketException ||
+          error is HttpException ||
+          error is AlphaTransportException && error.status == 429;
+      if (!offline || !allowCached) rethrow;
+      if (peer != account) {
+        directory = await store.loadContact(peer);
+        check(directory?['confirmed'] == true && directory?['history'] is List,
+            'Нет проверенного каталога для отправки без сети');
+      }
+    }
     final acc = _requireAccount();
     // Self-chat («Избранное»): свой же каталог, без подтверждения контакта.
     final peerData = peer == account
@@ -1275,8 +1352,8 @@ class V2ChatRepository {
             'history': acc['history'],
             'checkpoint': acc['checkpoint']
           }
-        : await _peerDirectory(peer);
-    final message = await v2.sealMessage(
+        : directory!;
+    return (payload) => v2.sealMessage(
         payload,
         acc['history'] as List,
         peerData['history'] as List,
@@ -1289,9 +1366,6 @@ class V2ChatRepository {
             root: peerData['root'] as String,
             genesis: peerData['genesis'] as Map<String, dynamic>,
             checkpoint: peerData['checkpoint'] as Map<String, dynamic>));
-    await store.putOutbox(message['id'] as String, peer, message);
-    await flushOutbox();
-    return message['id'] as String;
   }
 
   /// Read-ACK (C5): только свои входящие; идемпотентно на сервере.
@@ -1358,6 +1432,7 @@ class V2ChatRepository {
         }
       } on AlphaTransportException catch (error) {
         await store.markOutboxAttempt(entry['id'] as String, error.code);
+        if (error.status == 429 || error.status == 401) rethrow;
       }
     }
   }
@@ -1388,6 +1463,14 @@ class V2ChatRepository {
         final from = m['from'] as String;
         final to = m['to'] as String;
         final peer = from == account ? to : from;
+        if (peer != account && await store.loadContact(peer) == null) {
+          // Same first-contact policy as the PWA. Pin the signed directory once.
+          try {
+            await confirmContact(peer, null);
+          } on ProtocolException {
+            continue;
+          }
+        }
         // Доверие выбирается по СТОРОНАМ конверта, а не по классификации
         // чата: fanout доставляет устройству и копии исходящих, отправленных
         // ДРУГИМ устройством аккаунта (from == account, to == peer).
@@ -1590,8 +1673,17 @@ class V2ChatRepository {
       final assembled = assembleMedia(
           parts.map((r) => r['media'] as Map<String, dynamic>).toList());
       final first = parts.first;
-      if (assembled != null) {
+      final chunkRefs = [for (final part in parts) part['ref'] as String];
+      if (parts.any((part) => part['status'] == 'retracted')) {
         result.add({
+          ...first,
+          'status': 'retracted',
+          'text': '',
+          'chunkRefs': chunkRefs
+        });
+      } else if (assembled != null) {
+        result.add({
+          'chunkRefs': chunkRefs,
           ...first,
           'text': '',
           'isImage': true,
@@ -1599,8 +1691,12 @@ class V2ChatRepository {
           'mediaId': entry.key
         });
       } else {
-        result.add(
-            {...first, 'text': '📷 Фото загружается…', 'mediaPending': true});
+        result.add({
+          ...first,
+          'text': '📷 Фото загружается…',
+          'mediaPending': true,
+          'chunkRefs': chunkRefs
+        });
       }
     }
     result.sort(
@@ -1613,8 +1709,16 @@ class V2ChatRepository {
   /// Другие устройства собеседника сохраняют свою копию.
   Future<void> deleteLocal(String ref) async {
     final message = await store.messageByRef(ref);
-    check(message != null, 'Сообщение не найдено');
-    if (message!['direction'] == 'in' && message['acked'] != true) {
+    if (message == null) {
+      final outbox = await store.outboxAll();
+      final entry = outbox
+          .where((e) => messageRef(e['message'] as Map<String, dynamic>) == ref)
+          .firstOrNull;
+      check(entry != null, 'Сообщение не найдено');
+      await store.removeOutbox(entry!['id'] as String);
+      return;
+    }
+    if (message['direction'] == 'in' && message['acked'] != true) {
       await transport.ack([ref],
           account: account,
           id: session.id,
