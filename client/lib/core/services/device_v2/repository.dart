@@ -123,6 +123,126 @@ class V2ChatRepository {
   /// Снимок локального аккаунта (genesis/history/checkpoint) для UI.
   Map<String, dynamic>? get accountSnapshot => _accountCache;
 
+  /// Enroll the first device and retain the exact identity across interruptions.
+  Future<Map<String, dynamic>> registerNewAccount(
+      String recoveryPassphrase) async {
+    check(
+        RegExp(r'^[a-z0-9_]{3,32}$').hasMatch(account), 'Некорректный никнейм');
+    check(
+        recoveryPassphrase.length >= 24, 'Recovery-фраза: минимум 24 символа');
+    final login = await transport.session();
+    check(login['authenticated'] == true, 'Сессия Google истекла');
+    final remoteAccount = login['account'];
+    final journal = await store.loadEnrollmentJournal(account);
+    check(
+        remoteAccount == null ||
+            (remoteAccount == account && journal?['phase'] == 'registering'),
+        'Этот аккаунт уже создан. Подключите устройство или используйте recovery-пакет.');
+
+    final keys = journal?['phase'] == 'registering'
+        ? await store.loadDeviceKeys(account)
+        : null;
+    final device = keys == null
+        ? await _pairing.generateDeviceSession(account)
+        : DeviceV2Session(
+            account: account,
+            id: keys['deviceId'] as String,
+            encryptionKey: keys['encryptionKey'] as String,
+            signingKey: keys['signingKey'] as String,
+            encryptionPrivateKey: keys['encryptionPrivate'] as String,
+            signingPrivateKey: keys['signingPrivate'] as String);
+    check(remoteAccount == null || keys != null,
+        'Ключи незавершённой регистрации не найдены');
+    final signer = device.signingKey;
+    final backup = keys == null
+        ? await v2.createRecoveryBackup(account, signer, recoveryPassphrase)
+        : Map<String, dynamic>.from(journal!['recoveryBackup'] as Map);
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final previousGenesis =
+        keys == null ? null : journal!['genesis'] as Map<String, dynamic>;
+    final renew = previousGenesis == null ||
+        (remoteAccount == null &&
+            now - (previousGenesis['createdAt'] as int) > 240000);
+    Map<String, dynamic> genesis, manifest;
+    if (renew) {
+      genesis = {
+        'version': 2,
+        'account': account,
+        'nonce': randomHex(32),
+        'createdAt': now,
+        'legacy': false,
+        'firstDevice': device.descriptor,
+        'recoveryKey': backup['publicKey'],
+        'signature': '',
+      };
+      genesis['signature'] =
+          await crypto.signData(genesisText(genesis), device.signingPrivateKey);
+      manifest = {
+        'account': account,
+        'rootFingerprint': spkiFingerprint(signer),
+        'revision': 1,
+        'previous': '',
+        'issuedAt': now,
+        'expiresAt': now + maxLeaseMs,
+        'devices': [device.descriptor],
+        'signer': device.id,
+        'signature': '',
+      };
+      manifest['signature'] = await crypto.signData(
+          manifestText(manifest), device.signingPrivateKey);
+    } else {
+      genesis = previousGenesis;
+      manifest = Map<String, dynamic>.from(journal!['manifest'] as Map);
+    }
+    final finalized =
+        await _finalizeBackup(backup, recoveryPassphrase, genesis);
+    await store.saveDeviceKeys(
+        account: account,
+        deviceId: device.id,
+        encryptionKey: device.encryptionKey,
+        signingKey: signer,
+        encryptionPrivate: device.encryptionPrivateKey,
+        signingPrivate: device.signingPrivateKey);
+    await store.saveEnrollmentJournal(
+        account: account,
+        root: signer,
+        genesis: genesis,
+        manifest: manifest,
+        recoveryBackup: backup,
+        phase: 'registering');
+
+    if (remoteAccount == null) {
+      await transport.registerAccount(
+          genesis, manifest, await v2.pairingProof(device));
+    }
+    final directory =
+        (await transport.session())['directory'] as Map<String, dynamic>;
+    final serverGenesis = directory['genesis'] as Map<String, dynamic>;
+    check(
+        directory['root'] == signer &&
+            sha256Hex(genesisText(serverGenesis)) ==
+                sha256Hex(genesisText(genesis)),
+        'Сервер вернул другой аккаунт');
+    final history = (directory['history'] as List).cast<Map<String, dynamic>>();
+    final own = await v2.verifier
+        .verifyHistory(history, signer, null, genesis: serverGenesis);
+    check(
+        (history.last['devices'] as List)
+            .any((item) => item['id'] == device.id),
+        'Устройство отсутствует в каталоге');
+    await store.saveAccount(
+        account: account,
+        root: signer,
+        genesis: serverGenesis,
+        history: history,
+        checkpoint: own,
+        sessionId: device.id,
+        recovery: finalized);
+    await store.deleteEnrollmentJournal(account);
+    await load();
+    return {'backup': finalized, 'genesis': genesis};
+  }
+
   /// Явная миграция legacy-аккаунта: исходный RSA подписывает genesis и
   /// остаётся primary-якорем; recovery-ключ независим и шифруется фразой.
   ///
@@ -152,8 +272,7 @@ class V2ChatRepository {
       manifest = Map<String, dynamic>.from(journal['manifest'] as Map);
       backup = Map<String, dynamic>.from(journal['recoveryBackup'] as Map);
     } else {
-      backup =
-          await v2.createRecoveryBackup(account, root, recoveryPassphrase);
+      backup = await v2.createRecoveryBackup(account, root, recoveryPassphrase);
       genesis =
           v2.buildLegacyGenesis(account, root, backup['publicKey'] as String);
       genesis['signature'] =
@@ -181,18 +300,19 @@ class V2ChatRepository {
           (dir['history'] as List?)?.isEmpty != false) {
         rethrow;
       }
-      return _adoptDirectory(Map<String, dynamic>.from(dir),
-          genesis, backup, recoveryPassphrase);
+      return _adoptDirectory(
+          Map<String, dynamic>.from(dir), genesis, backup, recoveryPassphrase);
     }
     if (result['resumed'] == true) {
       final session = await transport.session();
       final dir = session['directory'];
       if (session['account'] == account && dir is Map) {
-        return _adoptDirectory(Map<String, dynamic>.from(dir),
-            genesis, backup, recoveryPassphrase);
+        return _adoptDirectory(Map<String, dynamic>.from(dir), genesis, backup,
+            recoveryPassphrase);
       }
     }
-    final finalized = await _finalizeBackup(backup, recoveryPassphrase, genesis);
+    final finalized =
+        await _finalizeBackup(backup, recoveryPassphrase, genesis);
     final checkpoint = {
       'account': account,
       'rootFingerprint': spkiFingerprint(root),
@@ -253,8 +373,8 @@ class V2ChatRepository {
       newRoot = anchor['publicKey']!;
       backup =
           await v2.createRecoveryBackup(account, newRoot, recoveryPassphrase);
-      genesis =
-          v2.buildLegacyGenesis(account, newRoot, backup['publicKey'] as String);
+      genesis = v2.buildLegacyGenesis(
+          account, newRoot, backup['publicKey'] as String);
       genesis['signature'] =
           await crypto.signData(genesisText(genesis), anchorPrivate);
       manifest = v2.buildLegacyManifest(account, newRoot);
@@ -311,14 +431,15 @@ class V2ChatRepository {
     } on AlphaTransportException {
       // Сервер мог уже зафиксировать genesis — перенимаем проверенный каталог
       // через сессию НОВЫМ ключом, а не создаём второй genesis.
-      return _adoptRotated(genesis, backup, recoveryPassphrase,
-          newRoot, anchorPrivate);
+      return _adoptRotated(
+          genesis, backup, recoveryPassphrase, newRoot, anchorPrivate);
     }
     if (result['resumed'] == true) {
-      return _adoptRotated(genesis, backup, recoveryPassphrase,
-          newRoot, anchorPrivate);
+      return _adoptRotated(
+          genesis, backup, recoveryPassphrase, newRoot, anchorPrivate);
     }
-    final finalized = await _finalizeBackup(backup, recoveryPassphrase, genesis);
+    final finalized =
+        await _finalizeBackup(backup, recoveryPassphrase, genesis);
     final checkpoint = {
       'account': account,
       'rootFingerprint': spkiFingerprint(newRoot),
@@ -364,8 +485,8 @@ class V2ChatRepository {
       throw StateError(
           'Rotation не подтверждена сервером; локальное состояние не изменено.');
     }
-    return _adoptDirectory(Map<String, dynamic>.from(dir), genesis, backup,
-        passphrase,
+    return _adoptDirectory(
+        Map<String, dynamic>.from(dir), genesis, backup, passphrase,
         anchorRoot: newRoot, anchorKey: anchorPrivate, legacyKey: privateKey);
   }
 
@@ -387,12 +508,15 @@ class V2ChatRepository {
       Map<String, dynamic> journalGenesis,
       Map<String, dynamic> backup,
       String passphrase,
-      {String? anchorRoot, String? anchorKey, String? legacyKey}) async {
+      {String? anchorRoot,
+      String? anchorKey,
+      String? legacyKey}) async {
     final effectiveRoot = anchorRoot ?? root;
     final serverGenesis = Map<String, dynamic>.from(dir['genesis'] as Map);
     final history = (dir['history'] as List).cast<Map<String, dynamic>>();
     await v2.verifier.verifyGenesis(serverGenesis, effectiveRoot);
-    await v2.verifier.verifyHistory(history, effectiveRoot, null, genesis: serverGenesis);
+    await v2.verifier
+        .verifyHistory(history, effectiveRoot, null, genesis: serverGenesis);
     final tip = history.last;
     final sameGenesis = sha256Hex(genesisText(serverGenesis)) ==
         sha256Hex(genesisText(journalGenesis));
@@ -451,13 +575,19 @@ class V2ChatRepository {
   /// состояния. Возвращает {deviceId, offer, expiresAt} для экрана сверки.
   Future<Map<String, dynamic>> reviewPairingOffer(String text) async {
     final challenge = _pairingChallenge;
-    check(challenge != null &&
-        (challenge['expiresAt'] as int) > DateTime.now().millisecondsSinceEpoch,
+    check(
+        challenge != null &&
+            (challenge['expiresAt'] as int) >
+                DateTime.now().millisecondsSinceEpoch,
         'Код подключения истёк. Сгенерируйте новый и создайте запрос заново.');
     final offer = decodeOffer(text);
     final device = await _pairing.verifyPairingOffer(offer,
         account: account, challenge: challenge!['nonce'] as String);
-    return {'deviceId': device['id'], 'offer': offer, 'expiresAt': offer['expiresAt']};
+    return {
+      'deviceId': device['id'],
+      'offer': offer,
+      'expiresAt': offer['expiresAt']
+    };
   }
 
   /// Доверенное устройство: явное подтверждение = манифест, подписанный ЭТИМ
@@ -492,8 +622,9 @@ class V2ChatRepository {
         id: _session.id,
         privateKey: _session.signingPrivateKey);
     final history = (dir['history'] as List).cast<Map<String, dynamic>>();
-    await v2.verifier.verifyHistory(history, root,
-        acc['checkpoint'] as Map<String, dynamic>, genesis: genesis);
+    await v2.verifier.verifyHistory(
+        history, root, acc['checkpoint'] as Map<String, dynamic>,
+        genesis: genesis);
     final tip = history.last;
     if (resume &&
         (tip['revision'] as int) >= (manifest!['revision'] as int) &&
@@ -566,10 +697,12 @@ class V2ChatRepository {
           privateKey: _session.signingPrivateKey);
       final retryHistory =
           (retryDir['history'] as List).cast<Map<String, dynamic>>();
-      await v2.verifier.verifyHistory(retryHistory, root, null, genesis: genesis);
+      await v2.verifier
+          .verifyHistory(retryHistory, root, null, genesis: genesis);
       final retryTip = retryHistory.last;
       if ((retryTip['revision'] as int) < (signedManifest['revision'] as int) ||
-          !(retryTip['devices'] as List).any((d) => d['id'] == offerDevice['id'])) {
+          !(retryTip['devices'] as List)
+              .any((d) => d['id'] == offerDevice['id'])) {
         rethrow;
       }
       return _finishApproval(acc, genesis, retryHistory);
@@ -578,7 +711,8 @@ class V2ChatRepository {
         account: account,
         id: _session.id,
         privateKey: _session.signingPrivateKey);
-    final freshHistory = (fresh['history'] as List).cast<Map<String, dynamic>>();
+    final freshHistory =
+        (fresh['history'] as List).cast<Map<String, dynamic>>();
     return _finishApproval(acc, genesis, freshHistory);
   }
 
@@ -698,16 +832,18 @@ class V2ChatRepository {
       };
     }
     final journal = await store.loadPairingJournal(account);
-    check(journal != null &&
-        journal['role'] == 'new' &&
-        journal['encryptionPrivate'] != null,
+    check(
+        journal != null &&
+            journal['role'] == 'new' &&
+            journal['encryptionPrivate'] != null,
         'Ключи устройства не созданы. Сначала создайте запрос подключения.');
     final session = _sessionFromJournal(journal!);
     _pairingSession = session;
     Map<String, dynamic> genesis;
     String root;
     String genesisDigest;
-    if (journal['confirmation'] != null && journal['confirmationText'] == text) {
+    if (journal['confirmation'] != null &&
+        journal['confirmationText'] == text) {
       // Повтор после сбоя: подтверждение уже проверено и записано до сети.
       genesis = Map<String, dynamic>.from(journal['genesis'] as Map);
       root = journal['root'] as String;
@@ -730,18 +866,22 @@ class V2ChatRepository {
     }
     // Bootstrap device-сессии: relay разрешает sessionless challenge только
     // для device-session; устройство уже в ростере (install доверенной стороны).
-    await transport.deviceSession(account, session.id, session.signingPrivateKey);
+    await transport.deviceSession(
+        account, session.id, session.signingPrivateKey);
     // Авторитетный каталог сервера через подписанную операцию directory.
     final dir = await transport.directory(account,
-        account: account, id: session.id, privateKey: session.signingPrivateKey);
+        account: account,
+        id: session.id,
+        privateKey: session.signingPrivateKey);
     final serverGenesis = Map<String, dynamic>.from(dir['genesis'] as Map);
     final serverRoot = dir['root'] as String;
-    check(serverRoot == root &&
-        sha256Hex(genesisText(serverGenesis)) == genesisDigest,
+    check(
+        serverRoot == root &&
+            sha256Hex(genesisText(serverGenesis)) == genesisDigest,
         'Каталог сервера не совпадает с подтверждённым аккаунтом');
     final history = (dir['history'] as List).cast<Map<String, dynamic>>();
-    final own = await v2.verifier
-        .verifyHistory(history, serverRoot, null, now: now, genesis: serverGenesis);
+    final own = await v2.verifier.verifyHistory(history, serverRoot, null,
+        now: now, genesis: serverGenesis);
     check((history.last['devices'] as List).any((d) => d['id'] == session.id),
         'Устройство отсутствует в каталоге сервера');
     final checkpoint = {
@@ -769,7 +909,11 @@ class V2ChatRepository {
         sessionId: session.id);
     await store.deletePairingJournal(account);
     await load();
-    return {'account': account, 'revision': own['revision'], 'deviceId': session.id};
+    return {
+      'account': account,
+      'revision': own['revision'],
+      'deviceId': session.id
+    };
   }
 
   // ── Восстановление с recovery-пакетом (PRF_RECOVERY_BLOCKER §3) ─────────────
@@ -839,10 +983,10 @@ class V2ChatRepository {
 
       // 4) Каталог через op directory: recovery-сессия разрешает только его
       // и install; auth несёт только account (без device-proof).
-      final directory = await transport.recoveryOperation('directory',
-          targetAccount, account: targetAccount) as Map<String, dynamic>;
-      final dirGenesis =
-          Map<String, dynamic>.from(directory['genesis'] as Map);
+      final directory = await transport.recoveryOperation(
+              'directory', targetAccount, account: targetAccount)
+          as Map<String, dynamic>;
+      final dirGenesis = Map<String, dynamic>.from(directory['genesis'] as Map);
       check(sha256Hex(genesisText(dirGenesis)) == genesisDigest,
           'Genesis digest mismatch');
       final history =
@@ -887,8 +1031,9 @@ class V2ChatRepository {
           'signature': offer['signature']
         }
       ];
-      await transport.recoveryOperation('install',
-          {'manifest': manifest, 'proofs': proofs}, account: targetAccount);
+      await transport.recoveryOperation(
+          'install', {'manifest': manifest, 'proofs': proofs},
+          account: targetAccount);
 
       // 6) Bootstrap обычной device-сессии нового устройства (sessionless
       // challenge): recovery-cookie заменяется обычной device-cookie.
@@ -902,17 +1047,20 @@ class V2ChatRepository {
           account: targetAccount,
           id: session.id,
           privateKey: session.signingPrivateKey);
-      final serverGenesis =
-          Map<String, dynamic>.from(fresh['genesis'] as Map);
+      final serverGenesis = Map<String, dynamic>.from(fresh['genesis'] as Map);
       final serverRoot = fresh['root'] as String;
-      check(serverRoot == rootAnchor &&
-          sha256Hex(genesisText(serverGenesis)) == genesisDigest,
+      check(
+          serverRoot == rootAnchor &&
+              sha256Hex(genesisText(serverGenesis)) == genesisDigest,
           'Каталог сервера не совпадает с recovery-пакетом');
       final freshHistory =
           (fresh['history'] as List).cast<Map<String, dynamic>>();
-      final own = await v2.verifier
-          .verifyHistory(freshHistory, serverRoot, null, genesis: serverGenesis);
-      check((freshHistory.last['devices'] as List).any((d) => d['id'] == session.id),
+      final own = await v2.verifier.verifyHistory(
+          freshHistory, serverRoot, null,
+          genesis: serverGenesis);
+      check(
+          (freshHistory.last['devices'] as List)
+              .any((d) => d['id'] == session.id),
           'Устройство отсутствует в каталоге сервера');
 
       // 8) Локальная фиксация после успеха: ключи + состояние. Recovery-пакет
@@ -982,8 +1130,8 @@ class V2ChatRepository {
       'signer': current.id,
       'signature': ''
     };
-    manifest['signature'] =
-        await crypto.signData(manifestText(manifest), current.signingPrivateKey);
+    manifest['signature'] = await crypto.signData(
+        manifestText(manifest), current.signingPrivateKey);
     final result = await transport.install(manifest,
         account: account,
         id: current.id,
@@ -1018,8 +1166,9 @@ class V2ChatRepository {
     final genesis = dir['genesis'] as Map<String, dynamic>;
     final digest = await v2.verifier.verifyGenesis(genesis, peerRoot);
     check(digest == expectedGenesisDigest, 'Genesis digest mismatch');
-    final verified = await v2.verifier
-        .verifyHistory(dir['history'] as List, peerRoot, null, genesis: genesis);
+    final verified = await v2.verifier.verifyHistory(
+        dir['history'] as List, peerRoot, null,
+        genesis: genesis);
     await store.saveContact(
         account: peer,
         root: peerRoot,
@@ -1046,8 +1195,10 @@ class V2ChatRepository {
         account: account,
         id: session.id,
         privateKey: session.signingPrivateKey);
-    final verified = await v2.verifier.verifyHistory(dir['history'] as List,
-        contact['root'] as String, contact['checkpoint'] as Map<String, dynamic>,
+    final verified = await v2.verifier.verifyHistory(
+        dir['history'] as List,
+        contact['root'] as String,
+        contact['checkpoint'] as Map<String, dynamic>,
         genesis: contact['genesis'] as Map<String, dynamic>);
     final checkpoint = {
       ...contact['checkpoint'] as Map<String, dynamic>,
@@ -1157,7 +1308,8 @@ class V2ChatRepository {
   Future<void> retractMessage(String ref) async {
     final message = await store.messageByRef(ref);
     check(message != null, 'Сообщение не найдено');
-    check(message!['direction'] == 'out', 'Отозвать можно только своё сообщение');
+    check(
+        message!['direction'] == 'out', 'Отозвать можно только своё сообщение');
     await transport.retract([ref],
         account: account,
         id: session.id,
@@ -1168,7 +1320,8 @@ class V2ChatRepository {
   /// Tombstones с сервера: локальные копии помечаются «отозвано отправителем».
   /// Возвращает курсор (max deletedAt) для следующего инкрементального запроса.
   Future<int> syncRetractions({int since = 0}) async {
-    final tombstones = await transport.retractions(since: since,
+    final tombstones = await transport.retractions(
+        since: since,
         account: account,
         id: session.id,
         privateKey: session.signingPrivateKey);
@@ -1267,8 +1420,8 @@ class V2ChatRepository {
         await v2.openMessage(bundle, _session, senderTrust, recipientTrust);
         final own = (m['envelopes'] as List)
             .cast<Map<String, dynamic>>()
-            .firstWhere((e) =>
-                e['account'] == account && e['deviceId'] == _session.id);
+            .firstWhere(
+                (e) => e['account'] == account && e['deviceId'] == _session.id);
         if (from == account) {
           // Копия исходящего сообщения аккаунта (self-chat либо отправка
           // вторичным устройством): хранится как своё; ACK обязателен —
@@ -1337,8 +1490,8 @@ class V2ChatRepository {
           peer: from,
           messageId: id,
           createdAt: (e['timestamp'] as num).toInt(),
-          payload:
-              Map<String, dynamic>.from(jsonDecode(e['data'] as String) as Map));
+          payload: Map<String, dynamic>.from(
+              jsonDecode(e['data'] as String) as Map));
       if (inserted) count++;
     }
     if (serverRefs.isNotEmpty) {
@@ -1358,8 +1511,8 @@ class V2ChatRepository {
   /// подписанном outbox и будет отправлен после перехода собеседника.
   Future<bool> isPeerUpgradeBlocked(String peer) async {
     final rows = await store.outboxAll();
-    return rows.any((r) =>
-        r['peer'] == peer && r['lastError'] == 'peer_upgrade_required');
+    return rows.any(
+        (r) => r['peer'] == peer && r['lastError'] == 'peer_upgrade_required');
   }
 
   Future<List<Map<String, dynamic>>> refreshDelivery(List<String> refs) async {
@@ -1446,10 +1599,12 @@ class V2ChatRepository {
           'mediaId': entry.key
         });
       } else {
-        result.add({...first, 'text': '📷 Фото загружается…', 'mediaPending': true});
+        result.add(
+            {...first, 'text': '📷 Фото загружается…', 'mediaPending': true});
       }
     }
-    result.sort((a, b) => (a['createdAt'] as int).compareTo(b['createdAt'] as int));
+    result.sort(
+        (a, b) => (a['createdAt'] as int).compareTo(b['createdAt'] as int));
     return result;
   }
 
@@ -1477,8 +1632,9 @@ class V2ChatRepository {
           .then((_) => syncLegacyInbox())
           .then((_) => flushOutbox())
           .then((_) => syncRetractions(since: _retractionCursor))
-          .then((cursor) { _retractionCursor = cursor; })
-          .catchError((Object _) {});
+          .then((cursor) {
+        _retractionCursor = cursor;
+      }).catchError((Object _) {});
     };
   }
 }

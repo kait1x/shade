@@ -1,30 +1,43 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 import '../../../core/services/device_v2/protocol.dart';
+import '../../../core/services/device_v2/transport.dart';
 import '../../../core/theme/shade_theme.dart';
 import '../../../core/widgets/shade_motion.dart';
+import '../../../core/widgets/shade_logo.dart';
+import '../../../core/widgets/shade_welcome.dart';
 import '../../auth/data/repositories/auth_notifier.dart';
 import '../../chats/presentation/widgets/message_bubble.dart';
 import '../../chats/presentation/widgets/message_input.dart';
 import '../data/alpha_v2_backend.dart';
+import 'pairing_new_device_screen.dart';
+import 'recovery_screen.dart' show saveNativeRecoveryFile;
 
 /// Экран Alpha v2: явная enrollment legacy-устройства, сверка genesis digest
 /// контакта и E2EE-чат с Web-устройствами через изолированный alpha-процесс.
 /// Production v1-чаты не изменяются.
 class AlphaV2Screen extends ConsumerStatefulWidget {
   final AlphaV2Backend? backend;
-  const AlphaV2Screen({super.key, this.backend});
+  final bool startWithGoogle;
+  static const defaultOrigin = String.fromEnvironment(
+    'ALPHA_ORIGIN',
+    defaultValue: 'https://alpha.shadechat.ru',
+  );
+
+  const AlphaV2Screen({super.key, this.backend, this.startWithGoogle = false});
 
   @override
   ConsumerState<AlphaV2Screen> createState() => _AlphaV2ScreenState();
 }
 
-enum _Stage { loading, connect, enroll, recovery, home, chat }
+enum _Stage { loading, connect, register, pair, enroll, recovery, home, chat }
 
 class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
   late final AlphaV2Backend _backend;
@@ -32,7 +45,8 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
   _Stage _stage = _Stage.loading;
   String? _error;
   bool _busy = false;
-  final _origin = TextEditingController(text: 'https://');
+  final _origin = TextEditingController(text: AlphaV2Screen.defaultOrigin);
+  final _nickname = TextEditingController();
   final _passphrase = TextEditingController();
   Map<String, dynamic>? _recovery;
   List<Map<String, dynamic>> _contacts = [];
@@ -70,7 +84,14 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
     _backend.onPresence = (account, online) {
       if (mounted) setState(() => _presence[account] = online);
     };
-    _init();
+    if (widget.startWithGoogle) {
+      _stage = _Stage.connect;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _connect();
+      });
+    } else {
+      _init();
+    }
   }
 
   void _onScroll() {
@@ -100,6 +121,7 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
     _chatTimer?.cancel();
     _typingTimer?.cancel();
     _origin.dispose();
+    _nickname.dispose();
     _passphrase.dispose();
     _scroll.dispose();
     if (_ownedBackend) _backend.dispose();
@@ -114,10 +136,40 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
     try {
       await action();
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) setState(() => _error = _errorText(e));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  String? _errorText(Object error) {
+    if (!widget.startWithGoogle) return error.toString();
+    if (error is GoogleSignInException) {
+      if (error.code == GoogleSignInExceptionCode.canceled) return null;
+      return 'Не удалось войти через Google. Попробуйте ещё раз или откройте Shade в браузере.';
+    }
+    if (error is SocketException || error is TimeoutException) {
+      return 'Нет связи с Shade. Проверьте интернет и попробуйте снова.';
+    }
+    if (error is AlphaTransportException) {
+      if (error.status == 429)
+        return 'Слишком много попыток. Подождите немного и повторите.';
+      if (error.status == 401)
+        return 'Сессия истекла. Вернитесь назад и снова войдите через Google.';
+      if (error.code == 'account_requires_linking')
+        return 'Аккаунт уже есть. Вернитесь назад и выберите «Восстановить доступ».';
+      if (_stage == _Stage.register && error.status == 409)
+        return 'Никнейм занят. Выберите другой.';
+    }
+    if (error is StateError &&
+        error.message.toString().contains('Recovery-фраза')) {
+      return 'Введите ту же фразу, которую выбрали при первой попытке регистрации.';
+    }
+    if (error is StateError &&
+        error.message.toString().contains('Аккаунт уже зарегистрирован')) {
+      return 'Аккаунт уже есть. Вернитесь назад и выберите «Восстановить доступ».';
+    }
+    return 'Не получилось продолжить. Попробуйте снова или откройте Shade в браузере.';
   }
 
   Future<void> _init() async {
@@ -151,8 +203,20 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
       final idToken = await _backend.requestGoogleIdToken(origin);
       await _backend.connect(origin, idToken);
       if (!mounted) return;
-      setState(() =>
-          _stage = _backend.enrolled ? _Stage.home : _Stage.enroll);
+      if (widget.startWithGoogle && _backend.enrolled) {
+        Navigator.of(context).pop();
+        return;
+      }
+      setState(() {
+        if (_backend.registrationPending) {
+          _nickname.text = _backend.account ?? '';
+          _stage = _Stage.register;
+        } else if (_backend.pairingRepository != null) {
+          _stage = _Stage.pair;
+        } else {
+          _stage = _backend.enrolled ? _Stage.home : _Stage.enroll;
+        }
+      });
       if (_stage == _Stage.home) await _loadContacts();
     });
   }
@@ -166,9 +230,30 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
     await _run(() async {
       await _backend.connectWithLegacyKey(origin);
       if (!mounted) return;
-      setState(() =>
-          _stage = _backend.enrolled ? _Stage.home : _Stage.enroll);
+      setState(() => _stage = _backend.enrolled ? _Stage.home : _Stage.enroll);
       if (_stage == _Stage.home) await _loadContacts();
+    });
+  }
+
+  Future<void> _register() async {
+    final account = _nickname.text.trim().toLowerCase();
+    if (!RegExp(r'^[a-z0-9_]{3,32}$').hasMatch(account)) {
+      setState(() =>
+          _error = 'Никнейм: 3–32 латинские буквы, цифры или подчёркивания.');
+      return;
+    }
+    if (_passphrase.text.length < 24) {
+      setState(() => _error = 'Recovery-фраза: минимум 24 символа.');
+      return;
+    }
+    await _run(() async {
+      final recovery = await _backend.register(account, _passphrase.text);
+      if (!mounted) return;
+      _passphrase.clear();
+      setState(() {
+        _recovery = recovery;
+        _stage = _Stage.recovery;
+      });
     });
   }
 
@@ -194,39 +279,42 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
     final confirmed = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
-            backgroundColor: ShadeColors.surfaceCard,
-            title: const Text('Сверка контакта',
-                style: TextStyle(color: ShadeColors.textPrimary, fontSize: 17)),
-            content: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Text(
-                  'Введите genesis digest собеседника, полученный по независимому доверенному каналу. До сверки отправка и ACK заблокированы.',
-                  style: TextStyle(
-                      color: ShadeColors.textSecondary, fontSize: 13, height: 1.4)),
-              const SizedBox(height: 16),
-              TextField(
-                  controller: accountController,
-                  autofocus: true,
-                  style: const TextStyle(color: ShadeColors.textPrimary),
-                  decoration: const InputDecoration(
-                      labelText: 'Аккаунт', hintText: 'nickname')),
-              const SizedBox(height: 12),
-              TextField(
-                  controller: digestController,
-                  style: const TextStyle(
-                      color: ShadeColors.textPrimary,
-                      fontFamily: 'monospace',
-                      fontSize: 12),
-                  decoration: const InputDecoration(
-                      labelText: 'Genesis digest (64 hex)')),
-            ]),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(ctx, false),
-                  child: const Text('Отмена')),
-              TextButton(
-                  onPressed: () => Navigator.pop(ctx, true),
-                  child: const Text('Сверить')),
-            ]));
+                backgroundColor: ShadeColors.surfaceCard,
+                title: const Text('Сверка контакта',
+                    style: TextStyle(
+                        color: ShadeColors.textPrimary, fontSize: 17)),
+                content: Column(mainAxisSize: MainAxisSize.min, children: [
+                  const Text(
+                      'Введите genesis digest собеседника, полученный по независимому доверенному каналу. До сверки отправка и ACK заблокированы.',
+                      style: TextStyle(
+                          color: ShadeColors.textSecondary,
+                          fontSize: 13,
+                          height: 1.4)),
+                  const SizedBox(height: 16),
+                  TextField(
+                      controller: accountController,
+                      autofocus: true,
+                      style: const TextStyle(color: ShadeColors.textPrimary),
+                      decoration: const InputDecoration(
+                          labelText: 'Аккаунт', hintText: 'nickname')),
+                  const SizedBox(height: 12),
+                  TextField(
+                      controller: digestController,
+                      style: const TextStyle(
+                          color: ShadeColors.textPrimary,
+                          fontFamily: 'monospace',
+                          fontSize: 12),
+                      decoration: const InputDecoration(
+                          labelText: 'Genesis digest (64 hex)')),
+                ]),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('Отмена')),
+                  TextButton(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('Сверить')),
+                ]));
     if (confirmed != true || !mounted) return;
     final account = accountController.text.trim();
     final digest = digestController.text.trim();
@@ -288,8 +376,8 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
     if (!mounted) return;
     final previousRefs = _messages.map((m) => m['ref']).toSet();
     final freshIncoming = messages
-        .where((m) =>
-            m['direction'] == 'in' && !previousRefs.contains(m['ref']))
+        .where(
+            (m) => m['direction'] == 'in' && !previousRefs.contains(m['ref']))
         .length;
     setState(() {
       _messages = messages;
@@ -321,9 +409,7 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
         ? null
         : {
             'ref': replyTo['ref'],
-            'from': replyTo['direction'] == 'out'
-                ? _backend.account
-                : peer,
+            'from': replyTo['direction'] == 'out' ? _backend.account : peer,
             'text': replyTo['text']
           };
     await _run(() async {
@@ -339,7 +425,7 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
         context: context,
         backgroundColor: ShadeColors.surfaceCard,
         builder: (ctx) => SafeArea(
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
+                child: Column(mainAxisSize: MainAxisSize.min, children: [
               ListTile(
                   leading: const Icon(Icons.reply_rounded,
                       color: ShadeColors.textPrimary),
@@ -351,8 +437,7 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
                       color: Color(0xFFEF4444)),
                   title: const Text('Удалить у себя',
                       style: TextStyle(color: Color(0xFFEF4444))),
-                  subtitle: const Text(
-                      'Другие устройства сохранят свою копию',
+                  subtitle: const Text('Другие устройства сохранят свою копию',
                       style: TextStyle(
                           color: ShadeColors.textSecondary, fontSize: 12)),
                   onTap: () => Navigator.pop(ctx, 'delete')),
@@ -405,6 +490,30 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.startWithGoogle && _stage == _Stage.connect) {
+      return ShadeWelcomeLayout(
+        fillScreen: true,
+        card: (compact) => [
+          const Text('Вход в Shade',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          Text(_error ?? 'Выберите аккаунт Google, чтобы продолжить.',
+              style: const TextStyle(
+                  color: ShadeColors.textSecondary, height: 1.5)),
+          const SizedBox(height: 16),
+          ShadeGoogleButton(
+            onPressed: _connect,
+            progress: _busy ? 'Подключаем…' : null,
+          ),
+          TextButton.icon(
+            onPressed: () => Navigator.of(context).pop(),
+            icon: const Icon(Icons.arrow_back_rounded, size: 18),
+            label: const Text('Вернуться ко входу'),
+          ),
+        ],
+        footer: const [],
+      );
+    }
     return Scaffold(
         backgroundColor: ShadeColors.black,
         appBar: AppBar(
@@ -415,8 +524,10 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
                 children: [
                   Text(
                       _stage == _Stage.chat
-                          ? (_peer == _backend.account ? 'Избранное' : _peer ?? '')
-                          : 'Shade Alpha',
+                          ? (_peer == _backend.account
+                              ? 'Избранное'
+                              : _peer ?? '')
+                          : 'Shade',
                       style: const TextStyle(
                           color: ShadeColors.textPrimary, fontSize: 17)),
                   if (_stage == _Stage.chat && _typingPeer == _peer)
@@ -450,13 +561,17 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
             decoration: BoxDecoration(
                 color: ShadeColors.surfaceCard,
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: const Color(0xFFEF4444).withValues(alpha: .5))),
+                border: Border.all(
+                    color: const Color(0xFFEF4444).withValues(alpha: .5))),
             child: Text(_error!,
                 style: const TextStyle(
                     color: Color(0xFFEF4444), fontSize: 12.5, height: 1.4))),
-      Expanded(child: switch (_stage) {
+      Expanded(
+          child: switch (_stage) {
         _Stage.loading => const Center(child: ShadeLoadingIndicator()),
         _Stage.connect => _buildConnect(),
+        _Stage.register => _buildRegister(),
+        _Stage.pair => _buildPairing(),
         _Stage.enroll => _buildEnroll(),
         _Stage.recovery => _buildRecovery(),
         _Stage.home => _buildHome(),
@@ -507,29 +622,98 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
 
   Widget _buildConnect() {
     return ListView(padding: const EdgeInsets.all(20), children: [
-      const Text('Android ↔ Web E2EE',
-          style: TextStyle(
+      Text(widget.startWithGoogle ? 'Вход в Shade' : 'Подключение к Shade',
+          style: const TextStyle(
               color: ShadeColors.textPrimary,
               fontSize: 20,
               fontWeight: FontWeight.w600)),
       const SizedBox(height: 8),
-      const Text(
-          'Подключение к изолированному alpha-процессу device-v2. Исходные ключи этого устройства не заменяются; Google подтверждает только аккаунт.',
-          style: TextStyle(
-              color: ShadeColors.textSecondary, fontSize: 13, height: 1.5)),
+      const Text('Используйте Google, чтобы войти или создать аккаунт.',
+          style: TextStyle(color: ShadeColors.textSecondary, height: 1.5)),
       const SizedBox(height: 20),
-      _field(_origin, 'Origin alpha-сервера', hint: 'https://alpha.example.com'),
-      const SizedBox(height: 16),
-      _primaryButton('Войти через Google', _connect),
-      const SizedBox(height: 12),
-      _primaryButton('Войти ключом v1 (без Google)', _connectWithKey),
+      if (!widget.startWithGoogle) ...[
+        _field(_origin, 'Адрес сервера', hint: AlphaV2Screen.defaultOrigin),
+        const SizedBox(height: 16),
+      ],
+      _primaryButton('Продолжить с Google', _connect),
+      if (!widget.startWithGoogle) ...[
+        const SizedBox(height: 12),
+        TextButton(
+          onPressed: _busy ? null : _connectWithKey,
+          child: const Text('Войти ключом v1 (без Google)'),
+        ),
+      ],
+    ]);
+  }
+
+  Widget _buildPairing() {
+    return ListView(padding: const EdgeInsets.all(20), children: [
+      const Text('Вход на новом устройстве',
+          style: TextStyle(
+              color: ShadeColors.textPrimary,
+              fontSize: 20,
+              fontWeight: FontWeight.w600)),
       const SizedBox(height: 12),
       const Text(
-          'Если аккаунт v1 не привязан к Google, вход выполняется подписью '
-          'исходного RSA-ключа этого устройства. Приватный ключ не покидает '
-          'устройство; аккаунт должен быть подготовлен оператором миграции.',
-          style: TextStyle(
-              color: ShadeColors.textSecondary, fontSize: 12, height: 1.5)),
+        'На устройстве, где Shade уже открыт, перейдите в «Профиль → Устройства → Подключить другое устройство».',
+        style: TextStyle(color: ShadeColors.textSecondary, height: 1.5),
+      ),
+      const SizedBox(height: 20),
+      _primaryButton('Ввести код подключения', () async {
+        final repo = _backend.pairingRepository;
+        if (repo == null) return;
+        final linked = await Navigator.of(context).push<bool>(MaterialPageRoute(
+          builder: (_) => PairingNewDeviceScreen(repository: repo),
+        ));
+        if (!mounted || linked != true) return;
+        if (widget.startWithGoogle) {
+          Navigator.of(context).pop();
+        } else {
+          setState(() => _stage = _Stage.home);
+          unawaited(_loadContacts());
+        }
+      }),
+    ]);
+  }
+
+  Widget _buildRegister() {
+    return ListView(padding: const EdgeInsets.all(24), children: [
+      const Row(children: [
+        ShadeLogo(size: 42),
+        SizedBox(width: 12),
+        Expanded(
+          child: Text('Создать аккаунт Shade v2',
+              style: TextStyle(
+                  color: ShadeColors.textPrimary,
+                  fontSize: 23,
+                  fontWeight: FontWeight.w700)),
+        ),
+      ]),
+      const SizedBox(height: 10),
+      const Text('Ещё один шаг, и можно писать друзьям.',
+          style: TextStyle(color: ShadeColors.textSecondary, height: 1.5)),
+      const SizedBox(height: 24),
+      Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: ShadeColors.surfaceCard,
+          border: Border.all(color: ShadeColors.greyBorder),
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child:
+            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          _field(_nickname, 'Никнейм'),
+          const SizedBox(height: 16),
+          _field(_passphrase, 'Фраза для восстановления', obscure: true),
+          const SizedBox(height: 8),
+          const Text(
+              'От 24 символов. Фраза пригодится вместе с файлом восстановления, если потеряете телефон.',
+              style: TextStyle(
+                  color: ShadeColors.textSecondary, fontSize: 12, height: 1.5)),
+          const SizedBox(height: 18),
+          _primaryButton('Зарегистрироваться', _register),
+        ]),
+      ),
     ]);
   }
 
@@ -576,49 +760,74 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
               ? 'Сменить ключ и зарегистрировать'
               : 'Зарегистрировать устройство',
           _enroll),
+      const SizedBox(height: 12),
+      TextButton(
+        onPressed: _busy
+            ? null
+            : () => setState(() {
+                  _error = null;
+                  _passphrase.clear();
+                  _stage = _Stage.connect;
+                }),
+        child: const Text('Создать новый аккаунт через Google'),
+      ),
     ]);
   }
 
   Widget _buildRecovery() {
     final json = const JsonEncoder.withIndent('  ').convert(_recovery);
     return ListView(padding: const EdgeInsets.all(20), children: [
-      const Text('Сохраните recovery-пакет',
+      const Text('Сохраните файл восстановления',
           style: TextStyle(
               color: ShadeColors.textPrimary,
               fontSize: 20,
               fontWeight: FontWeight.w600)),
       const SizedBox(height: 8),
       const Text(
-          'Пакет содержит только зашифрованный независимый recovery-ключ. Храните его отдельно от recovery-фразы. Приватные ключи устройства в пакет не входят.',
-          style: TextStyle(
-              color: ShadeColors.textSecondary, fontSize: 13, height: 1.5)),
-      const SizedBox(height: 16),
-      Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-              color: ShadeColors.surfaceCard,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: ShadeColors.greyBorder)),
-          child: SelectableText(json,
-              style: const TextStyle(
-                  color: ShadeColors.textSecondary,
-                  fontFamily: 'monospace',
-                  fontSize: 11,
-                  height: 1.4))),
-      const SizedBox(height: 12),
-      OutlinedButton.icon(
-          onPressed: () {
-            Clipboard.setData(ClipboardData(text: json));
-            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-                content: Text('Recovery-пакет скопирован')));
-          },
-          icon: const Icon(Icons.copy_rounded, size: 18),
-          label: const Text('Скопировать пакет')),
-      const SizedBox(height: 16),
-      _primaryButton('Я сохранил пакет и фразу', () {
-        setState(() => _stage = _Stage.home);
-        _loadContacts();
+          'Файл и ваша фраза помогут вернуть доступ к аккаунту. Храните их отдельно друг от друга.',
+          style: TextStyle(color: ShadeColors.textSecondary, height: 1.5)),
+      const SizedBox(height: 20),
+      _primaryButton('Сохранить файл', () async {
+        try {
+          final saved = await saveNativeRecoveryFile(json);
+          if (mounted && saved == true) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Файл восстановления сохранён')),
+            );
+          }
+        } on PlatformException {
+          if (mounted)
+            setState(() => _error =
+                'Не удалось сохранить файл. Попробуйте снова или скопируйте его.');
+        } on MissingPluginException {
+          if (mounted)
+            setState(
+                () => _error = 'Здесь можно скопировать файл восстановления.');
+        }
       }),
+      const SizedBox(height: 8),
+      TextButton(
+          onPressed: () async {
+            await Clipboard.setData(ClipboardData(text: json));
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Файл восстановления скопирован')),
+              );
+            }
+          },
+          child: const Text('Скопировать содержимое')),
+      const SizedBox(height: 16),
+      OutlinedButton(
+        onPressed: () {
+          if (widget.startWithGoogle) {
+            Navigator.of(context).pop();
+          } else {
+            setState(() => _stage = _Stage.home);
+            unawaited(_loadContacts());
+          }
+        },
+        child: const Text('Перейти к чатам'),
+      ),
     ]);
   }
 
@@ -633,7 +842,8 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
               color: ShadeColors.surfaceCard,
               borderRadius: BorderRadius.circular(14),
               border: Border.all(color: ShadeColors.greyBorder)),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('@${_backend.account ?? ''}',
                 style: const TextStyle(
                     color: ShadeColors.textPrimary,
@@ -664,7 +874,8 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
                   },
                   child: const Text('Копировать')),
               TextButton(
-                  onPressed: _busy ? null : () => _run(() => _backend.renewLease()),
+                  onPressed:
+                      _busy ? null : () => _run(() => _backend.renewLease()),
                   child: const Text('Продлить lease')),
             ]),
           ])),
@@ -717,7 +928,9 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
                     color: ShadeColors.textSecondary, fontSize: 12)),
             trailing: const Icon(Icons.chevron_right_rounded,
                 color: ShadeColors.textMuted),
-            onTap: c['confirmed'] == true ? () => _openChat(c['account'] as String) : null)),
+            onTap: c['confirmed'] == true
+                ? () => _openChat(c['account'] as String)
+                : null)),
     ]);
   }
 
@@ -728,8 +941,7 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
         Container(
             width: double.infinity,
             color: ShadeColors.surfaceCard,
-            padding:
-                const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: const Text(
                 'Собеседник ещё не перешёл на Shade v2. Сообщения сохраняются в защищённой очереди и будут отправлены после его перехода.',
                 style: TextStyle(
@@ -771,14 +983,16 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
                           isMine: isMine,
                           isEncrypted: true,
                           isImage: isImage,
-                          imageData: isImage ? m['imageData'] as Uint8List? : null,
+                          imageData:
+                              isImage ? m['imageData'] as Uint8List? : null,
                           status: isMine
                               ? (retracted
                                   ? 'blocked'
                                   : devices.isNotEmpty &&
                                           readCount == devices.length
                                       ? 'read'
-                                      : devices.isNotEmpty && ack == devices.length
+                                      : devices.isNotEmpty &&
+                                              ack == devices.length
                                           ? 'delivered'
                                           : 'sent')
                               : 'read',

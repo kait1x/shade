@@ -8,14 +8,17 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
+import 'dart:convert';
+
+import 'package:flutter/services.dart';
 
 import 'package:shade/core/services/device_v2/repository.dart';
 import 'package:shade/core/theme/shade_theme.dart';
 import 'package:shade/core/widgets/shade_motion.dart';
 import 'package:shade/core/widgets/shade_ui.dart';
 import 'package:shade/features/devices/presentation/pairing_approve_screen.dart';
-import 'package:shade/features/devices/presentation/pairing_new_device_screen.dart';
+import 'package:shade/features/devices/presentation/recovery_screen.dart'
+    show saveNativeRecoveryFile;
 
 import 'v2_providers.dart';
 
@@ -54,6 +57,10 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
   @override
   Widget build(BuildContext context) {
     final devices = ref.watch(v2DevicesProvider(_serverRefresh));
+    final snapshot =
+        ref.read(v2SessionProvider.notifier).repository?.accountSnapshot;
+    final backup = snapshot?['recovery'];
+    final genesis = snapshot?['genesis'];
     return Scaffold(
         appBar: AppBar(title: const Text('Устройства'), actions: [
           IconButton(
@@ -76,45 +83,58 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
                         icon: const Icon(Icons.refresh_rounded),
                         label: const Text('Повторить')))),
             data: (list) => ListView(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-                children: [
-                  if (list.isEmpty)
-                    const ShadeEmptyState(
-                        icon: Icons.devices_outlined,
-                        title: 'Каталог пуст',
-                        description:
-                            'Устройство не зарегистрировано в device-v2.')
-                  else
-                    for (final device in list)
-                      Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: _deviceTile(context, device)),
-                  const SizedBox(height: 12),
-                  _pairingTile(
-                      icon: Icons.add_link_rounded,
-                      title: 'Подключить новое устройство',
-                      subtitle:
-                          'Одноразовый код с этого экрана на новом устройстве',
-                      onTap: () => _openPairing(
-                          (repository) =>
-                              PairingNewDeviceScreen(repository: repository))),
-                  const SizedBox(height: 10),
-                  _pairingTile(
-                      icon: Icons.verified_user_outlined,
-                      title: 'Подтвердить подключение',
-                      subtitle:
-                          'Это устройство — доверенное: проверка offer и выдача confirmation',
-                      onTap: () => _openPairing(
-                          (repository) =>
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+                    children: [
+                      if (list.isEmpty)
+                        const ShadeEmptyState(
+                            icon: Icons.devices_outlined,
+                            title: 'Каталог пуст',
+                            description:
+                                'Устройство не зарегистрировано в device-v2.')
+                      else
+                        for (final device in list)
+                          Padding(
+                              padding: const EdgeInsets.only(bottom: 10),
+                              child: _deviceTile(context, device)),
+                      const SizedBox(height: 12),
+                      _pairingTile(
+                          icon: Icons.add_link_rounded,
+                          title: 'Подключить другое устройство',
+                          subtitle:
+                              'Покажем одноразовый код для входа на новом устройстве',
+                          onTap: () => _openPairing((repository) =>
                               PairingApproveScreen(repository: repository))),
-                   const SizedBox(height: 10),
-                   _pairingTile(
-                       icon: Icons.move_down_rounded,
-                       title: 'Перенести аккаунт из Shade v1',
-                       subtitle:
-                           'Та же личность и локальная история; недоставленное останется в очередях v1',
-                       onTap: () => context.push('/enrollment')),
-                ])));
+                      if (backup != null && genesis != null) ...[
+                        const SizedBox(height: 10),
+                        _pairingTile(
+                          icon: Icons.download_outlined,
+                          title: 'Сохранить файл восстановления',
+                          subtitle:
+                              'Поможет вернуть доступ вместе с вашей фразой',
+                          onTap: () async {
+                            final json = jsonEncode(
+                                {'backup': backup, 'genesis': genesis});
+                            String? message;
+                            try {
+                              if (await saveNativeRecoveryFile(json)) {
+                                message = 'Файл восстановления сохранён';
+                              }
+                            } on PlatformException {
+                              message =
+                                  'Не удалось сохранить файл. Попробуйте снова.';
+                            } on MissingPluginException {
+                              await Clipboard.setData(
+                                  ClipboardData(text: json));
+                              message = 'Файл восстановления скопирован';
+                            }
+                            if (context.mounted && message != null) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text(message)));
+                            }
+                          },
+                        ),
+                      ],
+                    ])));
   }
 
   Widget _deviceTile(BuildContext context, V2DeviceView device) {
@@ -152,8 +172,7 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w600))),
+                                  fontSize: 15, fontWeight: FontWeight.w600))),
                       if (device.current) ...[
                         const SizedBox(width: 8),
                         Container(
@@ -205,8 +224,7 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
                           children: [
                         Text(title,
                             style: const TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600)),
+                                fontSize: 14, fontWeight: FontWeight.w600)),
                         const SizedBox(height: 3),
                         Text(subtitle,
                             style: const TextStyle(

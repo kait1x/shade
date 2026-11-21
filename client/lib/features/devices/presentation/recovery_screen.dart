@@ -41,6 +41,11 @@ class NativeRecoveryScreen extends StatefulWidget {
   State<NativeRecoveryScreen> createState() => _NativeRecoveryScreenState();
 }
 
+Future<bool> saveNativeRecoveryFile(String json) async =>
+    await const MethodChannel('com.shade.app/security')
+        .invokeMethod<bool>('saveRecoveryPackage', {'json': json}) ??
+    false;
+
 enum _RecoveryStage { form, done }
 
 /// Честные русские тексты ошибок восстановления (зеркало recoveryErrors
@@ -179,7 +184,8 @@ class _NativeRecoveryScreenState extends State<NativeRecoveryScreen> {
     } catch (_) {
       throw ProtocolException('bad_package_json');
     }
-    check(decoded is Map && decoded['backup'] is Map && decoded['genesis'] is Map,
+    check(
+        decoded is Map && decoded['backup'] is Map && decoded['genesis'] is Map,
         'bad_package_shape');
     final pkg = Map<String, dynamic>.from(decoded as Map);
     final genesis = Map<String, dynamic>.from(pkg['genesis'] as Map);
@@ -253,8 +259,7 @@ class _NativeRecoveryScreenState extends State<NativeRecoveryScreen> {
       setState(() => _error = 'Выберите файл recovery-пакета.');
       return;
     }
-    final phrase =
-        _recoveryPhrase.text.trim().replaceAll(RegExp(r'\s+'), ' ');
+    final phrase = _recoveryPhrase.text.trim().replaceAll(RegExp(r'\s+'), ' ');
     if (phrase.length < 24) {
       setState(() => _error =
           'Введите recovery-фразу из пакета: 8 слов, не менее 24 символов.');
@@ -266,8 +271,8 @@ class _NativeRecoveryScreenState extends State<NativeRecoveryScreen> {
       _stepId = 'unlock';
     });
     try {
-      final result = await widget.repository
-          .recoverWithBackup(pkg, phrase, onStep: (step) {
+      final result = await widget.repository.recoverWithBackup(pkg, phrase,
+          onStep: (step) {
         if (mounted) setState(() => _stepId = step);
       });
       // Успех: секретные поля очищаются — фразы не остаются в памяти UI.
@@ -367,7 +372,8 @@ class _NativeRecoveryScreenState extends State<NativeRecoveryScreen> {
             color: ShadeColors.surfaceCard,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: ShadeColors.greyBorder, width: 0.5)),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        child:
+            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           const Text('Recovery-пакет',
               style: TextStyle(
                   fontSize: 12,
@@ -396,8 +402,7 @@ class _NativeRecoveryScreenState extends State<NativeRecoveryScreen> {
                       size: 16, color: ShadeColors.textSecondary),
                   const SizedBox(width: 8),
                   Expanded(
-                      child: Text(
-                          '$_fileName · @$_packageAccount',
+                      child: Text('$_fileName · @$_packageAccount',
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                               fontSize: 12.5,
@@ -413,7 +418,8 @@ class _NativeRecoveryScreenState extends State<NativeRecoveryScreen> {
             autocorrect: false,
             keyboardType: TextInputType.visiblePassword,
             textInputAction: TextInputAction.done,
-            style: const TextStyle(color: ShadeColors.textPrimary, fontSize: 14),
+            style:
+                const TextStyle(color: ShadeColors.textPrimary, fontSize: 14),
             decoration: pairingInputDecoration('Recovery-фраза',
                 hint: '8 слов, записанных при регистрации'),
             onChanged: (_) {
@@ -423,15 +429,16 @@ class _NativeRecoveryScreenState extends State<NativeRecoveryScreen> {
           Align(
               alignment: Alignment.centerRight,
               child: TextButton.icon(
-                onPressed: () => setState(
-                    () => _showRecoveryPhrase = !_showRecoveryPhrase),
+                onPressed: () =>
+                    setState(() => _showRecoveryPhrase = !_showRecoveryPhrase),
                 icon: Icon(
                     _showRecoveryPhrase
                         ? Icons.visibility_off_outlined
                         : Icons.visibility_outlined,
                     size: 18,
                     color: ShadeColors.textMuted),
-                label: Text(_showRecoveryPhrase ? 'Скрыть фразу' : 'Показать фразу',
+                label: Text(
+                    _showRecoveryPhrase ? 'Скрыть фразу' : 'Показать фразу',
                     style: const TextStyle(
                         fontSize: 12.5, color: ShadeColors.textMuted)),
               )),
@@ -506,7 +513,8 @@ class _NativeRecoveryScreenState extends State<NativeRecoveryScreen> {
       const Text(
           'Recovery-пакет и фраза продолжают действовать — храните их вне устройства.',
           textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 12, height: 1.5, color: ShadeColors.textMuted)),
+          style: TextStyle(
+              fontSize: 12, height: 1.5, color: ShadeColors.textMuted)),
     ]);
   }
 

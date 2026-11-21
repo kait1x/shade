@@ -55,14 +55,13 @@ class _PairingNewDeviceScreenState extends State<PairingNewDeviceScreen> {
     super.dispose();
   }
 
-  bool get _offerExpired =>
-      _offerExpiresAt != null && _now >= _offerExpiresAt!;
+  bool get _offerExpired => _offerExpiresAt != null && _now >= _offerExpiresAt!;
 
   Future<void> _createOffer() async {
     final code = _codeInput.text.trim();
     if (code.isEmpty) {
-      setState(() =>
-          _error = 'Введите код подключения с доверенного устройства.');
+      setState(
+          () => _error = 'Введите код подключения с доверенного устройства.');
       return;
     }
     setState(() {
@@ -70,8 +69,7 @@ class _PairingNewDeviceScreenState extends State<PairingNewDeviceScreen> {
       _error = null;
     });
     try {
-      final result =
-          await widget.repository.startPairing(challengeCode: code);
+      final result = await widget.repository.startPairing(challengeCode: code);
       if (!mounted) return;
       setState(() {
         _stage = _NewStage.offer;
@@ -90,8 +88,8 @@ class _PairingNewDeviceScreenState extends State<PairingNewDeviceScreen> {
   Future<void> _complete() async {
     final text = _confirmationInput.text.trim();
     if (text.isEmpty) {
-      setState(() => _error =
-          'Вставьте подтверждение с доверенного устройства.');
+      setState(
+          () => _error = 'Вставьте подтверждение с доверенного устройства.');
       return;
     }
     setState(() {
@@ -104,13 +102,15 @@ class _PairingNewDeviceScreenState extends State<PairingNewDeviceScreen> {
       // Долговечная фиксация origin/account/cookie: restore() после перезапуска
       // поднимает вторичное устройство без v1-профиля (как recovery-экран).
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('alpha_v2_origin', widget.repository.transport.origin);
       await prefs.setString(
-          'alpha_v2_account', result['account'] as String? ?? widget.repository.account);
+          'alpha_v2_origin', widget.repository.transport.origin);
+      await prefs.setString('alpha_v2_account',
+          result['account'] as String? ?? widget.repository.account);
       const secure = FlutterSecureStorage(
           aOptions: AndroidOptions(encryptedSharedPreferences: true));
       final cookie = widget.repository.transport.sessionCookie;
-      if (cookie != null) await secure.write(key: 'alpha_v2_cookie', value: cookie);
+      if (cookie != null)
+        await secure.write(key: 'alpha_v2_cookie', value: cookie);
       if (!mounted) return;
       setState(() {
         _stage = _NewStage.done;
@@ -138,12 +138,14 @@ class _PairingNewDeviceScreenState extends State<PairingNewDeviceScreen> {
         appBar: AppBar(
             backgroundColor: ShadeColors.black,
             title: const Text('Новое устройство',
-                style: TextStyle(color: ShadeColors.textPrimary, fontSize: 17))),
+                style:
+                    TextStyle(color: ShadeColors.textPrimary, fontSize: 17))),
         body: SafeArea(
             child: Center(
                 child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 640),
-                    child: ListView(padding: const EdgeInsets.all(20), children: [
+                    child:
+                        ListView(padding: const EdgeInsets.all(20), children: [
                       if (_error != null) PairingErrorBanner(_error!),
                       switch (_stage) {
                         _NewStage.code => _buildCode(),
@@ -158,10 +160,7 @@ class _PairingNewDeviceScreenState extends State<PairingNewDeviceScreen> {
       const PairingHeading(
           title: 'Подключение к аккаунту',
           description:
-              'Введите одноразовый код с экрана доверенного устройства '
-              '(24 символа, действует 5 минут). Ключи этого устройства '
-              'создаются локально и никуда не отправляются; запрос '
-              'подключения будет подписан и привязан к коду.'),
+              'Введите код, который показывает устройство, где вы уже вошли в Shade. Код действует 5 минут.'),
       TextField(
           controller: _codeInput,
           enabled: !_busy,
@@ -247,8 +246,12 @@ class _PairingNewDeviceScreenState extends State<PairingNewDeviceScreen> {
               ? 'Каталог сервера проверен против закреплённого genesis '
                   '(ревизия $_revision). Ключи устройства и состояние '
                   'аккаунта сохранены на этом устройстве.'
-              : 'Подключение уже было завершено ранее. Ключи устройства и '
-                  'состояние аккаунта сохранены на этом устройстве.'),
+              : 'Ключи аккаунта сохранены на этом устройстве.'),
+      const SizedBox(height: 16),
+      PairingPrimaryButton(
+        label: 'Открыть чаты',
+        onPressed: () => Navigator.of(context).pop(true),
+      ),
       if (fingerprint != null)
         PairingCodeCard(
             label: 'Отпечаток genesis (сверьте с доверенным устройством)',

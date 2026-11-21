@@ -29,8 +29,13 @@ abstract class AlphaV2Backend {
   int? get leaseExpiresAt;
   Future<String> requestGoogleIdToken(String origin);
   Future<void> connect(String origin, String idToken);
+  bool get registrationPending;
+  V2ChatRepository? get pairingRepository;
+  Future<Map<String, dynamic>> register(
+      String account, String recoveryPassphrase);
   Future<void> connectWithLegacyKey(String origin);
   Future<Map<String, dynamic>> enroll(String recoveryPassphrase);
+
   /// Аккаунт требует RSA-rotation (v1 RSA-2048 → v2 RSA-4096) до enrollment.
   bool get rotationPending;
   Future<List<Map<String, dynamic>>> contacts();
@@ -66,6 +71,20 @@ class RealAlphaV2Backend implements AlphaV2Backend {
   String? _root;
   String? _privateKey;
   bool _rotationPending = false;
+  String? _registrationOrigin;
+  @override
+  bool get registrationPending => _registrationOrigin != null;
+
+  @override
+  V2ChatRepository? get pairingRepository {
+    final repo = _repo;
+    return !registrationPending &&
+            repo != null &&
+            !repo.enrolled &&
+            repo.root.isEmpty
+        ? repo
+        : null;
+  }
 
   RealAlphaV2Backend({required this.crypto, required this.database});
 
@@ -79,7 +98,8 @@ class RealAlphaV2Backend implements AlphaV2Backend {
 
   void _attachSignals() {
     _transport?.onTyping = (account, until) => onTyping?.call(account, until);
-    _transport?.onPresence = (account, online) => onPresence?.call(account, online);
+    _transport?.onPresence =
+        (account, online) => onPresence?.call(account, online);
   }
 
   @override
@@ -208,41 +228,79 @@ class RealAlphaV2Backend implements AlphaV2Backend {
 
   @override
   Future<void> connect(String origin, String idToken) async {
-    final publicKey = await crypto.getPublicKey();
-    final privateKey = await crypto.getPrivateKey();
-    if (publicKey == null || privateKey == null) {
-      throw StateError('Сначала создайте профиль Shade на этом устройстве.');
-    }
-    final transport = AlphaTransport(origin, crypto);
     final nonce = _loginNonce;
-    if (nonce == null) {
+    if (nonce == null) throw StateError('Сначала войдите через Google.');
+    final transport = AlphaTransport(origin, crypto);
+    try {
+      final session = await transport.loginWithGoogleIdToken(idToken, nonce);
+      final account = session['account'] as String?;
+      final store = V2Store(database);
+      final profile = account == null ? null : await store.loadAccount(account);
+      if (profile == null) {
+        final pending =
+            account == null ? null : await store.loadEnrollmentJournal(account);
+        if (account != null && pending?['phase'] != 'registering') {
+          _repo = V2ChatRepository.pairing(
+            transport: transport,
+            crypto: crypto,
+            store: store,
+            account: account,
+          );
+          _registrationOrigin = null;
+        } else {
+          _repo = null;
+          _registrationOrigin = origin;
+        }
+        _account = account;
+      } else {
+        final repo = V2ChatRepository.pairing(
+            transport: transport,
+            crypto: crypto,
+            store: store,
+            account: account!);
+        final legacy = profile['sessionId'] == 'primary';
+        if (legacy) repo.privateKey = await crypto.getPrivateKey() ?? '';
+        await repo.load();
+        await _saveSession(origin, account, transport);
+        _repo = repo;
+        _account = account;
+        _registrationOrigin = null;
+      }
+      _transport?.dispose();
+      _transport = transport;
+      _attachSignals();
+    } catch (_) {
       transport.dispose();
-      throw StateError('Сначала запросите Google ID token.');
+      rethrow;
     }
-    final session = await transport.loginWithGoogleIdToken(idToken, nonce);
-    final account = session['account'] as String?;
-    if (account == null) {
-      transport.dispose();
-      throw StateError(
-          'Google-аккаунт не найден в alpha-реестре. Нужен явный импорт legacy-аккаунта оператором alpha.');
-    }
-    _account = account;
-    _root = await publicSpki(publicKey);
-    _privateKey = privateKey;
-    _transport = transport;
-    _attachSignals();
-    _repo = V2ChatRepository(
-        transport: transport,
-        crypto: crypto,
-        store: V2Store(database),
-        account: account,
-        root: _root!,
-        privateKey: privateKey);
-    await _repo!.load();
+  }
+
+  Future<void> _saveSession(
+      String origin, String account, AlphaTransport transport) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('alpha_v2_origin', origin);
     await prefs.setString('alpha_v2_account', account);
     await _secure.write(key: 'alpha_v2_cookie', value: transport.sessionCookie);
+  }
+
+  @override
+  Future<Map<String, dynamic>> register(
+      String account, String recoveryPassphrase) async {
+    final origin = _registrationOrigin;
+    final transport = _transport;
+    if (origin == null || transport == null)
+      throw StateError('Сначала войдите через Google.');
+    final repo = V2ChatRepository.pairing(
+        transport: transport,
+        crypto: crypto,
+        store: V2Store(database),
+        account: account);
+    final recovery = await repo.registerNewAccount(recoveryPassphrase);
+    await _saveSession(origin, account, transport);
+    _repo = repo;
+    _account = account;
+    _registrationOrigin = null;
+    return recovery;
   }
 
   @override
@@ -295,7 +353,8 @@ class RealAlphaV2Backend implements AlphaV2Backend {
     await prefs.setString('alpha_v2_origin', origin);
     await prefs.setString('alpha_v2_account', account);
     if (!rotationPending) {
-      await _secure.write(key: 'alpha_v2_cookie', value: transport.sessionCookie);
+      await _secure.write(
+          key: 'alpha_v2_cookie', value: transport.sessionCookie);
     }
   }
 
@@ -312,8 +371,7 @@ class RealAlphaV2Backend implements AlphaV2Backend {
       final operation = operationDigest('legacy-session', null);
       final proof = await crypto.signData(
           requestText(_account!, 'primary', nonce, operation), repo.privateKey);
-      final session =
-          await transport.legacySession(_account!, nonce, proof);
+      final session = await transport.legacySession(_account!, nonce, proof);
       if (session['account'] != _account) {
         throw StateError('Сервер вернул другой аккаунт; вход отклонён.');
       }
@@ -350,7 +408,8 @@ class RealAlphaV2Backend implements AlphaV2Backend {
       _requireRepo.isPeerUpgradeBlocked(peer);
 
   @override
-  Future<void> send(String peer, String text, {Map<String, dynamic>? reply}) async {
+  Future<void> send(String peer, String text,
+      {Map<String, dynamic>? reply}) async {
     await _requireRepo.sendMessage(peer, text, reply: reply);
   }
 
@@ -367,7 +426,9 @@ class RealAlphaV2Backend implements AlphaV2Backend {
   @override
   Future<List<Map<String, dynamic>>> delivery(String ref) async {
     final result = await _requireRepo.refreshDelivery([ref]);
-    return result.isEmpty ? [] : result.first['devices'] as List<Map<String, dynamic>>;
+    return result.isEmpty
+        ? []
+        : result.first['devices'] as List<Map<String, dynamic>>;
   }
 
   @override

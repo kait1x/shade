@@ -41,7 +41,13 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   try {
     const request = JSON.parse(line);
     let result;
-    if (request.action === 'init-bridge') {
+    if (request.action === 'init-registration') {
+      const build = path.resolve('../server/build');
+      await fs.mkdir(build, { recursive: true });
+      const dataDir = await fs.mkdtemp(path.join(build, 'alpha-registration-'));
+      f = await fixture({ dataDir, storageSecret: randomBytes(32).toString('hex') });
+      result = { origin: f.origin, cookie: await f.login('synthetic-native') };
+    } else if (request.action === 'init-bridge') {
       // Full v1->v2 bridge E2E: synthetic v1 store in the REAL at-rest format,
       // operator CLI prepare, alpha with read-only legacySource, Google-linked
       // legacy account. Dart enrolls and drains the bridged v1 queue.

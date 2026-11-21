@@ -7,9 +7,12 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:fast_rsa/fast_rsa.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -22,8 +25,10 @@ import 'package:shade/core/services/device_v2/store.dart';
 import 'package:shade/core/services/device_v2/sync.dart';
 import 'package:shade/core/services/device_v2/transport.dart';
 import 'package:shade/core/theme/shade_theme.dart';
+import 'package:shade/core/widgets/shade_logo.dart';
 import 'package:shade/features/v2/presentation/v2_chat_screen.dart';
 import 'package:shade/features/v2/presentation/v2_chats_screen.dart';
+import 'package:shade/features/v2/presentation/v2_connect_screen.dart';
 import 'package:shade/features/v2/presentation/v2_devices_screen.dart';
 import 'package:shade/features/v2/presentation/v2_profile_screen.dart';
 import 'package:shade/features/v2/presentation/v2_providers.dart';
@@ -295,6 +300,39 @@ class _ScriptedTransport extends AlphaTransport {
 }
 
 void main() {
+  testWidgets('v2 welcome uses the full height of a tall phone', (tester) async {
+    final view = tester.view;
+    view.physicalSize = const Size(393, 920);
+    view.devicePixelRatio = 1;
+    addTearDown(view.resetPhysicalSize);
+    addTearDown(view.resetDevicePixelRatio);
+    await tester.pumpWidget(_wrap(FakeSync(), const V2ConnectScreen()));
+    await tester.pumpAndSettle();
+    expect(tester.getRect(find.text('shade')).top, lessThan(90));
+    expect(tester.getRect(find.text('Как используется Google-аккаунт')).bottom, greaterThan(820));
+    expect(find.widgetWithText(FilledButton, 'Продолжить с Google').hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('branded v2 welcome fits a narrow phone and needs no form fields',
+      (tester) async {
+    final view = tester.view;
+    view.physicalSize = const Size(320, 640);
+    view.devicePixelRatio = 1;
+    addTearDown(view.resetPhysicalSize);
+    addTearDown(view.resetDevicePixelRatio);
+    await tester.pumpWidget(_wrap(FakeSync(), const V2ConnectScreen()));
+    await tester.pumpAndSettle();
+    expect(find.text('Свои люди.\nЛичные разговоры.'), findsOneWidget);
+    expect(find.byType(ShadeLogo), findsNWidgets(2));
+    final google = find.widgetWithText(FilledButton, 'Продолжить с Google');
+    expect(google, findsOneWidget);
+    expect(tester.getRect(google).bottom, lessThan(640));
+    expect(find.text('Восстановить доступ'), findsOneWidget);
+    expect(find.byType(TextField), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
   TestWidgetsFlutterBinding.ensureInitialized();
   sqfliteFfiInit();
 
@@ -543,7 +581,7 @@ void main() {
     expect(find.text('Сообщение отозвано'), findsOneWidget);
   });
 
-  testWidgets('профиль: имя, ключ, genesis digest, каталог и устройства',
+  testWidgets('профиль: быстрые действия, копирование кода и сведения об устройствах',
       (tester) async {
     final sync = FakeSync()
       ..profileView = V2ProfileView(
@@ -554,27 +592,78 @@ void main() {
           leaseExpiresAt: now + 86400000,
           deviceCount: 2,
           sessionId: 'primary');
-    await tester.pumpWidget(_wrap(sync, const V2ProfileScreen()));
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(393, 850);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    final capturePath = Platform.environment['SHADE_PROFILE_CAPTURE'];
+    if (capturePath != null) {
+      await tester.runAsync(() async {
+        await (FontLoader('Roboto')
+              ..addFont(rootBundle.load('fonts/Roboto/Roboto-Regular.ttf'))
+              ..addFont(rootBundle.load('fonts/Roboto/Roboto-Bold.ttf')))
+            .load();
+        await (FontLoader('MaterialIcons')
+              ..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf')))
+            .load();
+      });
+    }
+    const captureKey = Key('profile-preview');
+    await tester.pumpWidget(_wrap(sync, const RepaintBoundary(key: captureKey, child: V2ProfileScreen())));
     await tester.pumpAndSettle();
 
-    expect(find.text('@native_android'), findsOneWidget);
-    expect(find.text('ab' * 32), findsOneWidget);
+    if (capturePath != null) {
+      final boundary = tester.renderObject<RenderRepaintBoundary>(find.byKey(captureKey));
+      await tester.runAsync(() async {
+        final image = await boundary.toImage(pixelRatio: 2);
+        try {
+          final png = (await image.toByteData(format: ui.ImageByteFormat.png))!;
+          await File(capturePath).writeAsBytes(png.buffer.asUint8List());
+        } finally {
+          image.dispose();
+        }
+      });
+    }
+
+    expect(find.text('Native_android'), findsOneWidget);
+    expect(find.text('@native_android'), findsNWidgets(2));
+    expect(find.text('Код безопасности'), findsOneWidget);
+    expect(find.text('cd' * 32), findsNothing);
+
+    String? copied;
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') copied = (call.arguments as Map)['text'] as String;
+      return null;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(SystemChannels.platform, null));
+
+    await tester.tap(find.text('Скопировать'));
+    await tester.pumpAndSettle();
+    expect(copied, '@native_android');
+    await tester.tap(find.text('Мой ключ'));
+    await tester.pumpAndSettle();
     expect(find.text('cd' * 32), findsOneWidget);
-    // Нижние строки профиля — за пределами первого экрана: скроллим.
-    final scrollable = find.byType(Scrollable).first;
-    await tester.scrollUntilVisible(find.textContaining('Ревизия 3'), 200,
-        scrollable: scrollable);
+    await tester.tap(find.text('Скопировать код'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('Ревизия 3'), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('2 в каталоге'), 200,
-        scrollable: scrollable);
+    expect(copied, 'cd' * 32);
+    await tester.tap(find.text('Отпечаток ключа аккаунта'));
     await tester.pumpAndSettle();
+    expect(find.text('ab' * 32), findsOneWidget);
+    Navigator.of(tester.element(find.text('Скопировать код'))).pop();
+    await tester.pumpAndSettle();
+    final messengerState = ScaffoldMessenger.of(tester.element(find.byType(V2ProfileScreen)));
+    messengerState.clearSnackBars();
+    messengerState.removeCurrentSnackBar();
+    await tester.pumpAndSettle();
+    final details = find.text('Сведения об устройствах');
+    await tester.scrollUntilVisible(details, 150, scrollable: find.byType(Scrollable).first);
+    await Scrollable.ensureVisible(tester.element(details), alignment: .5);
+    await tester.pumpAndSettle();
+    await tester.tap(details);
+    await tester.pumpAndSettle();
+    expect(find.text('Ревизия 3'), findsOneWidget);
     expect(find.text('2 в каталоге'), findsOneWidget);
-    await tester.scrollUntilVisible(
-        find.text('Основное устройство (primary)'), 200,
-        scrollable: scrollable);
-    await tester.pumpAndSettle();
-    expect(find.text('Основное устройство (primary)'), findsOneWidget);
   });
 
   testWidgets('устройства: ростер, текущее устройство, сверка и error',
@@ -593,8 +682,7 @@ void main() {
     expect(find.text('Это устройство'), findsOneWidget);
     expect(find.text('Устройство aaaaaaaa…'), findsOneWidget);
     // Навигационные точки в существующие pairing-экраны.
-    expect(find.text('Подключить новое устройство'), findsOneWidget);
-    expect(find.text('Подтвердить подключение'), findsOneWidget);
+    expect(find.text('Подключить другое устройство'), findsOneWidget);
 
     await tester.tap(find.byTooltip('Сверить с сервером'));
     await tester.pumpAndSettle();

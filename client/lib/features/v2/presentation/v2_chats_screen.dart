@@ -56,8 +56,8 @@ class V2ChatsScreen extends ConsumerWidget {
                     prefixIcon: Icon(Icons.search_rounded,
                         color: ShadeColors.textMuted, size: 22),
                     isDense: true,
-                    contentPadding: EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 12)))),
+                    contentPadding:
+                        EdgeInsets.symmetric(horizontal: 16, vertical: 12)))),
         Expanded(child: _content(context, ref, state, notifier, account)),
       ]),
     );
@@ -120,17 +120,18 @@ class V2ChatsScreen extends ConsumerWidget {
     final digestController = TextEditingController();
     var error = '';
     var busy = false;
-    await showDialog<void>(
+    final peer = await showDialog<String>(
         context: context,
         builder: (ctx) => StatefulBuilder(
             builder: (ctx, setDialogState) => AlertDialog(
                   title: const Text('Новый чат'),
+                  scrollable: true,
                   content: Column(
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         const Text(
-                            'Сверьте genesis digest собеседника вне relay (лично или по другому каналу). До подтверждения отправка и приём заблокированы.',
+                            'Попросите друга скопировать код из профиля Shade и передать вам лично или через другой мессенджер.',
                             style: TextStyle(
                                 fontSize: 13,
                                 color: ShadeColors.textSecondary,
@@ -141,8 +142,8 @@ class V2ChatsScreen extends ConsumerWidget {
                             controller: accountController,
                             autocorrect: false,
                             decoration: const InputDecoration(
-                                labelText: 'Аккаунт',
-                                hintText: 'name_3–32')),
+                                labelText: 'Никнейм друга',
+                                hintText: '@никнейм')),
                         const SizedBox(height: 12),
                         TextField(
                             key: const Key('new-chat-digest'),
@@ -150,8 +151,8 @@ class V2ChatsScreen extends ConsumerWidget {
                             autocorrect: false,
                             maxLines: 2,
                             decoration: const InputDecoration(
-                                labelText: 'Genesis digest (SHA-256)',
-                                hintText: '64 hex-символа')),
+                                labelText: 'Код из профиля друга',
+                                hintText: 'Вставьте скопированный код')),
                         if (error.isNotEmpty) ...[
                           const SizedBox(height: 12),
                           Text(error,
@@ -162,26 +163,28 @@ class V2ChatsScreen extends ConsumerWidget {
                       ]),
                   actions: [
                     TextButton(
-                        onPressed:
-                            busy ? null : () => Navigator.pop(ctx),
+                        onPressed: busy ? null : () => Navigator.pop(ctx),
                         child: const Text('Отмена')),
                     FilledButton(
                         key: const Key('new-chat-submit'),
                         onPressed: busy
                             ? null
                             : () async {
-                                final peer =
-                                    accountController.text.trim().toLowerCase();
-                                final digest =
-                                    digestController.text.trim().toLowerCase();
+                                final peer = accountController.text
+                                    .trim()
+                                    .toLowerCase()
+                                    .replaceFirst(RegExp(r'^@'), '');
+                                final digest = digestController.text
+                                    .toLowerCase()
+                                    .replaceAll(RegExp(r'\s+'), '');
                                 if (!accountPattern.hasMatch(peer)) {
                                   setDialogState(() => error =
-                                      'Аккаунт: 3–32 символа a–z, 0–9, _');
+                                      'Проверьте никнейм. Можно использовать латинские буквы, цифры и подчёркивания.');
                                   return;
                                 }
                                 if (!hex64Pattern.hasMatch(digest)) {
                                   setDialogState(() => error =
-                                      'Genesis digest: 64 hex-символа');
+                                      'Вставьте код целиком. Он состоит из 64 символов.');
                                   return;
                                 }
                                 setDialogState(() {
@@ -192,13 +195,14 @@ class V2ChatsScreen extends ConsumerWidget {
                                   await ref
                                       .read(v2ChatListProvider.notifier)
                                       .addContact(peer, digest);
-                                  if (ctx.mounted) Navigator.pop(ctx);
+                                  if (ctx.mounted) Navigator.pop(ctx, peer);
                                 } catch (e) {
+                                  if (!ctx.mounted) return;
                                   setDialogState(() {
                                     busy = false;
                                     error = '$e'.contains('mismatch')
-                                        ? 'Genesis digest не совпадает с каталогом сервера. Сверьте значение с собеседником.'
-                                        : 'Не удалось подтвердить контакт: $e';
+                                        ? 'Код не совпал. Попросите друга скопировать его ещё раз.'
+                                        : 'Не удалось подтвердить контакт. Проверьте никнейм и подключение к интернету.';
                                   });
                                 }
                               },
@@ -206,11 +210,12 @@ class V2ChatsScreen extends ConsumerWidget {
                             ? const SizedBox.square(
                                 dimension: 18,
                                 child: ShadeLoadingIndicator(strokeWidth: 2))
-                            : const Text('Сверить и добавить')),
+                            : const Text('Открыть чат')),
                   ],
                 )));
     accountController.dispose();
     digestController.dispose();
+    if (context.mounted && peer != null) context.push('/chat/$peer');
   }
 }
 

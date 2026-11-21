@@ -14,6 +14,8 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.shade.app/security"
     private val PICK_RECOVERY_REQUEST = 4711
     private var pendingPick: MethodChannel.Result? = null
+    private val SAVE_RECOVERY_REQUEST = 4712
+    private var pendingSave: Pair<MethodChannel.Result, ByteArray>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,10 +74,31 @@ class MainActivity : FlutterActivity() {
                     excludeFromRecents()
                     result.success(null)
                 }
+                "saveRecoveryPackage" -> {
+                    val bytes = call.argument<String>("json")?.toByteArray(Charsets.UTF_8)
+                    if (bytes == null || bytes.isEmpty() || bytes.size > 1024 * 1024) {
+                        result.error("INVALID_RECOVERY_FILE", "Неверный размер файла восстановления", null)
+                    } else if (pendingPick != null || pendingSave != null) {
+                        result.error("FILE_DIALOG_IN_PROGRESS", "Диалог файлов уже открыт", null)
+                    } else {
+                        pendingSave = Pair(result, bytes)
+                        try {
+                            val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                addCategory(Intent.CATEGORY_OPENABLE)
+                                type = "application/json"
+                                putExtra(Intent.EXTRA_TITLE, "shade-recovery.json")
+                            }
+                            startActivityForResult(intent, SAVE_RECOVERY_REQUEST)
+                        } catch (e: Exception) {
+                            pendingSave = null
+                            result.error("SAVE_UNAVAILABLE", "Нет приложения для сохранения файла", null)
+                        }
+                    }
+                }
                 "pickRecoveryPackage" -> {
                     // Системный выбор JSON-пакета восстановления без сторонних
                     // плагинов: ACTION_OPEN_DOCUMENT, байты читаются здесь.
-                    if (pendingPick != null) {
+                    if (pendingPick != null || pendingSave != null) {
                         result.error("PICK_IN_PROGRESS", "Выбор файла уже открыт", null)
                     } else {
                         pendingPick = result
@@ -115,6 +138,23 @@ class MainActivity : FlutterActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == SAVE_RECOVERY_REQUEST) {
+            val (result, bytes) = pendingSave ?: return
+            pendingSave = null
+            val uri = data?.data
+            if (resultCode != RESULT_OK || uri == null) {
+                result.success(false)
+                return
+            }
+            try {
+                contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) }
+                    ?: throw java.io.IOException("No writable output stream")
+                result.success(true)
+            } catch (e: Exception) {
+                result.error("SAVE_FAILED", "Не удалось записать файл", null)
+            }
+            return
+        }
         if (requestCode != PICK_RECOVERY_REQUEST) return
         val result = pendingPick
         pendingPick = null

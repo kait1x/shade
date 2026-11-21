@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:shade/core/widgets/shade_key_identicon.dart';
 import 'package:shade/core/widgets/shade_motion.dart';
 import 'package:shade/features/auth/data/repositories/auth_notifier.dart';
 import 'package:shade/features/stickers/collection.dart';
@@ -353,7 +354,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                           style:
                               const TextStyle(fontSize: 12, color: _kSubtle)),
                       const SizedBox(height: 20),
-                      _KeyIdenticon(bytes: bytes, size: 148),
+                      ShadeKeyIdenticon(bytes: bytes, size: 148),
                       const SizedBox(height: 18),
                       Container(
                           padding: const EdgeInsets.fromLTRB(14, 12, 6, 12),
@@ -637,7 +638,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
           child: Padding(
               padding: const EdgeInsets.all(16),
               child: Row(children: [
-                _KeyIdenticon(bytes: bytes, size: 52),
+                ShadeKeyIdenticon(bytes: bytes, size: 52),
                 const SizedBox(width: 12),
                 Expanded(
                     child: Column(
@@ -902,48 +903,6 @@ class _Tile extends StatelessWidget {
 }
 
 /// 8x8 grid derived from SHA-256 of the public key (like Telegram secret chats).
-class _KeyIdenticon extends StatelessWidget {
-  final List<int> bytes;
-  final double size;
-  const _KeyIdenticon({required this.bytes, required this.size});
-
-  @override
-  Widget build(BuildContext context) => ClipRRect(
-      borderRadius: BorderRadius.circular(size > 100 ? 14 : 10),
-      child: CustomPaint(
-          size: Size.square(size), painter: _IdenticonPainter(bytes)));
-}
-
-class _IdenticonPainter extends CustomPainter {
-  final List<int> bytes;
-  _IdenticonPainter(this.bytes);
-
-  static const _colors = [
-    Color(0xFF2A2A2A),
-    Color(0xFF5C5C5C),
-    Color(0xFF9E9E9E),
-    Color(0xFFEDEDED),
-  ];
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final cell = size.width / 8;
-    final paint = Paint();
-    for (var i = 0; i < 64; i++) {
-      final byte = bytes[(i ~/ 2) % bytes.length];
-      final nibble = i.isEven ? byte >> 4 : byte & 0x0F;
-      paint.color = _colors[nibble & 0x03];
-      canvas.drawRect(
-          Rect.fromLTWH((i % 8) * cell, (i ~/ 8) * cell, cell + .5, cell + .5),
-          paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _IdenticonPainter oldDelegate) =>
-      oldDelegate.bytes != bytes;
-}
-
 class _FingerprintText extends StatelessWidget {
   final List<int> bytes;
   final double fontSize;

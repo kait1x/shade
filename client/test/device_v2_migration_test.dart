@@ -71,6 +71,51 @@ void main() {
   _RealNetworkBinding();
   sqfliteFfiInit();
 
+  test('clean native registration persists the first device and recovery package', () async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final folder = await Directory.systemTemp.createTemp('shade-native-signup-');
+    final db = await DatabaseService.openForTest(databaseFactoryFfi, '${folder.path}/db');
+    addTearDown(() async {
+      await db.close();
+      await folder.delete(recursive: true);
+    });
+    final process = await Process.start('node', ['../server/tools/alpha-native-transport.mjs']);
+    final lines = StreamIterator(process.stdout.transform(utf8.decoder).transform(const LineSplitter()));
+    final errors = process.stderr.drain<void>();
+    addTearDown(() async {
+      await process.stdin.close();
+      expect(await process.exitCode.timeout(const Duration(seconds: 10)), 0);
+      await lines.cancel();
+      await errors;
+    });
+    expect(await lines.moveNext(), isTrue);
+    process.stdin.writeln(jsonEncode({'action': 'init-registration'}));
+    expect(await lines.moveNext().timeout(const Duration(seconds: 15)), isTrue);
+    final fixture = jsonDecode(lines.current) as Map<String, dynamic>;
+    expect(fixture['ok'], isTrue, reason: fixture['error']?.toString());
+    final info = fixture['result'] as Map<String, dynamic>;
+    final crypto = CryptoService();
+    final transport = AlphaTransport(info['origin'] as String, crypto);
+    transport.sessionCookie = info['cookie'] as String;
+    addTearDown(transport.dispose);
+    final store = V2Store(db);
+    V2ChatRepository repository() => V2ChatRepository.pairing(
+        transport: transport, crypto: crypto, store: store, account: 'native_fresh');
+    expect((await transport.session())['account'], isNull);
+    const phrase = 'synthetic recovery phrase for native registration';
+    final package = await repository().registerNewAccount(phrase);
+    expect((await transport.session())['account'], 'native_fresh');
+    final restored = repository();
+    await restored.load();
+    expect(restored.enrolled, isTrue);
+    expect(restored.session.id, isNot('primary'));
+    expect(restored.session.encryptionKey, isNot(restored.session.signingKey));
+    expect(package['genesis'], restored.accountSnapshot!['genesis']);
+    expect(package['backup'], restored.accountSnapshot!['recovery']);
+    expect(await store.loadEnrollmentJournal('native_fresh'), isNull);
+    await transport.deviceSession('native_fresh', restored.session.id, restored.session.signingPrivateKey);
+  }, timeout: const Timeout(Duration(seconds: 120)));
+
   test('schema v9→v10 upgrade preserves history and adds enrollment journal',
       () async {
     FlutterSecureStorage.setMockInitialValues({});

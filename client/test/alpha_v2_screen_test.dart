@@ -1,14 +1,33 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shade/core/services/crypto_service.dart';
+import 'package:shade/core/services/device_v2/repository.dart';
+import 'package:shade/core/services/device_v2/store.dart';
+import 'package:shade/core/services/device_v2/transport.dart';
+import 'package:shade/core/database/database_service.dart';
 import 'package:shade/features/chats/presentation/widgets/message_input.dart';
 import 'package:shade/features/devices/data/alpha_v2_backend.dart';
 import 'package:shade/features/devices/presentation/alpha_v2_screen.dart';
 
 class FakeBackend implements AlphaV2Backend {
   bool session = false;
+  Future<String>? pendingGoogle;
+  @override
+  bool registrationPending = false;
+  @override
+  V2ChatRepository? pairingRepository;
+  @override
+  Future<Map<String, dynamic>> register(
+      String account, String recoveryPassphrase) async {
+    isEnrolled = true;
+    return {'backup': {}, 'genesis': {}};
+  }
+
   bool isEnrolled = false;
   bool rotation = false;
   String? connectError;
@@ -35,7 +54,8 @@ class FakeBackend implements AlphaV2Backend {
   int? get leaseExpiresAt =>
       isEnrolled ? DateTime.now().millisecondsSinceEpoch + 86400000 : null;
   @override
-  Future<String> requestGoogleIdToken(String origin) async => 'synthetic-id-token';
+  Future<String> requestGoogleIdToken(String origin) =>
+      pendingGoogle ?? Future.value('synthetic-id-token');
   @override
   Future<void> connect(String origin, String idToken) async {
     if (connectError != null) throw StateError(connectError!);
@@ -54,7 +74,11 @@ class FakeBackend implements AlphaV2Backend {
     isEnrolled = true;
     return {
       'revision': 1,
-      'recovery': {'version': 2, 'account': 'native_android', 'publicKey': 'synthetic'},
+      'recovery': {
+        'version': 2,
+        'account': 'native_android',
+        'publicKey': 'synthetic'
+      },
       if (rotation) 'rotated': true
     };
   }
@@ -66,7 +90,8 @@ class FakeBackend implements AlphaV2Backend {
   Future<List<Map<String, dynamic>>> contacts() async => contactList;
   @override
   Future<void> confirmContact(String account, String digest) async {
-    contactList.add({'account': account, 'genesisDigest': digest, 'confirmed': true});
+    contactList
+        .add({'account': account, 'genesisDigest': digest, 'confirmed': true});
   }
 
   @override
@@ -74,7 +99,8 @@ class FakeBackend implements AlphaV2Backend {
   @override
   Future<bool> peerUpgradeBlocked(String peer) async => false;
   @override
-  Future<void> send(String peer, String text, {Map<String, dynamic>? reply}) async {
+  Future<void> send(String peer, String text,
+      {Map<String, dynamic>? reply}) async {
     sent.add(text);
     lastReply = reply;
     messageList.add({
@@ -143,17 +169,21 @@ class FakeBackend implements AlphaV2Backend {
   @override
   Future<int> sync() async => 0;
   @override
-  Future<List<Map<String, dynamic>>> delivery(String ref) async =>
-      [{'deviceId': 'webdevice', 'acknowledgedAt': 123}];
+  Future<List<Map<String, dynamic>>> delivery(String ref) async => [
+        {'deviceId': 'webdevice', 'acknowledgedAt': 123}
+      ];
   @override
   Future<void> renewLease() async {}
   @override
   void dispose() {}
 }
 
-Widget _wrap(AlphaV2Backend backend) => ProviderScope(
-    child: MaterialApp(
-        theme: ThemeData.dark(), home: AlphaV2Screen(backend: backend)));
+Widget _wrap(AlphaV2Backend backend, {bool startWithGoogle = false}) =>
+    ProviderScope(
+        child: MaterialApp(
+            theme: ThemeData.dark(),
+            home: AlphaV2Screen(
+                backend: backend, startWithGoogle: startWithGoogle)));
 
 void main() {
   testWidgets('connect stage validates origin and advances to enrollment',
@@ -161,14 +191,15 @@ void main() {
     final backend = FakeBackend();
     await tester.pumpWidget(_wrap(backend));
     await tester.pumpAndSettle();
-    expect(find.text('Войти через Google'), findsOneWidget);
+    expect(find.text('Продолжить с Google'), findsOneWidget);
 
-    await tester.tap(find.text('Войти через Google'));
+    await tester.enterText(find.byType(TextField).first, 'https://');
+    await tester.tap(find.text('Продолжить с Google'));
     await tester.pumpAndSettle();
     expect(find.textContaining('Укажите origin'), findsOneWidget);
 
     await tester.enterText(find.byType(TextField).first, 'https://alpha.test');
-    await tester.tap(find.text('Войти через Google'));
+    await tester.tap(find.text('Продолжить с Google'));
     await tester.pumpAndSettle();
     expect(backend.session, true);
     expect(find.text('Регистрация устройства'), findsOneWidget);
@@ -188,7 +219,8 @@ void main() {
     expect(find.text('Регистрация устройства'), findsOneWidget);
   });
 
-  testWidgets('enrollment requires a strong phrase and shows the recovery package',
+  testWidgets(
+      'enrollment requires a strong phrase and shows the recovery package',
       (tester) async {
     final backend = FakeBackend()..session = true;
     await tester.pumpWidget(_wrap(backend));
@@ -205,12 +237,83 @@ void main() {
     await tester.tap(find.text('Зарегистрировать устройство'));
     await tester.pumpAndSettle();
     expect(backend.isEnrolled, true);
-    expect(find.text('Сохраните recovery-пакет'), findsOneWidget);
-    expect(find.textContaining('"publicKey": "synthetic"'), findsOneWidget);
+    expect(find.text('Сохраните файл восстановления'), findsOneWidget);
+    expect(find.textContaining('"publicKey": "synthetic"'), findsNothing);
 
-    await tester.tap(find.text('Я сохранил пакет и фразу'));
+    await tester.tap(find.text('Перейти к чатам'));
     await tester.pumpAndSettle();
     expect(find.text('@native_android'), findsOneWidget);
+  });
+
+  testWidgets(
+      'public sign-in opens registration and saves a recovery file without showing JSON',
+      (tester) async {
+    final backend = FakeBackend()..registrationPending = true;
+    Map<dynamic, dynamic>? saved;
+    const channel = MethodChannel('com.shade.app/security');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'saveRecoveryPackage');
+      saved = call.arguments as Map<dynamic, dynamic>;
+      return true;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    await tester.pumpWidget(_wrap(backend, startWithGoogle: true));
+    await tester.pumpAndSettle();
+    expect(find.text('Создать аккаунт Shade v2'), findsOneWidget);
+    expect(find.text('Адрес сервера'), findsNothing);
+    await tester.enterText(find.byType(TextField).first, 'beta_friend');
+    await tester.enterText(
+        find.byType(TextField).last, 'synthetic phrase for beta testing');
+    final submit = find.text('Зарегистрироваться');
+    await tester.ensureVisible(submit);
+    await tester.tap(submit);
+    await tester.pumpAndSettle();
+    expect(find.text('Сохраните файл восстановления'), findsOneWidget);
+    expect(find.byType(SelectableText), findsNothing);
+    await tester.tap(find.text('Сохранить файл'));
+    await tester.pumpAndSettle();
+    expect(saved?['json'], contains('"backup"'));
+    expect(find.text('Файл восстановления сохранён'), findsOneWidget);
+  });
+
+  testWidgets('Google sign-in keeps the branded screen visible while waiting',
+      (tester) async {
+    final token = Completer<String>();
+    final backend = FakeBackend()
+      ..registrationPending = true
+      ..pendingGoogle = token.future;
+    await tester.pumpWidget(_wrap(backend, startWithGoogle: true));
+    await tester.pump();
+    expect(find.text('Свои люди.\nЛичные разговоры.'), findsOneWidget);
+    expect(find.text('Подключаем…'), findsOneWidget);
+    expect(find.text('Вернуться ко входу'), findsOneWidget);
+    token.complete('synthetic-id-token');
+    await tester.pumpAndSettle();
+    expect(find.text('Создать аккаунт Shade v2'), findsOneWidget);
+  });
+
+  testWidgets('Google login on a new device offers pairing without recovery',
+      (tester) async {
+    final crypto = CryptoService();
+    final transport = AlphaTransport('https://alpha.test', crypto);
+    addTearDown(transport.dispose);
+    final repo = V2ChatRepository.pairing(
+      transport: transport,
+      crypto: crypto,
+      store: V2Store(DatabaseService()),
+      account: 'existing_user',
+    );
+    final backend = FakeBackend()..pairingRepository = repo;
+    await tester.pumpWidget(_wrap(backend, startWithGoogle: true));
+    await tester.pumpAndSettle();
+    expect(find.text('Вход на новом устройстве'), findsOneWidget);
+    await tester.tap(find.text('Ввести код подключения'));
+    await tester.pumpAndSettle();
+    expect(find.text('Подключение к аккаунту'), findsOneWidget);
+    expect(find.text('Код подключения'), findsOneWidget);
+    expect(find.text('Фраза для восстановления'), findsNothing);
   });
 
   testWidgets('home lists confirmed contacts and validates the genesis dialog',
@@ -302,8 +405,8 @@ void main() {
             of: find.byType(MessageInput), matching: find.byType(TextField)),
         'ответ');
     await tester.pumpAndSettle();
-    final sendButton = tester.widget<IconButton>(
-        find.byKey(const Key('send-message')));
+    final sendButton =
+        tester.widget<IconButton>(find.byKey(const Key('send-message')));
     expect(sendButton.onPressed, isNotNull, reason: 'send button disabled');
     await tester.tap(find.byKey(const Key('send-message')));
     await tester.pumpAndSettle();
