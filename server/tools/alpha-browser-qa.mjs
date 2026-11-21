@@ -372,6 +372,8 @@ try {
     await b.page.waitForTimeout(3000);
     results.webkitPlatformFlushSettleMs = 3000; // transparent: platform window, not a client fix
   }
+  results.shimBranch = await a.page.evaluate(() => window.__shadeShim || 'missing');
+  results.shimHttp = await a.page.evaluate(() => fetch('/viewport-shim.js').then(r => r.status));
   await b.page.reload(); await unlock(b.page);
   const bobQueueDiag = Object.entries(f.registry.exportSnapshot().queues)
     .filter(([key]) => key.startsWith('browser_bob:'))
@@ -563,6 +565,10 @@ try {
   await a.page.getByText('browser_bob',{exact:false}).first().click();
   // Presence (contract C2) changed the header line: tap whatever it shows.
   await a.page.getByText(/В сети|Личная переписка|печатает…/).first().click();
+  // Пауза оседания semantics-дерева после раскрытия профиля: иначе клик
+  // «Подарить» попадает в перерисовывающийся узел (реальный пользователь тоже
+  // видит профиль до клика).
+  await a.page.waitForTimeout(800);
   await a.page.getByRole('button',{name:'Подарить',exact:true}).click();
   // A transient hiccup leaves the dialog open with the note; the same
   // requestId makes an honest retry idempotent on the server.
@@ -575,10 +581,12 @@ try {
       await noteField.waitFor({state:'visible',timeout:6000});
     } catch {
       await a.page.getByText(/В сети|Личная переписка|печатает…/).first().click().catch(() => {});
+      await a.page.waitForTimeout(800);
       await a.page.getByRole('button',{name:'Подарить',exact:true}).first().click().catch(() => {});
       await noteField.waitFor({state:'visible',timeout:10000});
     }
     await noteField.fill('За помощь с интеграцией!');
+    await a.page.waitForTimeout(400);
     // The Flutter AlertDialog is not an HTML <dialog>; its own button is the
     // last «Подарить» in semantics order (the profile's stays behind it).
     await a.page.getByRole('button',{name:'Подарить',exact:true}).last().click();
@@ -1025,9 +1033,18 @@ try {
   await recChooser.setFiles({name:'shade-recovery-browser_rec.json', mimeType:'application/json', buffer:pkgBuffer});
   await recNew.page.getByText('shade-recovery-browser_rec.json',{exact:false}).waitFor({timeout:30000});
   await recNew.page.getByText('@browser_rec',{exact:false}).first().waitFor();
-  await recNew.page.getByLabel('Recovery-фраза',{exact:true}).fill(recoveryPhraseText);
-  await recNew.page.getByLabel('Фраза устройства ·').fill(phrase);
-  await recNew.page.getByLabel('Повторите фразу устройства').fill(phrase);
+  // Flutter TextField на webkit: fill() пишет в semantics-placeholder, а не в
+  // editing input движка. Честная симуляция пользователя: клик + settle (фокус
+  // движка устанавливается асинхронно) + ввод с клавиатуры. Assertions не меняются.
+  await recNew.page.getByLabel('Recovery-фраза',{exact:true}).click();
+  await recNew.page.waitForTimeout(600);
+  await recNew.page.keyboard.type(recoveryPhraseText);
+  await recNew.page.getByLabel('Фраза устройства ·').click();
+  await recNew.page.waitForTimeout(600);
+  await recNew.page.keyboard.type(phrase);
+  await recNew.page.getByLabel('Повторите фразу устройства').click();
+  await recNew.page.waitForTimeout(600);
+  await recNew.page.keyboard.type(phrase);
   await recNew.page.getByRole('button',{name:'Восстановить аккаунт'}).click();
   await recNew.page.getByText('Личность восстановлена',{exact:true}).waitFor({timeout:120000});
   await recNew.page.getByText('Восстановлена личность и доступ к новым сообщениям',{exact:false}).waitFor();
@@ -1068,6 +1085,7 @@ try {
           contacts: Object.keys(client.state.contacts),
           pendingAck: client.state.pendingAck.length,
           lastError: client.lastError || '',
+          lastSocketError: client.lastSocketError || '',
           connected: client.connected,
           projection: window.__lastProjection || null,
           longTextStatus: ((client.state.messages || []).find(m => (m.text || "").includes("безпробелов")) || {}).status || "none",

@@ -84,6 +84,12 @@ endpoints не выполнено и не выполняется без отде
   v2-prod (npm ci от shade-v2, chown/go+rX уроки) → reload Caddy с новым блоком
   shadechat.ru→v2 (sslip и alpha не меняются) → smoke обоих origins + baseline
   прода → закрытая бета по allowlist.
+  Deploy-проводка D1: `SHADE_V2_REVERSE_REPLAY_FILE` (v1 shade.service env) и
+  `ALPHA_V2_REVERSE_REPLAY_FILE` (v2 env) обязаны указывать на ОДИН файл вне
+  data-каталогов (например /var/lib/shade-transition/reverse-replay.json);
+  guard-файл v2→v1 (`ALPHA_V2_GUARD_FILE` / v1 guard path) — существующий механизм,
+  теперь с секцией dialogs. Без этих env ingestion/guard-dialogs выключены
+  (прежнее поведение байт-в-байт).
 - **P2**: физические QA (2 устройства) + browser-QA recovery/pairing/enrollment;
   history.transfer + pruning задеплоены; окно enrollment для v1-юзеров (баннер в
   v1-клиенте + дата cutoff).

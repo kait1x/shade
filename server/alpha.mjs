@@ -246,7 +246,19 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     ? res.status(403).json({ error: 'operation_rejected' }) : next();
   // Browser mutations must be same-origin JSON. Device proofs additionally bind
   // every operation; cookies alone never authorize reading message queues.
-  app.use('/api', rateLimit({ windowMs: 60000, limit: 300, standardHeaders: 'draft-8', legacyHeaders: false }), (req, res, next) => {
+  // Анти-абьюз (posture-решение владельца 21.11): неаутентифицированные запросы
+  // лимитируются по IP (300/мин, не менялось); аутентифицированные — по аккаунту
+  // 600/мин: до 8 устройств аккаунта за одним NAT = легитимный ×8 sync-трафик.
+  // Защита сохраняется: per-account квоты + challenge 240/мин/аккаунт +
+  // одноразовый device-proof на каждую операцию; создание аккаунтов дорогое
+  // (Google OAuth / legacy-proof / enrollment).
+  const accountKey = req => {
+    const s = sessions.get(req.cookies?.[sidName]);
+    const a = s && s.expiresAt > Date.now() ? sessionAccount(s) : null;
+    return a ? `acct:${a}` : null;
+  };
+  app.use('/api', rateLimit({ windowMs: 60000, limit: 600, standardHeaders: 'draft-8', legacyHeaders: false,
+    keyGenerator: req => accountKey(req) || `ip:${req.ip}` }), (req, res, next) => {
     if (req.headers.origin && !originAllowed(req.headers.origin)) return res.status(403).json({ error: 'origin_rejected' });
     if (req.method === 'POST' && !req.is('application/json')) return res.status(415).json({ error: 'json_required' });
     next();
@@ -586,7 +598,11 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   // the nonce is bound to account+device+operation and consumed once, and
   // authorization happens when the device proof is verified.
   const bootstrapChallenges = new Map(); // account -> [{nonce, expiresAt}]
-  app.post('/api/v2/challenge', rateLimit({ windowMs: 60000, limit: 120 }), wrap(async (req, res) => {
+  // Transport-guard над протокольной квотой challenge (240/мин/аккаунт в registry):
+  // 300/мин/аккаунт на маршруте, чтобы отказ квоты приходил как 400 от registry,
+  // а не 429 от лимитера; неаутентифицированные — под IP-лимитом umbrella (300).
+  app.post('/api/v2/challenge', rateLimit({ windowMs: 60000, limit: 300,
+    keyGenerator: accountKey, skip: req => !accountKey(req) }), wrap(async (req, res) => {
     const { account, id, operation } = req.body;
     const session = sessions.get(req.cookies[sidName]);
     const validSession = session && session.expiresAt > Date.now();

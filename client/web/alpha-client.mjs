@@ -197,7 +197,18 @@ export class AlphaClient extends EventTarget {
   async proof(op, body = null) {
     const operation = await digest(op, op === 'send' ? await hash(messageText(body)) : body);
     const { account, id } = this.session;
-    const { nonce } = await api('/api/v2/challenge', { account, id, operation });
+    // Backoff только на квоту challenge (120/мин): это дефицитный ресурс.
+    // Глобальный /api-лимит НЕ ретраим здесь — повторы в насыщенный бакет
+    // сами же его выжигают (death spiral); api() остаётся fail-fast.
+    let nonce;
+    for (let attempt = 0; ; attempt++) {
+      try { ({ nonce } = await api('/api/v2/challenge', { account, id, operation })); break; }
+      catch (error) {
+        const limited = error?.status === 429 || /Слишком много запросов/.test(error?.message || '');
+        if (!limited || attempt >= 3) throw error;
+        await new Promise(resolve => setTimeout(resolve, 1500 * 2 ** attempt));
+      }
+    }
     return { account, id, nonce, proof: await sign(requestText(account, id, nonce, operation), this.session.signing) };
   }
   // Любая операция с сервером сопровождается доказательством владения ключом.
@@ -979,7 +990,9 @@ export class AlphaClient extends EventTarget {
       this.changed(); this.sync().catch(() => {});
     });
     this.socket.on('disconnect', () => { this.connected = false; this.changed(); });
-    this.socket.on('connect_error', () => { this.connected = false; this.changed(); });
+    this.socket.on('connect_error', error => {
+      this.connected = false; this.lastSocketError = error?.message || 'connect_error'; this.changed();
+    });
     for (const event of ['inbox', 'receipts', 'retracted']) this.socket.on(event, () => this.sync().catch(() => {}));
     // Typing/presence (contract C2) and profile hints (B1) are hints only.
     this.socket.on('typing', data => {

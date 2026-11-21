@@ -62,8 +62,9 @@ test('ACK and status are device-scoped; strangers cannot touch other conversatio
     // Carol cannot mark read on a message she never received.
     assert.equal((await operation(f, carol, cc, 'read', [ref])).result.read, 0);
     // Challenge quota is per-account: alice exhausts hers, bob is unaffected.
+    // Quota = 240/min/account (posture-решение владельца 21.11, multi-device NAT).
     const operationHex = 'ab'.repeat(32);
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 240; i++) {
       const reply = await f.request('/api/v2/challenge',
         { account: 'alice_hard', id: alice.session.id, operation: operationHex }, ac);
       assert.equal(reply.response.status, 200);

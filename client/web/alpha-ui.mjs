@@ -93,6 +93,9 @@ async function refreshDialogRouting(peer, force = false) {
   if (dialogRoutingBusy.has(peer)) return;
   const now = Date.now();
   if (!force && now - (dialogRoutingFetchAt.get(peer) || 0) < 15000) return;
+  // Force (открытие чата/wake) тоже троттлируется после первого fetch: иначе
+  // быстрое переключение чатов выжигает квоту challenge и голодит socket-auth.
+  if (force && dialogRoutingCache.has(peer) && now - (dialogRoutingFetchAt.get(peer) || 0) < 5000) return;
   dialogRoutingFetchAt.set(peer, now);
   dialogRoutingBusy.add(peer);
   try {

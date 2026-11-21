@@ -139,11 +139,12 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     challenge(account, id, operation) {
       for (const [key, value] of challenges) if (value.expiresAt <= clock()) challenges.delete(key);
       check(active(state, account, id), 'Revoked or unknown device');
-      check(/^[a-f0-9]{64}$/.test(operation) && challenges.size < 1000, 'Invalid operation or challenge limit');
+      check(/^[a-f0-9]{64}$/.test(operation) && challenges.size < 4000, 'Invalid operation or challenge limit');
       // Per-account quota: one account cannot exhaust the global capacity.
+      // 240/мин/аккаунт (posture-решение владельца 21.11): до 8 устройств за NAT.
       let perAccount = 0;
       for (const value of challenges.values()) if (value.account === account) perAccount++;
-      check(perAccount < 100, 'Challenge quota reached');
+      check(perAccount < 240, 'Challenge quota reached');
       const nonce = randomBytes(32).toString('hex');
       challenges.set(nonce, { account, id, operation, expiresAt: clock() + 60000 });
       return nonce;

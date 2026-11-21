@@ -54,7 +54,7 @@ for p in files:
     digest.update(p.read_bytes())
 # The version digest must cover every cached shell file: a change to e.g.
 # alpha-client.mjs alone would otherwise ship offline without a cache bump.
-for name in ['alpha.html', 'alpha.css', 'alpha-ui.mjs', 'alpha-client.mjs',
+for name in ['alpha.html', 'alpha.css', 'viewport-shim.js', 'alpha-ui.mjs', 'alpha-client.mjs',
              'alpha-storage.mjs', 'device_crypto.mjs', 'device_binding.mjs',
              'recovery-words.mjs', 'pairing.mjs',
              'protocol/device-v2.mjs', 'alpha-manifest.json', 'alpha-sw.js']:
