@@ -914,41 +914,47 @@ export class AlphaClient extends EventTarget {
           const committed = structuredClone(this.state);
           committed.pendingAck = committed.pendingAck.filter(ref => !batch.includes(ref)); await this.save(committed);
         }
-        // Статусы чанков media-записи агрегируются по устройствам (максимум времени ack/read).
-        // Sender-side delivery/read projection: media display records query
-        // their chunk refs and aggregate per-device acknowledgements.
-        const textMessages = this.state.messages.filter(m => m.from === this.session.account && m.status !== 'queued');
-        const mediaRecords = this.state.messages.filter(m => m.from === this.session.account && m.chunkRefs?.length);
-        for (let index = 0; index < textMessages.length; index += 200) {
-          const statuses = await this.operation('status', textMessages.slice(index, index + 200).map(m => m.ref));
-          const committed = structuredClone(this.state);
-          for (const item of committed.messages) if (statuses[item.ref]) item.devices = statuses[item.ref];
-          await this.save(committed);
-        }
-        for (const media of mediaRecords) {
-          const statuses = await this.operation('status', media.chunkRefs);
-          const merged = new Map();
-          for (const ref of media.chunkRefs) {
-            for (const device of statuses[ref] || []) {
-              const current = merged.get(`${device.account}:${device.id}`) || device;
-              merged.set(`${device.account}:${device.id}`, {
-                ...current, acknowledgedAt: current.acknowledgedAt && device.acknowledgedAt
-                  ? Math.max(current.acknowledgedAt, device.acknowledgedAt)
-                  : (current.acknowledgedAt ?? device.acknowledgedAt ?? null),
-                readAt: current.readAt && device.readAt
-                  ? Math.max(current.readAt, device.readAt) : (current.readAt ?? device.readAt ?? null) });
-            }
-          }
-          const committed = structuredClone(this.state);
-          const display = committed.messages.find(item => item.ref === media.ref);
-          if (display) display.devices = [...merged.values()];
-          await this.save(committed);
-        }
+        await this.refreshDelivery();
         if (sendError) throw sendError;
         this.lastError = ''; this.changed();
       } catch (error) { this.lastError = error.message; this.changed(); throw error; }
     });
   }
+  async refreshDelivery() {
+    const sent = this.state.messages.filter(item => item.from === this.session.account);
+    const text = sent.filter(item => !item.chunkRefs && item.status !== 'queued');
+    const media = sent.filter(item => item.chunkRefs?.length);
+    // One signed request per batch of refs, including refs from different photos.
+    const refs = [...new Set([...text.map(item => item.ref), ...media.flatMap(item => item.chunkRefs)])];
+    if (!refs.length) return;
+    const statuses = new Map();
+    for (let index = 0; index < refs.length; index += 200) {
+      const batch = await this.operation('status', refs.slice(index, index + 200));
+      for (const [ref, devices] of Object.entries(batch)) statuses.set(ref, devices);
+    }
+    const next = structuredClone(this.state);
+    const records = new Map(next.messages.map(item => [item.ref, item]));
+    for (const item of text) {
+      if (statuses.has(item.ref)) records.get(item.ref).devices = statuses.get(item.ref);
+    }
+    for (const item of media) {
+      const merged = new Map();
+      for (const ref of item.chunkRefs) {
+        for (const device of statuses.get(ref) || []) {
+          const key = `${device.account}:${device.id}`;
+          const current = merged.get(key) || device;
+          merged.set(key, {
+            ...current,
+            acknowledgedAt: Math.max(current.acknowledgedAt ?? 0, device.acknowledgedAt ?? 0) || null,
+            readAt: Math.max(current.readAt ?? 0, device.readAt ?? 0) || null,
+          });
+        }
+      }
+      records.get(item.ref).devices = [...merged.values()];
+    }
+    await this.save(next);
+  }
+
   // Peer profile metadata (display name + avatar digest) fetched lazily and
   // cached in memory; the relay emits `profile` hints to invalidate.
   async peerMeta(account) {
@@ -969,6 +975,24 @@ export class AlphaClient extends EventTarget {
     const meta = await this.peerMeta(account);
     return { image: meta.image, imageUrl: meta.imageUrl, frame: meta.frame, name: meta.name };
   }
+  scheduleSync() {
+    if (this.stopped) return;
+    this.syncRequested = true;
+    if (this.syncTimer) return;
+    // Socket hints can arrive in bursts (e.g. ACKs for photo chunks).
+    const timer = setTimeout(async () => {
+      this.syncRequested = false;
+      try { await this.sync(); } catch { /* sync already reports failures */ }
+      finally {
+        if (this.syncTimer === timer) {
+          this.syncTimer = null;
+          if (this.syncRequested) this.scheduleSync();
+        }
+      }
+    }, 1000);
+    this.syncTimer = timer;
+  }
+
   // Запуск клиента: первичная синхронизация, Socket.IO с доказательством
   // владения ключом в auth, переподключение с нарастающей задержкой,
   // периодический sync и реакции на visibility/online/offline.
@@ -993,7 +1017,7 @@ export class AlphaClient extends EventTarget {
     this.socket.on('connect_error', error => {
       this.connected = false; this.lastSocketError = error?.message || 'connect_error'; this.changed();
     });
-    for (const event of ['inbox', 'receipts', 'retracted']) this.socket.on(event, () => this.sync().catch(() => {}));
+    for (const event of ['inbox', 'receipts', 'retracted']) this.socket.on(event, () => this.scheduleSync());
     // Typing/presence (contract C2) and profile hints (B1) are hints only.
     this.socket.on('typing', data => {
       if (typeof data?.account !== 'string') return;
@@ -1086,6 +1110,7 @@ export class AlphaClient extends EventTarget {
   // Остановка: сокет, таймер и обработчики окна снимаются.
   stop() {
     this.stopped = true; this.socket?.disconnect(); clearInterval(this.timer);
+    clearTimeout(this.syncTimer); this.syncTimer = null; this.syncRequested = false;
     document.removeEventListener('visibilitychange', this.foreground); window.removeEventListener('online', this.online);
     window.removeEventListener('offline', this.offline);
     document.removeEventListener('visibilitychange', this.hidden); window.removeEventListener('pagehide', this.persistNow);

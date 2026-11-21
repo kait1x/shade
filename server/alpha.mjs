@@ -1,6 +1,6 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
-import { rateLimit as expressRateLimit } from 'express-rate-limit';
+import { ipKeyGenerator, rateLimit as expressRateLimit } from 'express-rate-limit';
 // ZCODE finding: relay budget exhaustion must be distinguishable from an
 // outage by clients — always a JSON body, never the default text/html.
 const rateLimit = opts => expressRateLimit({ ...opts,
@@ -257,8 +257,9 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     const a = s && s.expiresAt > Date.now() ? sessionAccount(s) : null;
     return a ? `acct:${a}` : null;
   };
-  app.use('/api', rateLimit({ windowMs: 60000, limit: 600, standardHeaders: 'draft-8', legacyHeaders: false,
-    keyGenerator: req => accountKey(req) || `ip:${req.ip}` }), (req, res, next) => {
+  app.use('/api', rateLimit({ windowMs: 60000, limit: req => accountKey(req) ? 600 : 300,
+    standardHeaders: 'draft-8', legacyHeaders: false,
+    keyGenerator: req => accountKey(req) || `ip:${ipKeyGenerator(req.ip)}` }), (req, res, next) => {
     if (req.headers.origin && !originAllowed(req.headers.origin)) return res.status(403).json({ error: 'origin_rejected' });
     if (req.method === 'POST' && !req.is('application/json')) return res.status(415).json({ error: 'json_required' });
     next();

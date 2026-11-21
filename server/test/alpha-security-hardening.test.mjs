@@ -50,6 +50,10 @@ test('ACK and status are device-scoped; strangers cannot touch other conversatio
     const ac = await f.login('synthetic-alice'), bc = await f.login('synthetic-bob');
     const cc = await f.login('synthetic-carol');
     await register(f, alice, ac); await register(f, bob, bc); await register(f, carol, cc);
+    const anonymous = await f.request('/api/health');
+    assert.match(anonymous.response.headers.get('ratelimit-policy'), /q=300;/);
+    const authenticated = await f.request('/api/health', undefined, ac);
+    assert.match(authenticated.response.headers.get('ratelimit-policy'), /q=600;/);
     const ref = await sendText(f, alice, bob, ac, 'for bob only');
     // Carol ACKs a ref she was never a recipient of: no-op, bob keeps the message.
     assert.equal((await operation(f, carol, cc, 'ack', [ref])).result.acknowledged, 0);
