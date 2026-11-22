@@ -56,6 +56,20 @@ function decodePayload(payload) {
   } catch { /* JSON-like plain text renders unchanged. */ }
   return { text: payload, reply: null };
 }
+function mergeDeviceProgress(previous, updates) {
+  const merged = new Map(previous.map(device => [`${device.account}:${device.id}`, device]));
+  for (const device of updates) {
+    const key = `${device.account}:${device.id}`;
+    const current = merged.get(key);
+    merged.set(key, {
+      ...device,
+      acknowledgedAt: Math.max(current?.acknowledgedAt ?? 0, device.acknowledgedAt ?? 0) || null,
+      readAt: Math.max(current?.readAt ?? 0, device.readAt ?? 0) || null,
+    });
+  }
+  return [...merged.values()];
+}
+
 // Доступ к закреплённой директории контакта в локальном состоянии.
 const contact = (state, account) => Object.hasOwn(state.contacts, account) ? state.contacts[account] : null;
 const putContact = (state, account, value) => Object.defineProperty(state.contacts, account,
@@ -241,7 +255,25 @@ export class AlphaClient extends EventTarget {
     if (directory.history.at(-1).expiresAt < Date.now() + 3600000) {
       const manifest = await c.approveDevices(pinned.genesis, directory.history,
         directory.history.at(-1).devices, this.session, pinned.checkpoint);
-      await this.operation('install', { manifest }); directory.history.push(manifest);
+      try {
+        await this.operation('install', { manifest });
+        directory.history.push(manifest);
+      } catch (error) {
+        // CAS race (multi-device lease renewal): another device advanced the
+        // directory between our fetch and install. The relay answers with the
+        // distinct stale_directory code — refetch the fresh tip, rebuild the
+        // renewal from it and retry once; converges instead of looping.
+        if ((error.message || '') !== 'stale_directory') throw error;
+        const fresh = await api('/api/session');
+        check(fresh.authenticated && fresh.account === this.session.account, 'google_login_required');
+        const fdir = fresh.directory;
+        await verifyHistory(fdir.history, pinned.root, pinned.checkpoint,
+          fdir.history.at(-1).issuedAt, pinned.genesis);
+        const manifest2 = await c.approveDevices(pinned.genesis, fdir.history,
+          fdir.history.at(-1).devices, this.session, pinned.checkpoint);
+        await this.operation('install', { manifest: manifest2 });
+        directory.history.push(manifest2);
+      }
     }
     const next = structuredClone(this.state); next.own = await this.verifyDirectory(directory, pinned); next.registered = true;
     await this.save(next);
@@ -993,23 +1025,12 @@ export class AlphaClient extends EventTarget {
     }
     const next = structuredClone(this.state);
     const records = new Map(next.messages.map(item => [item.ref, item]));
-    for (const item of text) {
-      if (statuses.has(item.ref)) records.get(item.ref).devices = statuses.get(item.ref);
-    }
-    for (const item of media) {
-      const merged = new Map();
-      for (const ref of item.chunkRefs) {
-        for (const device of statuses.get(ref) || []) {
-          const key = `${device.account}:${device.id}`;
-          const current = merged.get(key) || device;
-          merged.set(key, {
-            ...current,
-            acknowledgedAt: Math.max(current.acknowledgedAt ?? 0, device.acknowledgedAt ?? 0) || null,
-            readAt: Math.max(current.readAt ?? 0, device.readAt ?? 0) || null,
-          });
-        }
-      }
-      records.get(item.ref).devices = [...merged.values()];
+    for (const item of [...text, ...media]) {
+      const record = records.get(item.ref);
+      const updates = (item.chunkRefs || [item.ref]).flatMap(ref => statuses.get(ref) || []);
+      // Expired relay receipts or a partial status response cannot undo
+      // confirmed progress already stored in this vault.
+      record.devices = mergeDeviceProgress(record.devices || [], updates);
     }
     await this.save(next);
   }

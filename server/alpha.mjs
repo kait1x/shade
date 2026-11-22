@@ -19,6 +19,7 @@ const webPush = require('web-push');
 import { createAuthProof } from './auth-proof.js';
 import { createDeviceRegistry, operationDigest, legacyRoot } from './multidevice/registry.mjs';
 import { createV2Stickers } from './multidevice/v2-stickers.mjs';
+import { createAdminServer } from './admin.mjs';
 import { check, ACCOUNT, verify, requestText, hash, manifestText, genesisText, verifyRotation, publicKey } from '../client/web/protocol/device-v2.mjs';
 import { alphaStore } from './multidevice/alpha-store.mjs';
 import { openV1Source, validateLegacyUser } from './multidevice/v1-source.mjs';
@@ -933,9 +934,36 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     console.error(`[alpha] rejected (${code}): ${message.slice(0, 120)}`);
     res.status(code).json({ error: /Google OAuth is not configured/.test(message) ? 'google_not_configured' :
       /Push is not configured/.test(message) ? 'push_not_configured' :
-      /already registered/.test(message) ? 'account_requires_linking' : 'operation_rejected' });
+      /already registered/.test(message) ? 'account_requires_linking' :
+      /Stale directory update/.test(message) ? 'stale_directory' : 'operation_rejected' });
   });
   return { app, server, io, registry, migration,
+    adminOverview({ query, page, onlineOnly }) {
+      const { accounts, queued } = registry.adminSummary();
+      const matching = accounts.filter(({ account }) =>
+        account.includes(query) && (!onlineOnly || onlineCount.has(account)));
+      matching.sort((a, b) => a.account.localeCompare(b.account));
+      const pageSize = 25;
+      const pages = Math.max(1, Math.ceil(matching.length / pageSize));
+      const currentPage = Math.min(page, pages);
+      const offset = (currentPage - 1) * pageSize;
+      return {
+        accounts: accounts.length,
+        online: onlineCount.size,
+        devices: accounts.reduce((count, account) => count + account.devices, 0),
+        queued,
+        uptime: Math.floor(process.uptime()),
+        updatedAt: Date.now(),
+        matches: matching.length,
+        page: currentPage,
+        pages,
+        rows: matching.slice(offset, offset + pageSize).map(account => ({
+          ...account,
+          online: onlineCount.has(account.account),
+          lastSeen: lastSeenAt.get(account.account) || null,
+        })),
+      };
+    },
     async close() {
       clearInterval(cleanup); clearInterval(presenceFlush); clearInterval(sessionsFlush);
       await new Promise(resolve => io.close(resolve));
@@ -986,5 +1014,20 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     instance.close().finally(() => process.exit(1));
   });
   instance.server.listen(port, '127.0.0.1', () => console.log(`Shade alpha listening on loopback port ${port}`));
-  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => instance.close().then(() => process.exit(0)));
+  const adminPort = Number(process.env.ALPHA_ADMIN_PORT || 0);
+  let admin;
+  if (Number.isInteger(adminPort) && adminPort >= 1024 && adminPort <= 65535 && adminPort !== port) {
+    try {
+      admin = await createAdminServer(instance.adminOverview);
+      admin.on('error', error => console.error('Shade admin listener failed:', error.code || 'unknown'));
+      admin.listen(adminPort, '127.0.0.1', () => console.log('Shade admin listening on loopback port', adminPort));
+    } catch (error) {
+      console.error('Shade admin failed to start:', error.code || 'unknown');
+    }
+  }
+  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, async () => {
+    if (admin?.listening) await new Promise(resolve => admin.close(resolve));
+    await instance.close();
+    process.exit(0);
+  });
 }
