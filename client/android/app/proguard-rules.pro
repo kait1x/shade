@@ -12,3 +12,7 @@
 }
 -keep,allowobfuscation,allowshrinking class com.google.gson.reflect.TypeToken
 -keep,allowobfuscation,allowshrinking class * extends com.google.gson.reflect.TypeToken
+
+# Firebase discovers these registrars by their manifest names at startup.
+-keep class com.google.firebase.installations.FirebaseInstallationsKtxRegistrar { public <init>(); }
+-keep class com.google.firebase.messaging.FirebaseMessagingKtxRegistrar { public <init>(); }

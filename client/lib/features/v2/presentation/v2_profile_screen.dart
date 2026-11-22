@@ -56,6 +56,7 @@ class _ProfileBody extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final social = ref.watch(v2SocialProvider);
     final push = ref.watch(androidPushProvider);
+    final email = ref.watch(v2EmailProvider).asData?.value;
     final remote =
         ref.watch(publicProfileProvider(profile.account)).asData?.value;
     final handle = '@${profile.account}';
@@ -128,6 +129,11 @@ class _ProfileBody extends ConsumerWidget {
               subtitle: const Text('Имя пользователя'),
               onTap: () => _copy(context, handle, 'Никнейм скопирован'),
             ),
+            if (email != null && email.isNotEmpty)
+              ListTile(
+                  leading: const Icon(Icons.mail_outline),
+                  title: Text(email),
+                  subtitle: const Text('Google-аккаунт')),
             const Divider(height: 1, indent: 56),
             ListTile(
               leading: const Icon(Icons.phone_android_rounded),

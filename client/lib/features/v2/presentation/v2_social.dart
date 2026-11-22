@@ -131,6 +131,15 @@ final v2SocialProvider = Provider<V2Social?>((ref) {
       ? null
       : V2Social(repo, ref.read(databaseServiceProvider));
 });
+final v2EmailProvider = FutureProvider.autoDispose<String?>((ref) async {
+  final social = ref.watch(v2SocialProvider);
+  if (social == null) return null;
+  final session = await social.repo.transport.session();
+  return session['account'] == social.repo.account
+      ? session['email'] as String?
+      : null;
+});
+
 final publicProfileProvider = FutureProvider.autoDispose
     .family<PublicProfile?, String>((ref, name) async {
   final social = ref.watch(v2SocialProvider);
