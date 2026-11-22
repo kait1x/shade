@@ -8,6 +8,7 @@ import 'package:shade/core/theme/shade_theme.dart';
 import 'package:shade/core/widgets/avatar_view.dart';
 import 'package:shade/core/widgets/shade_key_identicon.dart';
 import 'package:shade/core/widgets/shade_motion.dart';
+import 'package:shade/core/widgets/shade_profile_layout.dart';
 import 'package:shade/core/widgets/shade_ui.dart';
 
 import 'package:shade/features/stickers/collection.dart';
@@ -82,77 +83,22 @@ class _ProfileBody extends ConsumerWidget {
     final localizations = MaterialLocalizations.of(context);
 
     final frame = remote?.frame ?? AvatarFrame.none;
-    final topInset = MediaQuery.paddingOf(context).top;
-    final textScaler = MediaQuery.textScalerOf(context);
 
     return CustomScrollView(
       slivers: [
-        SliverAppBar(
-          pinned: true,
-          stretch: true,
-          backgroundColor: ShadeColors.black,
-          surfaceTintColor: Colors.transparent,
-          expandedHeight:
-              270 + (textScaler.scale(27) - 27) + (textScaler.scale(14) - 14),
-          flexibleSpace: LayoutBuilder(builder: (context, constraints) {
-            final collapsed =
-                constraints.maxHeight <= topInset + kToolbarHeight + 18;
-            return FlexibleSpaceBar(
-              collapseMode: CollapseMode.pin,
-              titlePadding: const EdgeInsetsDirectional.only(
-                  start: 56, end: 16, bottom: 11),
-              expandedTitleScale: 1,
-              title: collapsed
-                  ? Row(children: [
-                      AvatarView(
-                          name: visibleName,
-                          size: 34,
-                          image: remote?.image,
-                          frame: frame),
-                      const SizedBox(width: 10),
-                      Expanded(
-                          child: Text(visibleName,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  fontSize: 16, fontWeight: FontWeight.w700))),
-                    ])
-                  : null,
-              background: ExcludeSemantics(
-                excluding: collapsed,
-                child: Center(
-                  child: Padding(
-                    padding: EdgeInsets.fromLTRB(24, topInset + 52, 24, 20),
-                    child: Column(
-                        mainAxisAlignment: MainAxisAlignment.end,
-                        children: [
-                          ProfileEditorControl(profile.account,
-                              avatar: AvatarView(
-                                  name: visibleName,
-                                  size: 108,
-                                  image: remote?.image,
-                                  frame: frame)),
-                          const SizedBox(height: 12),
-                          Text(visibleName,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  fontSize: 27,
-                                  fontWeight: FontWeight.w700,
-                                  letterSpacing: -.6)),
-                          const SizedBox(height: 6),
-                          Text(handle,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  color: ShadeColors.textSecondary,
-                                  fontSize: 14)),
-                        ]),
-                  ),
-                ),
-              ),
-            );
-          }),
+        ShadeProfileHeader(
+          visibleName: visibleName,
+          handle: handle,
+          smallAvatar: AvatarView(
+              name: visibleName, size: 34, image: remote?.image, frame: frame),
+          largeAvatar: ProfileEditorControl(
+            profile.account,
+            avatar: AvatarView(
+                name: visibleName,
+                size: 108,
+                image: remote?.image,
+                frame: frame),
+          ),
         ),
         SliverToBoxAdapter(
           child: Center(
@@ -171,20 +117,22 @@ class _ProfileBody extends ConsumerWidget {
                                 child: ProfileEditorControl(profile.account)),
                             const SizedBox(width: 10),
                             Expanded(
-                                child: V2ProfileAction(
+                                child: ShadeProfileAction(
                                     Icons.copy_outlined,
                                     'Скопировать',
                                     () => _copy(context, handle,
                                         'Никнейм скопирован'))),
                             const SizedBox(width: 10),
                             Expanded(
-                                child: V2ProfileAction(Icons.qr_code_2_rounded,
-                                    'Мой ключ', () => _showKey(context))),
+                                child: ShadeProfileAction(
+                                    Icons.qr_code_2_rounded,
+                                    'Мой ключ',
+                                    () => _showKey(context))),
                           ]),
                       const SizedBox(height: 22),
-                      const _SectionLabel('Информация'),
+                      const ShadeProfileSection('Информация'),
                       const SizedBox(height: 8),
-                      _ProfileCard(children: [
+                      ShadeProfileCard(children: [
                         if (social != null)
                           ProfileEditorControl(profile.account,
                               avatarShortcut: true),
@@ -209,7 +157,7 @@ class _ProfileBody extends ConsumerWidget {
                         ),
                       ]),
                       const SizedBox(height: 22),
-                      const _SectionLabel('Безопасность'),
+                      const ShadeProfileSection('Безопасность'),
                       const SizedBox(height: 10),
                       Material(
                         color: ShadeColors.surfaceCard,
@@ -241,9 +189,9 @@ class _ProfileBody extends ConsumerWidget {
                             owner: true,
                             backend: social),
                       const SizedBox(height: 22),
-                      const _SectionLabel('Устройства и доступ'),
+                      const ShadeProfileSection('Устройства и доступ'),
                       const SizedBox(height: 8),
-                      _ProfileCard(children: [
+                      ShadeProfileCard(children: [
                         ListTile(
                           leading: const Icon(Icons.devices_outlined),
                           title: const Text('Устройства'),
@@ -377,44 +325,4 @@ class _ProfileBody extends ConsumerWidget {
           .showSnackBar(SnackBar(content: Text(message)));
     }
   }
-}
-
-class _SectionLabel extends StatelessWidget {
-  const _SectionLabel(this.label);
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        child: Text(label,
-            style: const TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-                color: ShadeColors.textSecondary)),
-      );
-}
-
-class _ProfileCard extends StatelessWidget {
-  const _ProfileCard({required this.children});
-
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) => Material(
-        color: ShadeColors.surfaceCard,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: ShadeColors.greyBorder),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: Column(children: [
-          for (var i = 0; i < children.length; i++) ...[
-            if (i > 0)
-              const Divider(
-                  height: 1, indent: 56, color: ShadeColors.greyBorder),
-            children[i],
-          ],
-        ]),
-      );
 }

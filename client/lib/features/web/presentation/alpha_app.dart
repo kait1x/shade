@@ -4,10 +4,10 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shade/core/theme/shade_theme.dart';
-import 'package:shade/core/widgets/avatar_frame.dart';
 import 'package:shade/core/widgets/avatar_view.dart';
-import 'package:shade/core/widgets/shade_logo.dart';
+import 'package:shade/core/widgets/shade_chat_list.dart';
 import 'package:shade/core/widgets/shade_motion.dart';
+import 'package:shade/core/widgets/shade_profile_layout.dart';
 import 'package:shade/core/widgets/shade_states.dart';
 import 'package:shade/core/widgets/shade_tab_dock.dart';
 import 'package:shade/features/chats/presentation/widgets/message_bubble.dart';
@@ -61,32 +61,42 @@ class _ShellState extends State<_Shell> {
     final c = widget.controller;
     return LayoutBuilder(builder: (context, bounds) {
       final wide = bounds.maxWidth >= 900;
-      final showDock = !wide && !newChat && !peerProfile && c.selected == null &&
+      final showDock = !wide &&
+          !newChat &&
+          !peerProfile &&
+          c.selected == null &&
           MediaQuery.viewInsetsOf(context).bottom == 0;
       void selectTab(int index) => setState(() {
-        settings = index == 1;
-        profile = index == 2;
-      });
+            settings = index == 1;
+            profile = index == 2;
+          });
       final right = settings
-          ? _Profile(controller: c, settingsOnly: true, close: () => selectTab(0))
+          ? _Profile(
+              controller: c, settingsOnly: true, close: () => selectTab(0))
           : newChat
-          ? _NewChat(
-              controller: c, close: () => setState(() => newChat = false))
-          : profile
-              ? _Profile(
-                  controller: c, showSettings: wide, close: () => setState(() => profile = false))
-              : peerProfile && c.selected != null
-                  ? _PeerProfile(
+              ? _NewChat(
+                  controller: c, close: () => setState(() => newChat = false))
+              : profile
+                  ? _Profile(
                       controller: c,
-                      peer: c.selected!,
-                      openChat: () => setState(() => peerProfile = false))
-                  : _Conversation(
-                      key: ValueKey(c.selected),
-                      controller: c,
-                      back: () => c.act('back', {'account': c.selected}),
-                      openPeer: () => setState(() => peerProfile = true));
+                      showSettings: wide,
+                      close: () => setState(() => profile = false))
+                  : peerProfile && c.selected != null
+                      ? _PeerProfile(
+                          controller: c,
+                          peer: c.selected!,
+                          openChat: () => setState(() => peerProfile = false))
+                      : _Conversation(
+                          key: ValueKey(c.selected),
+                          controller: c,
+                          back: () => c.act('back', {'account': c.selected}),
+                          openPeer: () => setState(() => peerProfile = true));
       return PopScope(
-          canPop: c.selected == null && !profile && !settings && !peerProfile && !newChat,
+          canPop: c.selected == null &&
+              !profile &&
+              !settings &&
+              !peerProfile &&
+              !newChat,
           onPopInvokedWithResult: (didPop, _) {
             if (!didPop) {
               if (newChat) {
@@ -103,7 +113,13 @@ class _ShellState extends State<_Shell> {
           child: Scaffold(
               extendBody: showDock,
               bottomNavigationBar: showDock
-                  ? ShadeTabDock(selectedIndex: settings ? 1 : profile ? 2 : 0, onSelected: selectTab)
+                  ? ShadeTabDock(
+                      selectedIndex: settings
+                          ? 1
+                          : profile
+                              ? 2
+                              : 0,
+                      onSelected: selectTab)
                   : null,
               body: SafeArea(
                   bottom: false,
@@ -123,15 +139,18 @@ class _ShellState extends State<_Shell> {
                                                 peerProfile = false;
                                                 newChat = false;
                                               }),
-                                          profile: () => setState(
-                                              () { settings = false; profile = !profile; }))),
+                                          profile: () => setState(() {
+                                                settings = false;
+                                                profile = !profile;
+                                              }))),
                                   const VerticalDivider(width: 1),
                                   Expanded(child: right),
                                 ])
                               : AnimatedSwitcher(
                                   duration: ShadeMotion.duration(context),
                                   child: newChat ||
-                                          profile || settings ||
+                                          profile ||
+                                          settings ||
                                           peerProfile && c.selected != null ||
                                           c.selected != null
                                       ? right
@@ -144,8 +163,7 @@ class _ShellState extends State<_Shell> {
                                                 peerProfile = false;
                                                 newChat = false;
                                               }),
-                                          profile: () => setState(
-                                              () => profile = true))))))));
+                                          profile: null)))))));
     });
   }
 }
@@ -157,28 +175,51 @@ class _Chats extends StatefulWidget {
       required this.newChat,
       required this.openChat});
   final AlphaController controller;
-  final VoidCallback profile, newChat, openChat;
+  final VoidCallback? profile;
+  final VoidCallback newChat, openChat;
   @override
   State<_Chats> createState() => _ChatsState();
 }
 
 class _ChatsState extends State<_Chats> {
   final search = TextEditingController();
-  final seenAccounts = <String>{};
+  final focus = FocusNode();
+  final compactCompose = ValueNotifier(false);
   bool savedOnly = false;
+  bool searchVisible = true;
+
   @override
   void dispose() {
     search.dispose();
+    focus.dispose();
+    compactCompose.dispose();
     super.dispose();
+  }
+
+  void toggleSearch() {
+    ShadeMotion.selection(context);
+    setState(() => searchVisible = !searchVisible);
+    if (searchVisible) {
+      focus.requestFocus();
+    } else {
+      focus.unfocus();
+      search.clear();
+    }
+  }
+
+  void compose() {
+    focus.unfocus();
+    ShadeMotion.selection(context);
+    widget.newChat();
+    widget.controller.act('refresh');
   }
 
   @override
   Widget build(BuildContext context) {
     final c = widget.controller;
     final query = search.text.trim().toLowerCase();
-    // Список чатов: только контакты с перепиской или закреплением. Каталог
-    // всех пользователей убран — поиск идёт по точному никнейму на экране
-    // «Новый разговор».
+    final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
     final peers = c.peers.where((p) {
       final account = p['account'] as String;
       final items = c.conversation(account);
@@ -202,283 +243,147 @@ class _ChatsState extends State<_Chats> {
             0;
         return bt.compareTo(at);
       });
-    return Stack(children: [
-      Column(children: [
-      Expanded(
-          child: CustomScrollView(slivers: [
-        SliverToBoxAdapter(
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Padding(
-              padding: const EdgeInsets.fromLTRB(24, 14, 14, 0),
-              child: Row(children: [
-                const ShadeLogo(size: 28),
-                const SizedBox(width: 10),
-                const Flexible(
-                    child: FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text('SHADE',
-                            style: TextStyle(
-                                fontSize: 17,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: 3.2)))),
-                const Spacer(),
-                IconButton(
-                    tooltip: 'Профиль',
-                    onPressed: widget.profile,
-                    icon: AccountAvatar(controller: c, account: c.account, size: 34)),
-                IconButton(
-                    tooltip: 'Найти собеседника',
-                    onPressed: () {
-                      widget.newChat();
-                      c.act('refresh');
-                    },
-                    icon: const Icon(Icons.edit_square, size: 22)),
-              ])),
-          Padding(
-              padding: const EdgeInsets.fromLTRB(24, 28, 24, 18),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Сообщения',
-                        style: TextStyle(
-                            fontSize: 34,
-                            height: 1.15,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: -1.3)),
-                    const SizedBox(height: 10),
-                    const Row(children: [
-                      Icon(Icons.lock_outline_rounded,
-                          size: 14, color: ShadeColors.textMuted),
-                      SizedBox(width: 6),
-                      Expanded(
-                          child: Text('Личное остаётся личным',
-                              style: TextStyle(
-                                  fontSize: 12,
-                                  height: 1.4,
-                                  color: ShadeColors.textMuted))),
-                    ]),
-                    const SizedBox(height: 24),
-                    TextField(
-                        controller: search,
-                        onChanged: (_) => setState(() {}),
-                        style: const TextStyle(fontSize: 16),
-                        decoration: InputDecoration(
-                            hintText: 'Поиск в переписках',
-                            prefixIcon:
-                                const Icon(Icons.search_rounded, size: 21),
-                            suffixIcon: query.isEmpty
-                                ? null
-                                : IconButton(
-                                    tooltip: 'Очистить поиск',
-                                    onPressed: () {
-                                      search.clear();
-                                      setState(() {});
-                                    },
-                                    icon: const Icon(Icons.close_rounded,
-                                        size: 18)))),
-                  ])),
-          Padding(
-              padding: const EdgeInsets.fromLTRB(24, 14, 24, 0),
-              child: Wrap(spacing: 8, children: [
-                _homeFilter('Все чаты', false),
-                _homeFilter('Избранное', true),
-              ])),
-        ])),
-        if (peers.isEmpty)
-          SliverToBoxAdapter(
-              child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 36),
-                  child: Column(children: [
-                    ShadeEmptyState(
+    final indices = <String, int>{
+      for (var i = 0; i < peers.length; i++) peers[i]['account'] as String: i,
+    };
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760),
+        child: Column(children: [
+          Expanded(
+            child: NotificationListener<ScrollNotification>(
+              onNotification: (event) {
+                final compact = shadeComposeCompact(event);
+                if (compact != null) compactCompose.value = compact;
+                return false;
+              },
+              child: CustomScrollView(
+                key: const PageStorageKey('web-chats-scroll'),
+                keyboardDismissBehavior:
+                    ScrollViewKeyboardDismissBehavior.onDrag,
+                slivers: [
+                  ShadeChatsAppBar(
+                    searchVisible: searchVisible,
+                    onToggleSearch: toggleSearch,
+                    actions: [
+                      if (widget.profile != null)
+                        IconButton(
+                          tooltip: 'Профиль',
+                          onPressed: widget.profile,
+                          icon: AccountAvatar(
+                              controller: c, account: c.account, size: 32),
+                        ),
+                    ],
+                  ),
+                  SliverToBoxAdapter(
+                    child: ShadeChatsHeader(
+                      searchVisible: searchVisible,
+                      controller: search,
+                      focusNode: focus,
+                      onQueryChanged: (_) => setState(() {}),
+                      savedOnly: savedOnly,
+                      onFilterChanged: (saved) =>
+                          setState(() => savedOnly = saved),
+                    ),
+                  ),
+                  if (!c.connected && c.connection.trim().isNotEmpty)
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 18),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: TextButton.icon(
+                            onPressed: () => c.act('sync'),
+                            icon:
+                                const Icon(Icons.cloud_off_outlined, size: 18),
+                            label: Text(c.connection),
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (peers.isEmpty)
+                    SliverToBoxAdapter(
+                      child: ShadeEmptyState(
                         icon: query.isEmpty
                             ? Icons.chat_bubble_outline_rounded
                             : Icons.search_off_rounded,
-                        title: query.isEmpty
-                            ? 'Здесь начнётся общение'
-                            : 'Ничего не нашлось',
-                        description: query.isEmpty
-                            ? 'Найдите друга по никнейму\nи отправьте первое сообщение.'
-                            : 'Попробуйте другое имя или слово из сообщения.'),
-                    if (query.isEmpty)
-                      Padding(
-                          padding: const EdgeInsets.only(top: 8),
-                          child: OutlinedButton.icon(
-                              onPressed: () {
-                                widget.newChat();
-                                c.act('refresh');
-                              },
-                              icon: const Icon(Icons.person_search_rounded),
-                              label: const Text('Найти собеседника'))),
-                  ])))
-        else
-          SliverPadding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              sliver: SliverList.separated(
-                  itemCount: peers.length,
-                  separatorBuilder: (_, __) =>
-                      const Divider(height: 1, indent: 80, endIndent: 12),
-                  itemBuilder: (context, i) {
-                    final peer = peers[i]['account'] as String;
-                    final latest = c.conversation(peer).lastOrNull;
-                    final unread = c.unread(peer);
-                    // Android animates only genuinely new tiles; a stable key
-                    // keeps an existing row from replaying its entrance.
-                    return TweenAnimationBuilder<double>(
-                        key: ValueKey(peer),
-                        tween: Tween(
-                            begin: seenAccounts.add(peer) ? 0 : 1, end: 1),
-                        duration: ShadeMotion.duration(context, 200),
-                        curve: Curves.easeOut,
-                        builder: (context, t, child) => Opacity(
-                            opacity: t,
-                            child: Transform.translate(
-                                offset: Offset(0, 14 * (1 - t)),
-                                child: child)),
-                        child: ListTile(
-                        selected: c.selected == peer,
-                        selectedTileColor: ShadeColors.surfaceCard,
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 10),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(18)),
-                        horizontalTitleGap: 15,
-                        leading: AccountAvatar(
-                            controller: c,
-                            account: peer,
-                            size: 54,
-                            favorites: peer == c.account),
-                        onTap: () {
-                          widget.openChat();
-                          c.act('select', {'account': peer});
+                        title: query.isNotEmpty
+                            ? 'Ничего не найдено'
+                            : savedOnly
+                                ? 'Пока нет личных заметок'
+                                : 'Начните разговор',
+                        description: query.isNotEmpty
+                            ? 'Попробуйте другой никнейм или фрагмент сообщения.'
+                            : savedOnly
+                                ? 'Здесь будет ваша переписка с собой.'
+                                : 'Найдите собеседника по никнейму.',
+                      ),
+                    )
+                  else
+                    SliverList(
+                      delegate: SliverChildBuilderDelegate(
+                        (context, i) {
+                          final info = peers[i];
+                          final peer = info['account'] as String;
+                          final latest = c.conversation(peer).lastOrNull;
+                          final mine = latest?['from'] == c.account;
+                          final isSelf = peer == c.account;
+                          final text = latest?['text'] as String? ??
+                              (latest?['media'] != null ? '📷 Фото' : null);
+                          return ShadeChatRow(
+                            key: ValueKey(peer),
+                            title: isSelf ? 'Избранное' : c.peerName(peer),
+                            preview: text == null
+                                ? (isSelf
+                                    ? 'Ваши личные заметки'
+                                    : 'Нет сообщений')
+                                : (mine && !isSelf ? 'Вы: $text' : text),
+                            time: (latest?['createdAt'] as num?)?.toInt(),
+                            status: mine && latest != null
+                                ? AlphaController.status(latest)
+                                : null,
+                            unreadCount: c.unread(peer),
+                            confirmed: info['unverified'] != true,
+                            selected: c.selected == peer,
+                            avatar: AccountAvatar(
+                                controller: c,
+                                account: peer,
+                                size: 46,
+                                favorites: isSelf),
+                            onOpen: () {
+                              focus.unfocus();
+                              ShadeMotion.selection(context);
+                              widget.openChat();
+                              c.act('select', {'account': peer});
+                            },
+                          );
                         },
-                        title: Row(children: [
-                          Expanded(
-                              child: Text(c.peerName(peer),
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w700))),
-                          if (latest != null) ...[
-                            const SizedBox(width: 8),
-                            Text(_time(latest),
-                                style: const TextStyle(
-                                    fontSize: 11, color: ShadeColors.textMuted))
-                          ]
-                        ]),
-                        subtitle: Padding(
-                            padding: const EdgeInsets.only(top: 6),
-                            child: Row(children: [
-                              if (latest != null &&
-                                  latest['from'] == c.account) ...[
-                                Icon(
-                                    AlphaController.status(latest) == 'read' ||
-                                            AlphaController.status(latest) ==
-                                                'delivered'
-                                        ? Icons.done_all_rounded
-                                        : AlphaController.status(latest) ==
-                                                'queued'
-                                            ? Icons.schedule_rounded
-                                            : Icons.done_rounded,
-                                    size: 15,
-                                    color: ShadeColors.textMuted),
-                                const SizedBox(width: 4)
-                              ],
-                              Expanded(
-                                  child: Text(
-                                      latest?['text'] as String? ??
-                                          (latest?['media'] != null
-                                              ? '📷 Фото'
-                                              : (c.pinned(peer)
-                                                  ? 'Отправьте первое сообщение'
-                                                  : 'Сверьте отпечаток ключа')),
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                          fontSize: 13,
-                                          height: 1.4,
-                                          color: ShadeColors.textMuted))),
-                              if (unread > 0)
-                                Container(
-                                    margin: const EdgeInsets.only(left: 8),
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 7, vertical: 3),
-                                    decoration: BoxDecoration(
-                                        color: ShadeColors.textPrimary,
-                                        borderRadius:
-                                            BorderRadius.circular(10)),
-                                    child: Text(unread > 99 ? '99+' : '$unread',
-                                        semanticsLabel: '$unread непрочитанных',
-                                        style: const TextStyle(
-                                            fontSize: 11,
-                                            color: Colors.black,
-                                            fontWeight: FontWeight.w700))),
-                            ]))));
-                  })),
-      ])),
-      SafeArea(
-          top: false,
-          child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 14, 16, 14),
-              child: Row(children: [
-                const Icon(Icons.lock_outline_rounded,
-                    size: 14, color: ShadeColors.textMuted),
-                const SizedBox(width: 8),
-                Expanded(
-                    child: Text(c.connection,
-                        maxLines: 2,
-                        style: const TextStyle(
-                            fontSize: 11, color: ShadeColors.textMuted))),
-                if (!c.connected)
-                  Flexible(
-                      child: FittedBox(
-                          fit: BoxFit.scaleDown,
-                          child: TextButton(
-                              onPressed: () => c.act('sync'),
-                              child: const Text('Повторить')))),
-              ]))),
-      ]),
-      // FAB открывает экран «Новый разговор»: поиск по никнейму и TOFU-старт
-      // переписки вместо каталога всех пользователей.
-      Positioned(
-          right: 16,
-          bottom: 58 + MediaQuery.paddingOf(context).bottom,
-          child: FloatingActionButton.extended(
-              elevation: 0,
-              heroTag: 'alpha-compose',
-              backgroundColor: const Color(0xFFF5F5F7),
-              foregroundColor: Colors.black,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20)),
-              onPressed: () {
-                widget.newChat();
-                c.act('refresh');
-              },
-              icon: const Icon(Icons.edit_outlined, size: 20),
-              label: const Text('Написать',
-                  style: TextStyle(fontWeight: FontWeight.w700)))),
-    ]);
+                        childCount: peers.length,
+                        findChildIndexCallback: (key) =>
+                            indices[(key as ValueKey<String>).value],
+                      ),
+                    ),
+                  const SliverToBoxAdapter(child: SizedBox(height: 8)),
+                ],
+              ),
+            ),
+          ),
+          if (!keyboardOpen)
+            Padding(
+              padding: EdgeInsets.fromLTRB(16, 6, 16, bottomInset + 6),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: ValueListenableBuilder<bool>(
+                  valueListenable: compactCompose,
+                  builder: (context, compact, _) =>
+                      ShadeComposeButton(compact: compact, onPressed: compose),
+                ),
+              ),
+            ),
+        ]),
+      ),
+    );
   }
-
-  // Android home filters (home_screen.dart _filter): selected chip fills
-  // light with black text, idle chip stays dark with the hairline border.
-  Widget _homeFilter(String title, bool saved) => ChoiceChip(
-      label: Text(title),
-      selected: savedOnly == saved,
-      showCheckmark: false,
-      selectedColor: const Color(0xFFF5F5F7),
-      backgroundColor: const Color(0xFF111113),
-      labelStyle: TextStyle(
-          fontSize: 13,
-          fontWeight: FontWeight.w700,
-          color: savedOnly == saved ? Colors.black : ShadeColors.textSecondary),
-      side: BorderSide(
-          color: savedOnly == saved
-              ? Colors.transparent
-              : const Color(0xFF29292D)),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      onSelected: (_) => setState(() => savedOnly = saved));
 }
 
 // Typing (contract C2) wins over presence; both degrade to the static line.
@@ -502,17 +407,6 @@ String _lastSeenLine(int lastSeen) {
   if (hours < 24) return 'был(а) сегодня';
   if (hours < 48) return 'был(а) вчера';
   return 'был(а) давно';
-}
-
-String _time(Map<String, dynamic> item) {
-  final date =
-      DateTime.fromMillisecondsSinceEpoch((item['createdAt'] as num).toInt());
-  if (DateUtils.isSameDay(date, DateTime.now())) {
-    return '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
-  }
-  final day = date.day.toString().padLeft(2, '0');
-  final month = date.month.toString().padLeft(2, '0');
-  return '$day.$month';
 }
 
 class _Conversation extends StatefulWidget {
@@ -1292,7 +1186,12 @@ class _NewChatState extends State<_NewChat> {
 }
 
 class _Profile extends StatelessWidget {
-  const _Profile({required this.controller, required this.close, this.showSettings = true, this.settingsOnly = false});
+  const _Profile({
+    required this.controller,
+    required this.close,
+    this.showSettings = true,
+    this.settingsOnly = false,
+  });
   final bool showSettings;
   final bool settingsOnly;
   final AlphaController controller;
@@ -1317,467 +1216,546 @@ class _Profile extends StatelessWidget {
   String get _fingerprintPreview {
     final hex = (controller.key?['digest'] as String? ?? '').toUpperCase();
     if (hex.length < 16) return 'Отпечаток формируется…';
-    return '${[
-      hex.substring(0, 4),
-      hex.substring(4, 8),
-      hex.substring(8, 12),
-      hex.substring(12, 16)
-    ].join(' ')}…';
-  }
-
-  Widget _profileAction(BuildContext context,
-      {required IconData icon,
-      required String label,
-      required VoidCallback onTap,
-      bool primary = false}) {
-    final ink = primary ? Colors.black : ShadeColors.textPrimary;
-    return Material(
-        color: primary ? ShadeColors.textPrimary : ShadeColors.surfaceCard,
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-            side: BorderSide(
-                color: primary ? Colors.transparent : ShadeColors.greyBorder)),
-        child: InkWell(
-            borderRadius: BorderRadius.circular(18),
-            onTap: onTap,
-            child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(icon, size: 21, color: ink),
-                  const SizedBox(height: 9),
-                  Text(label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          color: ink, fontSize: 12, fontWeight: FontWeight.w600)),
-                ]))));
+    return '${[hex.substring(0, 4), hex.substring(4, 8), hex.substring(8, 12), hex.substring(12, 16)].join(' ')}…';
   }
 
   Future<void> _editAvatar(BuildContext context) async {
     final frame = AvatarFrame.values.firstWhere(
-        (f) => f.name == controller.profile['frame'],
-        orElse: () => AvatarFrame.none);
+      (f) => f.name == controller.profile['frame'],
+      orElse: () => AvatarFrame.none,
+    );
     final bytes = await controller.avatarImage(
-        controller.profile['digest'] as String? ?? '');
+      controller.profile['digest'] as String? ?? '',
+    );
     if (!context.mounted) return;
-    await Navigator.of(context).push(MaterialPageRoute<void>(
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
         builder: (_) => AlphaAvatarEditor(
-            initialImage: bytes,
-            initialName:
-                displayName.isEmpty ? controller.account : displayName,
-            initialFrame: frame,
-            save: ({required frame, required replaceImage, image}) =>
-                controller.act('profile.save', {
-                  'frame': frame.name,
-                  if (replaceImage)
-                    'avatar': image == null ? null : base64Encode(image),
-                }))));
+          initialImage: bytes,
+          initialName: displayName.isEmpty ? controller.account : displayName,
+          initialFrame: frame,
+          save: ({required frame, required replaceImage, image}) =>
+              controller.act('profile.save', {
+                'frame': frame.name,
+                if (replaceImage)
+                  'avatar': image == null ? null : base64Encode(image),
+              }),
+        ),
+      ),
+    );
   }
 
   Future<void> _editName(BuildContext context) async {
     final field = TextEditingController(text: displayName);
     final updated = await showDialog<String>(
-        context: context,
-        builder: (dialog) => AlertDialog(
-            title: const Text('Отображаемое имя'),
-            content: TextField(
-                controller: field,
-                autofocus: true,
-                maxLength: 64,
-                style: const TextStyle(fontSize: 15, height: 1.5),
-                decoration: const InputDecoration(
-                    hintText: 'Как вас видят собеседники')),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(dialog),
-                  child: const Text('Отмена')),
-              TextButton(
-                  onPressed: () => Navigator.pop(dialog, field.text),
-                  child: const Text('Сохранить')),
-            ]));
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('Отображаемое имя'),
+        content: TextField(
+          controller: field,
+          autofocus: true,
+          maxLength: 64,
+          style: const TextStyle(fontSize: 15, height: 1.5),
+          decoration: const InputDecoration(
+            hintText: 'Как вас видят собеседники',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialog, field.text),
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
     if (updated == null || !context.mounted) return;
     if (updated.trim() == displayName) return;
     try {
       await controller.act('profile.save', {'displayName': updated});
     } catch (_) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content:
-                Text('Не удалось сохранить имя. Проверьте сеть и повторите.')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Не удалось сохранить имя. Проверьте сеть и повторите.',
+            ),
+          ),
+        );
       }
     }
   }
 
   Future<void> _confirmLogout(
-      BuildContext context, AlphaController controller) async {
+    BuildContext context,
+    AlphaController controller,
+  ) async {
     final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (dialog) => AlertDialog(
-            title: const Text('Выйти из аккаунта?'),
-            content: const Text(
-                'Сессия Google завершится. Ключи и история останутся в этом '
-                'браузере; для входа понадобится фраза устройства.'),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(dialog, false),
-                  child: const Text('Отмена')),
-              TextButton(
-                  onPressed: () => Navigator.pop(dialog, true),
-                  child: const Text('Выйти')),
-            ]));
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('Выйти из аккаунта?'),
+        content: const Text(
+          'Сессия Google завершится. Ключи и история останутся в этом '
+          'браузере; для входа понадобится фраза устройства.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog, false),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialog, true),
+            child: const Text('Выйти'),
+          ),
+        ],
+      ),
+    );
     if (confirmed == true) await controller.act('logout');
   }
 
   Future<void> _confirmRevoke(
-      BuildContext context, AlphaController controller, String id) async {
+    BuildContext context,
+    AlphaController controller,
+    String id,
+  ) async {
     final confirmed = await showDialog<bool>(
-        context: context,
-        builder: (dialog) => AlertDialog(
-            title: const Text('Отозвать устройство?'),
-            content: const Text(
-                'Очередь и push-подписка устройства будут удалены. '
-                'Действие необратимо: ключи отозванного устройства больше '
-                'не смогут получать сообщения.'),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(dialog, false),
-                  child: const Text('Отмена')),
-              TextButton(
-                  onPressed: () => Navigator.pop(dialog, true),
-                  child: const Text('Отозвать')),
-            ]));
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('Отозвать устройство?'),
+        content: const Text(
+          'Очередь и push-подписка устройства будут удалены. '
+          'Действие необратимо: ключи отозванного устройства больше '
+          'не смогут получать сообщения.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog, false),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialog, true),
+            child: const Text('Отозвать'),
+          ),
+        ],
+      ),
+    );
     if (confirmed != true || !context.mounted) return;
     try {
       await controller.act('devices.revoke', {'id': id});
     } catch (_) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
             content: Text(
-                'Не удалось отозвать устройство. Проверьте сеть и повторите.')));
+              'Не удалось отозвать устройство. Проверьте сеть и повторите.',
+            ),
+          ),
+        );
       }
     }
   }
+
   @override
-  Widget build(BuildContext context) => Column(children: [
-        Row(children: [
-          IconButton(
-              tooltip: 'Назад',
-              onPressed: close,
-              icon: const Icon(Icons.chevron_left_rounded)),
-          Text(settingsOnly ? 'Настройки' : 'Профиль',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700))
-        ]),
-        Expanded(
-            child: Center(
-                child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 560),
-                    child:
-                        ListView(padding: EdgeInsets.fromLTRB(24, 24, 24, 24 + MediaQuery.paddingOf(context).bottom), children: [
-                      if (!settingsOnly) ...[
-                      Center(
-                          child: GestureDetector(
-                              onTap: () => _editAvatar(context),
-                              child: Stack(children: [
-                                AccountAvatar(
-                                    controller: controller,
-                                    account: controller.account,
-                                    size: 100),
-                                Positioned(
-                                    right: 0,
-                                    bottom: 0,
-                                    child: Container(
-                                        padding: const EdgeInsets.all(6),
-                                        decoration: BoxDecoration(
-                                            color: ShadeColors.surfaceCard,
-                                            shape: BoxShape.circle,
-                                            border: Border.all(
-                                                color:
-                                                    ShadeColors.greyBorder)),
-                                        child: const Icon(Icons.edit_rounded,
-                                            size: 14,
-                                            color: ShadeColors.textMuted))),
-                                const Positioned.fill(
-                                    child: Material(
-                                        type: MaterialType.transparency)),
-                              ]))),
+  Widget build(BuildContext context) {
+    final name = controller.account;
+    final visibleName = displayName.isNotEmpty
+        ? displayName
+        : name.isEmpty
+        ? 'Shade'
+        : name[0].toUpperCase() + name.substring(1);
+    final back = IconButton(
+      tooltip: 'Назад',
+      onPressed: close,
+      icon: const Icon(Icons.chevron_left_rounded),
+    );
+    return CustomScrollView(
+      slivers: [
+        if (settingsOnly)
+          SliverAppBar(
+            pinned: true,
+            primary: false,
+            leading: back,
+            title: const Text('Настройки'),
+          )
+        else
+          ShadeProfileHeader(
+            visibleName: visibleName,
+            handle: '@$name',
+            leading: back,
+            smallAvatar: AccountAvatar(
+              controller: controller,
+              account: name,
+              size: 34,
+            ),
+            largeAvatar: ShadeAvatarEdit(
+              avatar: AccountAvatar(
+                controller: controller,
+                account: name,
+                size: 108,
+              ),
+              onTap: () => _editAvatar(context),
+            ),
+          ),
+        SliverToBoxAdapter(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 640),
+              child: Padding(
+                padding: EdgeInsets.fromLTRB(
+                  20,
+                  settingsOnly ? 8 : 4,
+                  20,
+                  32 + MediaQuery.paddingOf(context).bottom,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (!settingsOnly) ...[
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ShadeProfileAction(
+                              Icons.edit_outlined,
+                              'Имя',
+                              () => _editName(context),
+                              primary: true,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: ShadeProfileAction(
+                              Icons.copy_outlined,
+                              'Скопировать',
+                              () async {
+                                await Clipboard.setData(
+                                  ClipboardData(text: '@${controller.account}'),
+                                );
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'Имя пользователя скопировано',
+                                      ),
+                                    ),
+                                  );
+                                }
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: ShadeProfileAction(
+                              Icons.qr_code_2_rounded,
+                              'Мой ключ',
+                              () => controller.act('identity'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 22),
+                      const ShadeProfileSection('Информация'),
                       const SizedBox(height: 8),
-                      Semantics(
-                          button: true,
-                          child: TextButton(
-                              onPressed: () => _editAvatar(context),
-                              child: const Text('Изменить аватар',
-                                  style: TextStyle(fontSize: 13)))),
-                      const SizedBox(height: 12),
-                      Text(
-                          displayName.isEmpty
-                              ? controller.account
-                              : displayName,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                              fontSize: 28, fontWeight: FontWeight.w700)),
-                      const SizedBox(height: 6),
-                      Text('@${controller.account}',
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(color: ShadeColors.textMuted)),
-                      const SizedBox(height: 8),
-                      const SizedBox(height: 16),
-                      Row(children: [
-                        Expanded(
-                            child: _profileAction(context,
-                                icon: Icons.edit_outlined,
-                                label: 'Имя',
-                                primary: true,
-                                onTap: () => _editName(context))),
-                        const SizedBox(width: 10),
-                        Expanded(
-                            child: _profileAction(context,
-                                icon: Icons.copy_outlined,
-                                label: 'Копировать',
-                                onTap: () async {
-                                  await Clipboard.setData(ClipboardData(
-                                      text: '@${controller.account}'));
-                                  if (context.mounted) {
-                                    ScaffoldMessenger.of(context).showSnackBar(
-                                        const SnackBar(
-                                            content: Text(
-                                                'Имя пользователя скопировано')));
-                                  }
-                                })),
-                        const SizedBox(width: 10),
-                        Expanded(
-                            child: _profileAction(context,
-                                icon: Icons.qr_code_2_rounded,
-                                label: 'Мой ключ',
-                                onTap: () => controller.act('identity'))),
-                      ]),
-                      const SizedBox(height: 24),
-                      const Text('ИНФОРМАЦИЯ',
-                          style: TextStyle(
-                              fontSize: 11,
-                              letterSpacing: 1.5,
-                              color: ShadeColors.textMuted)),
-                      const SizedBox(height: 12),
-                      Card(
-                          child: Column(children: [
-                        ListTile(
+                      ShadeProfileCard(
+                        children: [
+                          ListTile(
+                            leading: const Icon(Icons.add_a_photo_outlined),
+                            title: const Text('Изменить аватар'),
+                            trailing: const Icon(Icons.chevron_right_rounded),
+                            onTap: () => _editAvatar(context),
+                          ),
+                          ListTile(
                             leading: const Icon(Icons.alternate_email_rounded),
                             title: Text('@${controller.account}'),
-                            subtitle: const Text('Имя пользователя')),
-                        if (controller.email != null) ...[
-                          const Divider(height: 1, indent: 56),
-                          ListTile(
+                            subtitle: const Text('Имя пользователя'),
+                          ),
+                          if (controller.email != null) ...[
+                            ListTile(
                               leading: const Icon(Icons.mail_outline_rounded),
-                              title: Text(controller.email!,
-                                  style: const TextStyle(fontSize: 15)),
-                              subtitle: const Text('Google-аккаунт')),
-                        ],
-                        const Divider(height: 1, indent: 56),
-                        const ListTile(
+                              title: Text(
+                                controller.email!,
+                                style: const TextStyle(fontSize: 15),
+                              ),
+                              subtitle: const Text('Google-аккаунт'),
+                            ),
+                          ],
+                          const ListTile(
                             leading: Icon(Icons.phone_iphone_rounded),
                             title: Text('Это устройство'),
                             subtitle: Text(
-                                'Приватный ключ не покидает браузер')),
-                      ])),
+                              'Приватный ключ не покидает браузер',
+                            ),
+                          ),
+                        ],
+                      ),
                       const SizedBox(height: 24),
-                      const Text('ШИФРОВАНИЕ',
-                          style: TextStyle(
-                              fontSize: 11,
-                              letterSpacing: 1.5,
-                              color: ShadeColors.textMuted)),
+                      const Text(
+                        'ШИФРОВАНИЕ',
+                        style: TextStyle(
+                          fontSize: 11,
+                          letterSpacing: 1.5,
+                          color: ShadeColors.textMuted,
+                        ),
+                      ),
                       const SizedBox(height: 12),
                       Card(
-                          clipBehavior: Clip.antiAlias,
-                          child: Semantics(
-                              button: true,
-                              child: InkWell(
-                                  onTap: () => controller.act('identity'),
-                                  child: Padding(
-                                      padding: const EdgeInsets.all(16),
-                                      child: Row(children: [
-                                        _KeyIdenticon(
-                                            bytes: _identiconBytes, size: 52),
-                                        const SizedBox(width: 12),
-                                        Expanded(
-                                            child: Column(
-                                                crossAxisAlignment:
-                                                    CrossAxisAlignment.start,
-                                                children: [
-                                                  Row(children: [
-                                                    const Expanded(
-                                                        child: Text(
-                                                            'Ключ шифрования',
-                                                            style: TextStyle(
-                                                                fontSize: 14,
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .w600))),
-                                                    Container(
-                                                        padding: const EdgeInsets
-                                                            .symmetric(
-                                                            horizontal: 8,
-                                                            vertical: 4),
-                                                        decoration: BoxDecoration(
-                                                            color: ShadeColors
-                                                                .surfaceElevated,
-                                                            borderRadius:
-                                                                BorderRadius
-                                                                    .circular(
-                                                                        20)),
-                                                        child: const Text('Ваш',
-                                                            style: TextStyle(
-                                                                fontSize: 11,
-                                                                fontWeight:
-                                                                    FontWeight
-                                                                        .w600,
-                                                                color: ShadeColors
-                                                                    .textPrimary))),
-                                                  ]),
-                                                  const SizedBox(height: 6),
-                                                  Text(_fingerprintPreview,
-                                                      style: const TextStyle(
-                                                          fontFamily:
-                                                              'monospace',
-                                                          fontSize: 12,
-                                                          letterSpacing: 1.2,
-                                                          color: ShadeColors
-                                                              .textSecondary)),
-                                                  const SizedBox(height: 4),
-                                                  const Text(
-                                                      'Нажмите, чтобы показать код',
-                                                      style: TextStyle(
-                                                          fontSize: 12,
-                                                          color: ShadeColors
-                                                              .textMuted)),
-                                                ])),
-                                        const Icon(
-                                            Icons.chevron_right_rounded,
-                                            color: ShadeColors.textMuted),
-                                      ]))))),
+                        clipBehavior: Clip.antiAlias,
+                        child: Semantics(
+                          button: true,
+                          child: InkWell(
+                            onTap: () => controller.act('identity'),
+                            child: Padding(
+                              padding: const EdgeInsets.all(16),
+                              child: Row(
+                                children: [
+                                  _KeyIdenticon(
+                                    bytes: _identiconBytes,
+                                    size: 52,
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            const Expanded(
+                                              child: Text(
+                                                'Ключ шифрования',
+                                                style: TextStyle(
+                                                  fontSize: 14,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ),
+                                            Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 8,
+                                                    vertical: 4,
+                                                  ),
+                                              decoration: BoxDecoration(
+                                                color:
+                                                    ShadeColors.surfaceElevated,
+                                                borderRadius:
+                                                    BorderRadius.circular(20),
+                                              ),
+                                              child: const Text(
+                                                'Ваш',
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.w600,
+                                                  color:
+                                                      ShadeColors.textPrimary,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 6),
+                                        Text(
+                                          _fingerprintPreview,
+                                          style: const TextStyle(
+                                            fontFamily: 'monospace',
+                                            fontSize: 12,
+                                            letterSpacing: 1.2,
+                                            color: ShadeColors.textSecondary,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        const Text(
+                                          'Нажмите, чтобы показать код',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: ShadeColors.textMuted,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const Icon(
+                                    Icons.chevron_right_rounded,
+                                    color: ShadeColors.textMuted,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
                       const SizedBox(height: 12),
                       Card(
-                          child: ListTile(
-                            leading: const Icon(Icons.file_download_outlined),
-                            title: const Text('Recovery-пакет'),
-                            subtitle:
-                                const Text('Сохранить зашифрованную копию'),
-                            onTap: () => controller.act('backup'),
-                          )),
+                        child: ListTile(
+                          leading: const Icon(Icons.file_download_outlined),
+                          title: const Text('Recovery-пакет'),
+                          subtitle: const Text('Сохранить зашифрованную копию'),
+                          onTap: () => controller.act('backup'),
+                        ),
+                      ),
                       const SizedBox(height: 24),
-                      const Text('ПОДАРКИ · ВИНИЛОВАЯ СТЕНА',
-                          style: TextStyle(
-                              fontSize: 11,
-                              letterSpacing: 1.5,
-                              color: ShadeColors.textMuted)),
+                      const Text(
+                        'ПОДАРКИ · ВИНИЛОВАЯ СТЕНА',
+                        style: TextStyle(
+                          fontSize: 11,
+                          letterSpacing: 1.5,
+                          color: ShadeColors.textMuted,
+                        ),
+                      ),
                       const SizedBox(height: 4),
                       StickerCollection(
-                          username: controller.account,
-                          owner: true,
-                          backend: AlphaStickerBackend(controller)),
+                        username: controller.account,
+                        owner: true,
+                        backend: AlphaStickerBackend(controller),
+                      ),
                       const SizedBox(height: 24),
-                      ],
-                      if (showSettings) ...[
-                      const Text('ПОДКЛЮЧЁННЫЕ УСТРОЙСТВА',
-                          style: TextStyle(
-                              fontSize: 11,
-                              letterSpacing: 1.5,
-                              color: ShadeColors.textMuted)),
+                    ],
+                    if (showSettings) ...[
+                      const Text(
+                        'ПОДКЛЮЧЁННЫЕ УСТРОЙСТВА',
+                        style: TextStyle(
+                          fontSize: 11,
+                          letterSpacing: 1.5,
+                          color: ShadeColors.textMuted,
+                        ),
+                      ),
                       const SizedBox(height: 12),
                       Card(
-                          child: Column(
-                              children: controller.devices
-                                  .map((d) => ListTile(
-                                      leading: Icon(d['current'] == true
-                                          ? Icons.devices_rounded
-                                          : Icons.phonelink_rounded),
-                                      title: Text(d['name'] as String? ??
-                                          (d['current'] == true
-                                              ? 'Этот браузер'
-                                              : 'Устройство'),
-                                          style: const TextStyle(fontSize: 15)),
-                                      subtitle: Text(d['id'] as String,
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                              fontSize: 11,
-                                              color: ShadeColors.textMuted)),
-                                      trailing: d['current'] == true
-                                          ? null
-                                          : PopupMenuButton<String>(
-                                              tooltip: 'Действия с устройством',
-                                              onSelected: (action) async {
-                                                final id = d['id'] as String;
-                                                if (action == 'revoke') {
-                                                  await _confirmRevoke(context, controller, id);
-                                                  return;
-                                                }
-                                                try {
-                                                  await controller.act('history.send', {'id': id});
-                                                } catch (_) {
-                                                  // The browser bridge presents the server error.
-                                                }
-                                              },
-                                              itemBuilder: (_) => const [
-                                                PopupMenuItem(
-                                                  value: 'history',
-                                                  child: Text('Передать переписку на Android'),
-                                                ),
-                                                PopupMenuItem(
-                                                  value: 'revoke',
-                                                  child: Text('Отозвать устройство'),
-                                                ),
-                                              ])))
-                                  .toList())),
-                      const SizedBox(height: 12),
-                      Card(
-                          child: ListTile(
-                              leading: const Icon(Icons.add_link_rounded),
-                              title: const Text('Добавить устройство',
-                                  style: TextStyle(fontSize: 15)),
-                              subtitle: const Text(
-                                  'Код подключения → подтверждение запроса',
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
+                        child: Column(
+                          children: controller.devices
+                              .map(
+                                (d) => ListTile(
+                                  leading: Icon(
+                                    d['current'] == true
+                                        ? Icons.devices_rounded
+                                        : Icons.phonelink_rounded,
+                                  ),
+                                  title: Text(
+                                    d['name'] as String? ??
+                                        (d['current'] == true
+                                            ? 'Этот браузер'
+                                            : 'Устройство'),
+                                    style: const TextStyle(fontSize: 15),
+                                  ),
+                                  subtitle: Text(
+                                    d['id'] as String,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
                                       fontSize: 11,
-                                      color: ShadeColors.textMuted)),
-                              trailing:
-                                  const Icon(Icons.chevron_right_rounded),
-                              onTap: () => controller.act('devices.pair'))),
+                                      color: ShadeColors.textMuted,
+                                    ),
+                                  ),
+                                  trailing: d['current'] == true
+                                      ? null
+                                      : PopupMenuButton<String>(
+                                          tooltip: 'Действия с устройством',
+                                          onSelected: (action) async {
+                                            final id = d['id'] as String;
+                                            if (action == 'revoke') {
+                                              await _confirmRevoke(
+                                                context,
+                                                controller,
+                                                id,
+                                              );
+                                              return;
+                                            }
+                                            try {
+                                              await controller.act(
+                                                'history.send',
+                                                {'id': id},
+                                              );
+                                            } catch (_) {
+                                              // The browser bridge presents the server error.
+                                            }
+                                          },
+                                          itemBuilder: (_) => const [
+                                            PopupMenuItem(
+                                              value: 'history',
+                                              child: Text(
+                                                'Передать переписку на Android',
+                                              ),
+                                            ),
+                                            PopupMenuItem(
+                                              value: 'revoke',
+                                              child: Text(
+                                                'Отозвать устройство',
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                ),
+                              )
+                              .toList(),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Card(
+                        child: ListTile(
+                          leading: const Icon(Icons.add_link_rounded),
+                          title: const Text(
+                            'Добавить устройство',
+                            style: TextStyle(fontSize: 15),
+                          ),
+                          subtitle: const Text(
+                            'Код подключения → подтверждение запроса',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: ShadeColors.textMuted,
+                            ),
+                          ),
+                          trailing: const Icon(Icons.chevron_right_rounded),
+                          onTap: () => controller.act('devices.pair'),
+                        ),
+                      ),
                       const SizedBox(height: 20),
                       Card(
-                          child: ListTile(
-                              leading:
-                                  const Icon(Icons.notifications_outlined),
-                              title: const Text('Уведомления'),
-                              subtitle: Text(switch (controller.platform) {
-                                'ios' =>
-                                  'Push-сигнал без текста · iOS: установленное приложение',
-                                'android' =>
-                                  'Push-сигнал без текста · Android: разрешение уведомлений',
-                                _ =>
-                                  'Push-сигнал без текста · разрешите уведомления в браузере',
-                              }),
-                              onTap: () => controller.act('push.toggle'))),
+                        child: ListTile(
+                          leading: const Icon(Icons.notifications_outlined),
+                          title: const Text('Уведомления'),
+                          subtitle: Text(switch (controller.platform) {
+                            'ios' => 'Push-сигнал без текста · iOS: установленное приложение',
+                            'android' => 'Push-сигнал без текста · Android: разрешение уведомлений',
+                            _ => 'Push-сигнал без текста · разрешите уведомления в браузере',
+                          }),
+                          onTap: () => controller.act('push.toggle'),
+                        ),
+                      ),
                       const SizedBox(height: 12),
                       OutlinedButton.icon(
-                          onPressed: () => controller.act('install'),
-                          icon: const Icon(Icons.ios_share_rounded),
-                          label: const Text('Установить Shade')),
+                        onPressed: () => controller.act('install'),
+                        icon: const Icon(Icons.ios_share_rounded),
+                        label: const Text('Установить Shade'),
+                      ),
                       const SizedBox(height: 12),
                       TextButton(
-                          onPressed: () => _confirmLogout(context, controller),
-                          child: const Text('Выйти из аккаунта')),
+                        onPressed: () => _confirmLogout(context, controller),
+                        child: const Text('Выйти из аккаунта'),
+                      ),
                       const SizedBox(height: 20),
                       const Text(
-                          'Ключи и история остаются в этом браузере.\nНе очищайте данные сайта без recovery-пакета.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                              fontSize: 12,
-                              height: 1.6,
-                              color: ShadeColors.textMuted)),
-                      ],
-                    ])))),
-      ]);
+                        'Ключи и история остаются в этом браузере.\nНе очищайте данные сайта без recovery-пакета.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 12,
+                          height: 1.6,
+                          color: ShadeColors.textMuted,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class _PeerProfile extends StatelessWidget {

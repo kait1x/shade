@@ -48,7 +48,10 @@ export function createV2Stickers({ registry, io, sessionAccount }) {
       const body = (req.method === 'GET' || req.method === 'HEAD') ? null : (req.body ?? null);
       const operation = await operationDigest('stickers',
         { method: req.method, path: req.path, body });
-      await registry.authorize(auth, operation);
+      const giftRead = (req.method === 'GET' || req.method === 'HEAD') &&
+        (req.route.path === '/stickers/inventory' || req.route.path === '/user/:username/stickers');
+      if (giftRead) await registry.authorizeRead(auth, operation);
+      else await registry.authorize(auth, operation);
       req.auth = { username: auth.account };
       next();
     })().catch(() => res.status(401).json({ error: 'device_auth_required' }));

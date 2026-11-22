@@ -131,7 +131,7 @@ void main() {
     service.fail = true;
     await t.tap(find.text('Готово'));
     await t.pumpAndSettle();
-    expect(find.textContaining('Тестовая ошибка'), findsOneWidget);
+    expect(find.textContaining('Не удалось сохранить стену'), findsOneWidget);
     expect(placed, findsOneWidget);
     service.fail = false;
     await t.tap(find.text('Готово'));
@@ -212,13 +212,17 @@ void main() {
     expect(find.text('Оформить'), findsNothing);
     await t.tap(find.text('Подарить'));
     await t.pumpAndSettle();
-    await t.tap(find.text('Лунный мотылёк'));
+    expect(find.text('Цветы в полутоне'), findsOneWidget);
+    expect(
+        find.descendant(
+            of: find.byType(AlertDialog), matching: find.byType(ChoiceChip)),
+        findsNothing);
     await t.enterText(find.byType(TextField), 'До звёзд!');
     await t.pumpAndSettle();
     await capture('gift');
     await t.tap(find.widgetWithText(FilledButton, 'Подарить'));
     await t.pumpAndSettle();
-    expect(service.sent, 'moth');
+    expect(service.sent, 'flowers');
     service.wall = [
       for (var i = 0; i < 5; i++)
         {

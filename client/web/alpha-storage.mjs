@@ -78,14 +78,72 @@ async function durabilityFlush(db) {
   if (typeof tx.commit === 'function') tx.commit();
   await txDone(tx);
 }
-async function readRaw(db, id) {
-  const tx = db.transaction('states', 'readonly');
-  const req = tx.objectStore('states').get(id);
+async function readRaw(db, id, table = 'states') {
+  const tx = db.transaction(table, 'readonly');
+  const req = tx.objectStore(table).get(id);
   const done = txDone(tx);
   const result = await new Promise(resolve => { req.onsuccess = () => resolve(req.result); });
   await done;
   return result;
 }
+const readMarksKey = session => `read-marks:${session.id}`;
+const readMarksRecord = 'read-marks';
+
+export function mergeReadMarks(...sources) {
+  const merged = Object.create(null);
+  for (const source of sources) {
+    for (const [account, until] of Object.entries(source ?? {})) {
+      if (/^[a-z0-9_]{3,32}$/.test(account) && Number.isSafeInteger(until) && until > 0) {
+        merged[account] = Math.max(merged[account] ?? 0, until);
+      }
+    }
+  }
+  return merged;
+}
+
+export async function readReadMarks(session) {
+  const db = await database();
+  try {
+    const stored = await readRaw(db, readMarksKey(session), 'meta');
+    return stored ? await decryptRecord(session, readMarksRecord, stored.encrypted) : {};
+  } finally { db.close(); }
+}
+
+// Keep read cursors out of the history transaction and network queue. CAS
+// merges independent writes from multiple windows of the same browser.
+export async function saveReadMarks(session, updates) {
+  const id = readMarksKey(session);
+  const marks = mergeReadMarks(updates);
+  if (Object.keys(marks).length === 0) return;
+  const db = await database();
+  try {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const previous = await readRaw(db, id, 'meta');
+      const saved = previous
+        ? await decryptRecord(session, readMarksRecord, previous.encrypted) : {};
+      if (Object.entries(marks).every(([peer, until]) =>
+        Object.hasOwn(saved, peer) && saved[peer] >= until)) return;
+      const revision = previous?.revision ?? 0;
+      const encrypted = await encryptRecord(session, readMarksRecord, mergeReadMarks(saved, marks));
+      const tx = db.transaction('meta', 'readwrite');
+      const store = tx.objectStore('meta');
+      const current = store.get(id);
+      let committed = false;
+      current.onsuccess = () => {
+        if ((current.result?.revision ?? 0) !== revision) return;
+        store.put({ id, revision: revision + 1, encrypted });
+        committed = true;
+      };
+      await txDone(tx);
+      if (committed) {
+        await durabilityFlush(db);
+        return;
+      }
+    }
+    throw Error('Не удалось сохранить отметки о прочтении.');
+  } finally { db.close(); }
+}
+
 async function readDeletions(db) {
   const tx = db.transaction('deletions', 'readonly');
   const req = tx.objectStore('deletions').getAll();

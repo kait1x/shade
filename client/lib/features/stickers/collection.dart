@@ -398,7 +398,8 @@ class GiftDialog extends StatefulWidget {
 }
 
 class _GiftDialogState extends State<GiftDialog> {
-  String art = 'flowers', note = '', request = '', error = '';
+  static const _art = 'flowers';
+  String note = '', request = '', error = '';
   bool busy = false;
   Future<void> send() async {
     if (busy) return;
@@ -409,7 +410,7 @@ class _GiftDialogState extends State<GiftDialog> {
     }
     setState(() => busy = true);
     try {
-      await widget.backend.gift(widget.to, art, note, request);
+      await widget.backend.gift(widget.to, _art, note, request);
       if (mounted) Navigator.pop(context, true);
     } catch (e) {
       if (mounted) {
@@ -426,19 +427,8 @@ class _GiftDialogState extends State<GiftDialog> {
           title: Text('Подарок для @${widget.to}'),
           content: SingleChildScrollView(
               child: Column(mainAxisSize: MainAxisSize.min, children: [
-            stamp(art, size: 110),
-            Wrap(children: [
-              for (final e in stickerNames.entries)
-                ChoiceChip(
-                    label: Text(e.value),
-                    selected: e.key == art,
-                    onSelected: busy
-                        ? null
-                        : (_) => setState(() {
-                              art = e.key;
-                              request = '';
-                            }))
-            ]),
+            stamp(_art, size: 110),
+            Text(stickerNames[_art]!),
             TextField(
                 enabled: !busy,
                 maxLength: 240,

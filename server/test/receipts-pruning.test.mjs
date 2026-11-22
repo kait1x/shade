@@ -56,6 +56,20 @@ test('dedup within TTL window; retry never duplicates queue copies', async () =>
   assert.equal(inbox.filter(b => b.message.id === m.id).length, 1);
 });
 
+test('pruneReceipts skips persistence when no receipts are expired', async () => {
+  const f = fixture(); const r = await f.create();
+  await register(r, alice); await register(r, bob);
+  await send(r, alice, bob, 'fresh message');
+  const snapshot = f.saved();
+
+  assert.equal(await r.pruneReceipts(), 0);
+  assert.strictEqual(f.saved(), snapshot);
+
+  f.advance(8 * DAY);
+  assert.equal(await r.pruneReceipts(), 1);
+  assert.notStrictEqual(f.saved(), snapshot);
+});
+
 test('pruneReceipts removes only expired receipts/delivery; fresh survive; retract of pruned ref purges queues without tombstone', async () => {
   const f = fixture(); const r = await f.create();
   await register(r, alice); await register(r, bob);

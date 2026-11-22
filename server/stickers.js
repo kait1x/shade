@@ -9,7 +9,7 @@ const avatarPartLimit = require('express-rate-limit')({windowMs:60000,max:2400,
   keyGenerator:req=>req.auth.username,standardHeaders:true,legacyHeaders:false,
   validate:{xForwardedForHeader:false},
   message:{error:'Слишком много частей изображения. Повторите позже.'}});
-const catalog = ['orbit', 'moth', 'comet', 'ghost', 'flowers'];
+const catalog = ['flowers'];
 const empty = () => ({ inventory: [], wall: [], revision: 0 });
 function reject(status, message) { throw Object.assign(new Error(message), { status }); }
 function installStickers(app, auth, users, initial, persist, avatarChanged = () => {}) {
@@ -159,7 +159,7 @@ function installStickers(app, auth, users, initial, persist, avatarChanged = () 
     const {toUsername,stickerId,note='',requestId}=req.body || {};
     if (Object.keys(req.body || {}).some(k=>!['toUsername','stickerId','note','requestId'].includes(k))) reject(400,'Неизвестное поле');
     if (!users.has(toUsername)) reject(404,'Получатель не найден');
-    if (toUsername===name || !catalog.includes(stickerId) || typeof note!=='string' || note.length>240 ||
+    if (toUsername===name || typeof stickerId!=='string' || typeof note!=='string' || note.length>240 ||
       typeof requestId!=='string' || !/^[a-zA-Z0-9_-]{16,80}$/.test(requestId)) reject(400,'Проверьте данные подарка');
     const sender=read(name), recipient=read(toUsername);
     const receipt=sender.receipts?.find(r=>r.requestId===requestId);
@@ -168,6 +168,7 @@ function installStickers(app, auth, users, initial, persist, avatarChanged = () 
       if (!gift || gift.note!==note || gift.stickerId!==stickerId) reject(409,'Запрос уже использован');
       return {changed:false,body:{giftId:gift.giftId}};
     }
+    if (!catalog.includes(stickerId)) reject(400,'Этот подарок больше недоступен');
     const now=Date.now(), receipts=sender.receipts || [];
     if(receipts.filter(r=>r.at>now-60000).length>=8 || receipts.length>=10000 || recipient.inventory.length>=2000) reject(429,'Достигнут лимит подарков');
     const giftId=randomUUID();

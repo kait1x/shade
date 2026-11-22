@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -45,6 +46,7 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
   _Stage _stage = _Stage.loading;
   String? _error;
   bool _busy = false;
+  bool _showRecoveryPhrase = false;
   final _origin = TextEditingController(text: AlphaV2Screen.defaultOrigin);
   final _nickname = TextEditingController();
   final _passphrase = TextEditingController();
@@ -233,6 +235,31 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
       setState(() => _stage = _backend.enrolled ? _Stage.home : _Stage.enroll);
       if (_stage == _Stage.home) await _loadContacts();
     });
+  }
+
+  void _generateRecoveryPhrase() {
+    if (_passphrase.text.isNotEmpty) return;
+    final random = Random.secure();
+    const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
+    final groups = List.generate(
+        6,
+        (_) =>
+            List.generate(5, (_) => alphabet[random.nextInt(alphabet.length)])
+                .join());
+    _passphrase.text = groups.join('-');
+    setState(() {
+      _showRecoveryPhrase = true;
+      _error = null;
+    });
+  }
+
+  Future<void> _copyRecoveryPhrase() async {
+    if (_passphrase.text.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: _passphrase.text));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Фраза восстановления скопирована')));
+    }
   }
 
   Future<void> _register() async {
@@ -581,14 +608,19 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
   }
 
   Widget _field(TextEditingController controller, String label,
-      {bool obscure = false, String? hint}) {
+      {bool obscure = false,
+      String? hint,
+      Widget? suffix,
+      ValueChanged<String>? onChanged}) {
     return TextField(
         controller: controller,
         obscureText: obscure,
+        onChanged: onChanged,
         style: const TextStyle(color: ShadeColors.textPrimary, fontSize: 14),
         decoration: InputDecoration(
             labelText: label,
             hintText: hint,
+            suffixIcon: suffix,
             labelStyle: const TextStyle(color: ShadeColors.textSecondary),
             hintStyle: const TextStyle(color: ShadeColors.textMuted),
             enabledBorder: OutlineInputBorder(
@@ -690,7 +722,7 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
         ),
       ]),
       const SizedBox(height: 10),
-      const Text('Ещё один шаг, и можно писать друзьям.',
+      const Text('Придумайте никнейм и сохраните фразу восстановления.',
           style: TextStyle(color: ShadeColors.textSecondary, height: 1.5)),
       const SizedBox(height: 24),
       Container(
@@ -702,12 +734,38 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
         ),
         child:
             Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          _field(_nickname, 'Никнейм'),
+          _field(_nickname, 'Никнейм', hint: 'например, mira_22'),
+          const SizedBox(height: 6),
+          const Text('3–32 символа: латиница, цифры и _',
+              style: TextStyle(color: ShadeColors.textSecondary, fontSize: 12)),
           const SizedBox(height: 16),
-          _field(_passphrase, 'Фраза для восстановления', obscure: true),
-          const SizedBox(height: 8),
+          _field(_passphrase, 'Фраза для восстановления',
+              obscure: !_showRecoveryPhrase,
+              onChanged: (_) => setState(() {}),
+              suffix: IconButton(
+                tooltip:
+                    _showRecoveryPhrase ? 'Скрыть фразу' : 'Показать фразу',
+                onPressed: () =>
+                    setState(() => _showRecoveryPhrase = !_showRecoveryPhrase),
+                icon: Icon(_showRecoveryPhrase
+                    ? Icons.visibility_off_outlined
+                    : Icons.visibility_outlined),
+              )),
+          const SizedBox(height: 4),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: _passphrase.text.isEmpty
+                ? TextButton.icon(
+                    onPressed: _busy ? null : _generateRecoveryPhrase,
+                    icon: const Icon(Icons.auto_awesome_outlined, size: 17),
+                    label: const Text('Сгенерировать фразу'))
+                : TextButton.icon(
+                    onPressed: _busy ? null : _copyRecoveryPhrase,
+                    icon: const Icon(Icons.copy_outlined, size: 17),
+                    label: const Text('Скопировать фразу')),
+          ),
           const Text(
-              'От 24 символов. Фраза пригодится вместе с файлом восстановления, если потеряете телефон.',
+              'Сохраните фразу в менеджере паролей. Если потеряете телефон, она и файл с последнего шага помогут вернуть доступ.',
               style: TextStyle(
                   color: ShadeColors.textSecondary, fontSize: 12, height: 1.5)),
           const SizedBox(height: 18),
@@ -784,7 +842,7 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
               fontWeight: FontWeight.w600)),
       const SizedBox(height: 8),
       const Text(
-          'Файл и ваша фраза помогут вернуть доступ к аккаунту. Храните их отдельно друг от друга.',
+          'Сохраните этот файл отдельно от фразы. Чтобы вернуть доступ на новом устройстве, понадобятся оба.',
           style: TextStyle(color: ShadeColors.textSecondary, height: 1.5)),
       const SizedBox(height: 20),
       _primaryButton('Сохранить файл', () async {

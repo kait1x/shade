@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Shade · Админка</title>
+  <link rel="stylesheet" href="/admin.css">
+  <script type="module" src="/admin.js"></script>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap top-inner">
+      <div class="brand"><span class="mark" aria-hidden="true">S</span><span>SHADE</span><span class="section-name">Админка</span></div>
+      <span id="connection" class="connection" role="status">Подключение…</span>
+    </div>
+  </header>
+  <main class="wrap">
+    <div class="page-title">
+      <div><h1>Обзор</h1><p id="details">Загружаем состояние сервера</p></div>
+      <button id="refresh" type="button">Обновить</button>
+    </div>
+    <dl class="metrics" aria-label="Показатели сервера">
+      <div><dt>Аккаунты</dt><dd id="accounts">—</dd></div>
+      <div><dt>Сейчас в сети</dt><dd id="online">—</dd></div>
+      <div><dt>Привязанные устройства</dt><dd id="devices">—</dd></div>
+      <div><dt>В очереди доставки</dt><dd id="queued">—</dd></div>
+    </dl>
+    <section class="panel" aria-labelledby="accounts-title">
+      <div class="panel-head">
+        <h2 id="accounts-title">Аккаунты</h2>
+        <div class="controls">
+          <label class="search"><span>Поиск по никнейму</span><input id="query" type="search" placeholder="Например, username" maxlength="32" autocomplete="off"></label>
+          <label class="online-filter"><input id="online-only" type="checkbox"> Только в сети</label>
+        </div>
+      </div>
+      <p id="notice" class="notice" role="status">Загружаем аккаунты…</p>
+      <table id="account-table" hidden>
+        <thead><tr><th scope="col">Никнейм</th><th scope="col">Устройства</th><th scope="col">Статус</th><th scope="col">Последняя активность</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <footer class="pages">
+        <span id="results">—</span>
+        <div><button id="previous" type="button" disabled>Назад</button><button id="next" type="button" disabled>Далее</button></div>
+      </footer>
+    </section>
+  </main>
+</body>
+</html>

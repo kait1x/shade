@@ -33,6 +33,38 @@ async function setup() {
   return { f, alice, bob, ac, bc, dataDir, storageSecret, legacyUsers };
 }
 
+test('gift reads complete while a registry write is pending', async () => {
+  const { f, alice, bob, ac, bc } = await setup();
+  const entered = Promise.withResolvers();
+  const releaseWrite = Promise.withResolvers();
+  const pendingWrite = f.registry.updateState(async () => {
+    entered.resolve();
+    await releaseWrite.promise;
+  });
+  let timeout;
+  try {
+    await entered.promise;
+    const reads = await Promise.race([
+      Promise.all([
+        stickers(f, alice, ac, 'GET', '/stickers/inventory'),
+        stickers(f, bob, bc, 'GET', '/user/alice_v2/stickers'),
+      ]),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('Gift reads waited for the pending write')), 3000);
+      }),
+    ]);
+    for (const { response, result } of reads) {
+      assert.equal(response.status, 200);
+      assert.deepEqual(result.inventory, []);
+      assert.deepEqual(result.wall, []);
+    }
+  } finally {
+    clearTimeout(timeout);
+    releaseWrite.resolve();
+    try { await pendingWrite; } finally { await f.close(); }
+  }
+});
+
 test('profiles: displayName, avatar validation, CAS, idempotent uploads, auth binding', async () => {
   const { f, alice, bob, ac, bc } = await setup();
   try {
@@ -111,30 +143,36 @@ test('stickers: gift idempotency and limits, wall CAS, privacy, restart persiste
     const image = await png();
     assert.equal((await stickers(f, alice, ac, 'PUT', '/profile/avatar',
       { image, frame: 'silver', revision: 0 })).result.revision, 1);
+    for (const retiredGift of ['orbit', 'moth', 'comet', 'ghost']) {
+      assert.equal((await stickers(f, alice, ac, 'POST', '/stickers/gift', {
+        toUsername: 'bob_v2', stickerId: retiredGift, note: '', requestId: 'retired'.padEnd(16, 'x'),
+      })).response.status, 400);
+    }
+
     const requestId = 'g'.repeat(16);
     const gift = await stickers(f, alice, ac, 'POST', '/stickers/gift',
-      { toUsername: 'bob_v2', stickerId: 'orbit', note: 'hi', requestId });
+      { toUsername: 'bob_v2', stickerId: 'flowers', note: 'hi', requestId });
     assert.equal(gift.response.status, 200);
     const giftId = gift.result.giftId;
     assert.equal((await stickers(f, alice, ac, 'POST', '/stickers/gift',
-      { toUsername: 'bob_v2', stickerId: 'orbit', note: 'hi', requestId })).result.giftId, giftId);
+      { toUsername: 'bob_v2', stickerId: 'flowers', note: 'hi', requestId })).result.giftId, giftId);
     assert.equal((await stickers(f, alice, ac, 'POST', '/stickers/gift',
-      { toUsername: 'bob_v2', stickerId: 'orbit', note: 'changed', requestId })).response.status, 409);
+      { toUsername: 'bob_v2', stickerId: 'flowers', note: 'changed', requestId })).response.status, 409);
     assert.equal((await stickers(f, alice, ac, 'POST', '/stickers/gift',
       { toUsername: 'bob_v2', stickerId: 'dragon', note: '', requestId: 'h'.repeat(16) })).response.status, 400);
     assert.equal((await stickers(f, alice, ac, 'POST', '/stickers/gift',
-      { toUsername: 'alice_v2', stickerId: 'orbit', note: '', requestId: 'i'.repeat(16) })).response.status, 400);
+      { toUsername: 'alice_v2', stickerId: 'flowers', note: '', requestId: 'i'.repeat(16) })).response.status, 400);
     assert.equal((await stickers(f, alice, ac, 'POST', '/stickers/gift',
-      { toUsername: 'legacy_only', stickerId: 'orbit', note: '', requestId: 'j'.repeat(16) })).response.status, 404);
+      { toUsername: 'legacy_only', stickerId: 'flowers', note: '', requestId: 'j'.repeat(16) })).response.status, 404);
     assert.equal((await stickers(f, alice, ac, 'POST', '/stickers/gift',
-      { toUsername: 'bob_v2', stickerId: 'orbit', note: 'x'.repeat(241), requestId: 'k'.repeat(16) })).response.status, 400);
+      { toUsername: 'bob_v2', stickerId: 'flowers', note: 'x'.repeat(241), requestId: 'k'.repeat(16) })).response.status, 400);
     // 8 gifts/min cap (1 already sent): 7 more ok, 9th rejected.
     for (let n = 0; n < 7; n++) {
       assert.equal((await stickers(f, alice, ac, 'POST', '/stickers/gift',
-        { toUsername: 'bob_v2', stickerId: 'moth', note: '', requestId: `rate${n}`.padEnd(16, 'r') })).response.status, 200);
+        { toUsername: 'bob_v2', stickerId: 'flowers', note: '', requestId: `rate${n}`.padEnd(16, 'r') })).response.status, 200);
     }
     assert.equal((await stickers(f, alice, ac, 'POST', '/stickers/gift',
-      { toUsername: 'bob_v2', stickerId: 'moth', note: '', requestId: 'rate'.padEnd(16, 'x') })).response.status, 429);
+      { toUsername: 'bob_v2', stickerId: 'flowers', note: '', requestId: 'rate'.padEnd(16, 'x') })).response.status, 429);
 
     const bobInv = await stickers(f, bob, bc, 'GET', '/stickers/inventory');
     assert.equal(bobInv.result.inventory.length, 8);
@@ -152,7 +190,7 @@ test('stickers: gift idempotency and limits, wall CAS, privacy, restart persiste
     assert.equal((await stickers(f, alice, ac, 'PUT', '/stickers/wall', { wall: [placement], revision: 0 })).response.status, 400);
     // Public view exposes only giftId/stickerId of the inventory.
     const publicView = await stickers(f, alice, ac, 'GET', '/user/bob_v2/stickers');
-    assert.deepEqual(publicView.result.inventory[0], { giftId, stickerId: 'orbit' });
+    assert.deepEqual(publicView.result.inventory[0], { giftId, stickerId: 'flowers' });
     assert.equal(publicView.result.wall.length, 1);
   } finally { await f.close(); }
 

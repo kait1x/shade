@@ -47,7 +47,7 @@ test('full device-v2 PWA lifecycle integrates every backend feature', async () =
     assert.equal((await stickers(f, alice, ac, 'PUT', '/profile/avatar', { image, frame: 'silver', revision: 0 })).result.revision, 1);
     assert.equal((await stickers(f, bob, bc, 'GET', '/user/alice_int/avatar')).result.displayName, 'Alice');
     const gift = await stickers(f, alice, ac, 'POST', '/stickers/gift',
-      { toUsername: 'bob_int', stickerId: 'comet', note: 'integration', requestId: 'int'.padEnd(16, 'g') });
+      { toUsername: 'bob_int', stickerId: 'flowers', note: 'integration', requestId: 'int'.padEnd(16, 'g') });
     const giftId = gift.result.giftId;
     await stickers(f, bob, bc, 'PUT', '/stickers/wall',
       { wall: [{ giftId, xNorm: .25, yNorm: .75, scale: 1, rotation: 0, zIndex: 1 }], revision: 0 });

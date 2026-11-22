@@ -96,9 +96,17 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     const d = active(state, auth.account, auth.id);
     check(d, 'Revoked or unknown device');
     check(await verify(requestText(auth.account, auth.id, auth.nonce, operation), auth.proof, d.signingKey), 'Invalid device proof');
+    // A roster change can commit while an independent read verifies its proof.
+    check(active(state, auth.account, auth.id)?.signingKey === d.signingKey, 'Revoked or unknown device');
   }
   return {
     exportSnapshot: () => structuredClone(state),
+    adminSummary: () => ({
+      accounts: Object.entries(state.accounts)
+        .filter(([, record]) => record.history.length)
+        .map(([account, record]) => ({ account, devices: record.history.at(-1).devices.length })),
+      queued: Object.values(state.queues).reduce((count, queue) => count + queue.length, 0),
+    }),
     // Generic serialized transaction for adapter-owned sections (stickers/
     // profiles). Single writer: persist happens before state is visible.
     updateState: work => serial(() => transaction(async next => { await work(next); })),
@@ -106,6 +114,8 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     list: () => Object.entries(state.accounts).filter(([, r]) => r.history.length)
       .map(([account]) => ({ account })),
     authorize: (auth, operation) => serial(() => authenticate(auth, operation)),
+    // Read-only callers can authorize against the last committed roster.
+    authorizeRead: authenticate,
     directory: account => {
       const record = recordOf(state, account); check(record, 'Unknown account');
       return { root: record.root, genesis: structuredClone(record.genesis), history: structuredClone(record.history),
@@ -228,17 +238,19 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     })),
     // Pruning старых квитанций: окно дедупа = TTL очередей (7 дней); иначе
     // глобальный cap 10000 исчерпывается навсегда (SYNC_PLAN §5.3).
-    pruneReceipts: () => serial(() => transaction(async next => {
+    pruneReceipts: () => serial(() => {
       const cutoff = clock() - 7 * 24 * 60 * 60 * 1000;
-      let pruned = 0;
-      for (const [key, at] of Object.entries(next.receiptAt || {})) {
-        if (at <= cutoff) {
-          delete next.receipts[key]; delete next.receiptAt[key]; delete next.delivery[key];
-          pruned++;
+      const expired = Object.keys(state.receiptAt).filter(key => state.receiptAt[key] <= cutoff);
+      if (!expired.length) return 0;
+      return transaction(async next => {
+        for (const key of expired) {
+          delete next.receipts[key];
+          delete next.receiptAt[key];
+          delete next.delivery[key];
         }
-      }
-      return pruned;
-    })),
+        return expired.length;
+      });
+    }),
     fetch: auth => serial(async () => {
       await authenticate(auth, await operationDigest('fetch'));
       const own = current(state, auth.account);
@@ -334,13 +346,21 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     }),
     // Web Push subscriptions (contract C6): one per device, encrypted at rest
     // inside the snapshot, bound to the authenticated account/device.
-    pushSubscribe: (auth, subscription) => serial(() => transaction(next => {
+    pushSubscribe: (auth, subscription) => serial(() => {
       const key = `${auth.account}:${auth.id}`;
-      check(Object.hasOwn(next.pushSubscriptions, key) ||
-        Object.keys(next.pushSubscriptions).length < 10000, 'Push capacity reached');
-      next.pushSubscriptions[key] = { ...subscription, createdAt: clock() };
-      return { subscribed: true };
-    })),
+      const existing = state.pushSubscriptions[key];
+      if (subscription.format === 'fcm' && existing?.format === 'fcm' &&
+          existing.token === subscription.token) {
+        // A retry after a lost response can reuse the already durable subscription.
+        return { subscribed: true };
+      }
+      return transaction(next => {
+        check(Object.hasOwn(next.pushSubscriptions, key) ||
+          Object.keys(next.pushSubscriptions).length < 10000, 'Push capacity reached');
+        next.pushSubscriptions[key] = { ...subscription, createdAt: clock() };
+        return { subscribed: true };
+      });
+    }),
     pushUnsubscribe: auth => serial(() => transaction(next => {
       delete next.pushSubscriptions[`${auth.account}:${auth.id}`];
       return { subscribed: false };

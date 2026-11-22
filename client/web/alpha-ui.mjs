@@ -1,5 +1,6 @@
 import { AlphaClient, api } from './alpha-client.mjs';
 import { listVaults } from './device_crypto.mjs';
+import { mergeReadMarks, readReadMarks, saveReadMarks } from './alpha-storage.mjs';
 import { hash, genesisText, check } from './protocol/device-v2.mjs';
 import { createDeviceBinding, unlockDeviceBinding, platformAuthenticatorAvailable,
   generateRecoveryPhrase, bindingErrorText } from './device_binding.mjs';
@@ -32,7 +33,7 @@ function announceIncoming() {
   if (!client.state || !client.session) return;
   let latest = null;
   for (const m of client.state.messages) {
-    if (m.from === client.session.account || m.from === selected) continue;
+    if (m.from === client.session.account || m.from === selected || m.readAt) continue;
     if (m.createdAt <= Math.max(ui.readUntil[m.from] ?? 0, toastShown.get(m.from) ?? 0)) continue;
     if (!latest || m.createdAt > latest.createdAt) latest = m;
   }
@@ -251,6 +252,22 @@ function submit(form, text) { const button = node('button', text, 'btn primary')
 function downloadBackup() {
   const blob = new Blob([JSON.stringify({ backup: client.state.backup, genesis: client.state.own.genesis }, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob), anchor = node('a'); anchor.href = url; anchor.download = `shade-recovery-${client.session.account}.json`; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+function appleInstallStep() {
+  const steps = node('ol', undefined, 'install-steps');
+  for (const text of [
+    'Откройте эту страницу в Safari.',
+    'Нажмите «Поделиться» → «На экран Домой» → «Добавить».',
+    'Откройте Shade с экрана «Домой» и войдите через Google.',
+  ]) steps.append(node('li', text));
+  onboard({
+    medallion: true,
+    title: 'Установите Shade',
+    cardTitle: 'Откройте Shade как приложение',
+    cardSubtitle: 'Для регистрации на iPhone и iPad сначала добавьте Shade на экран «Домой».',
+    children: [steps],
+    footer: 'Установка через Safari · без App Store',
+  });
 }
 function welcomeStep(status) {
   const children = [];
@@ -920,7 +937,9 @@ function render() {
 let keyInfo = null, sessionEmail = null;
 function platformName() {
   const ua = navigator.userAgent;
-  return /iPhone|iPad|iPod/.test(ua) ? 'ios' : /Android/.test(ua) ? 'android' : 'desktop';
+  const appleMobile = /iPhone|iPad|iPod/.test(ua) ||
+    (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  return appleMobile ? 'ios' : /Android/.test(ua) ? 'android' : 'desktop';
 }
 function thisDeviceName() {
   const ua = navigator.userAgent;
@@ -959,13 +978,22 @@ function hostFlutter() {
 }
 function flutterReady() { flutterLoading?.remove(); flutterLoading = null; }
 async function openApp() {
-  ready = true;
+  ui = { selected: null, positions: {}, readUntil: {} };
   uiStorage = `shade-ui:${client.vault.id}`;
   try {
     const saved = JSON.parse(sessionStorage.getItem(uiStorage));
     if (saved && typeof saved === 'object') ui = { selected: typeof saved.selected === 'string' ? saved.selected : null,
       positions: saved.positions || {}, readUntil: saved.readUntil || {} };
   } catch { /* UI preferences never prevent unlocking encrypted history. */ }
+  const confirmed = Object.create(null);
+  for (const message of client.state.messages) {
+    if (message.to !== client.session.account || !message.readAt) continue;
+    confirmed[message.from] = Math.max(confirmed[message.from] ?? 0, message.createdAt);
+  }
+  const storedMarks = await readReadMarks(client.session).catch(() => ({}));
+  ui.readUntil = mergeReadMarks(storedMarks, confirmed, ui.readUntil);
+  saveReadMarks(client.session, ui.readUntil).catch(() => {});
+  ready = true;
   selected = ui.selected;
   // Restored conversation resumes its presence watch (queued while offline).
   if (selected && selected !== client.session?.account) client.watchPeer(selected, true);
@@ -1005,10 +1033,12 @@ async function openApp() {
           if (data.account) client.watchPeer(data.account, false); break;
         case 'typing': client.sendTyping(data.account); break;
         case 'read': {
-          if (document.hidden || selected !== data.account) break;
+          if (document.hidden || selected !== data.account ||
+              !/^[a-z0-9_]{3,32}$/.test(data.account) || !Number.isSafeInteger(data.until)) break;
           const previous = ui.readUntil[data.account] || 0;
           if (data.until > previous) {
             ui.readUntil[data.account] = data.until; saveUi();
+            const saved = saveReadMarks(client.session, { [data.account]: data.until });
             // Read-ACK (contract C5): the relay op runs on refs the read mark
             // covers; failures surface honestly without breaking the UI.
             // Media display messages carry a local pseudo-ref (media:<id>):
@@ -1018,11 +1048,14 @@ async function openApp() {
             const refs = client.state.messages
               .filter(m => m.from === data.account && m.createdAt <= data.until &&
                 !m.readAt && m.status === 'received')
-              .slice(-200).map(m => m.ref)
-              .filter(ref => /^[a-z0-9_]{3,32}:[a-f0-9]{64}:[a-f0-9]{64}$/.test(ref));
+              .map(m => m.ref)
+              .filter(ref => /^[a-z0-9_]{3,32}:(primary|[a-f0-9]{64}):[a-f0-9]{64}$/.test(ref))
+              .slice(-200);
+            // A failed network receipt must not reset the local unread count.
+            render();
+            await saved.catch(() => {});
             if (refs.length) client.markRead(data.account, refs)
               .catch(e => notice(errors[e.message] || e.message));
-            render();
           } break;
         }
         case 'position': ui.positions[data.account] = {offset:Math.max(0,data.offset),bottom:!!data.bottom}; saveUi(); break;
@@ -1126,6 +1159,13 @@ window.addEventListener('pageshow', event => { if (event.persisted && ready) cli
 
 async function boot() {
   if (!window.isSecureContext || !crypto.subtle) throw Error('Для криптографии требуется HTTPS или localhost.');
+  const installRequired = platformName() === 'ios' && !isStandalone();
+  // Existing browser vaults can still be unlocked to export or link them.
+  let vaults;
+  if (installRequired) {
+    vaults = await listVaults().catch(() => []);
+    if (!vaults.length) { appleInstallStep(); return; }
+  }
   // iOS standalone PWA: the OAuth callback may have run in a different cookie
   // jar (in-app browser). The one-time fragment code establishes the session
   // in THIS jar. The fragment is cleared immediately and never sent anywhere.
@@ -1148,13 +1188,14 @@ async function boot() {
   sessionEmail = typeof status.email === 'string' && status.email ? status.email : null;
   if (!status.authenticated) { welcomeStep(status); return; }
   loggedIn = !status.offline;
-  const vaults = await listVaults();
+  vaults ??= await listVaults();
   const matching = vaults.filter(v => v.account === status.account);
-  if (status.account && !matching.length) { linkStep(status.account); return; }
   if (matching.length || (!status.account && vaults.length)) {
     unlockStep(matching.length ? matching : vaults, status);
     return;
   }
+  if (installRequired) { appleInstallStep(); return; }
+  if (status.account) { linkStep(status.account); return; }
   nicknameStep();
 }
 boot().catch(error => errorStep(errors[error.message] || error.message));

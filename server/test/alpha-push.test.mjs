@@ -68,6 +68,9 @@ test('push subscriptions are device-bound, wake-only, SSRF-guarded and pruned on
 
     const token = 'synthetic-android-device-token';
     assert.equal((await operation(f, bob, bc, 'push.android.subscribe', {token})).result.subscribed, true);
+    const savedSubscription = f.registry.pushSubscription(bob.session.account, bob.session.id);
+    assert.equal((await operation(f, bob, bc, 'push.android.subscribe', {token})).result.subscribed, true);
+    assert.deepEqual(f.registry.pushSubscription(bob.session.account, bob.session.id), savedSubscription);
     await sendText(f, alice, bob, ac, 'mobile wake');
     assert.deepEqual(androidTokens, [token]);
     assert.equal((await operation(f, bob, bc, 'push.android.unsubscribe', null)).result.subscribed, false);

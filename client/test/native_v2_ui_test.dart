@@ -22,9 +22,9 @@ import 'package:shade/core/services/device_v2/crypto.dart';
 import 'package:shade/core/services/device_v2/protocol.dart';
 import 'package:shade/core/services/device_v2/repository.dart';
 import 'package:shade/core/services/device_v2/store.dart';
-import 'package:shade/core/services/device_v2/sync.dart';
 import 'package:shade/core/services/device_v2/transport.dart';
 import 'package:shade/core/theme/shade_theme.dart';
+import 'package:shade/core/widgets/avatar_view.dart';
 import 'package:shade/core/widgets/shade_logo.dart';
 import 'package:shade/core/widgets/shade_tab_dock.dart';
 import 'package:shade/features/v2/presentation/v2_chat_screen.dart';
@@ -353,6 +353,253 @@ void main() {
         tester.widget<EditableText>(find.byType(EditableText)).controller.text,
         'избранное');
   });
+
+  testWidgets('compose button follows scroll without covering chat rows',
+      (tester) async {
+    final view = tester.view;
+    view.devicePixelRatio = 2;
+    view.physicalSize = const Size(640, 1260);
+    view.padding = const FakeViewPadding(top: 48, bottom: 48);
+    view.viewPadding = view.padding;
+    addTearDown(view.resetDevicePixelRatio);
+    addTearDown(view.resetPhysicalSize);
+    addTearDown(view.resetPadding);
+    addTearDown(view.resetViewPadding);
+    tester.platformDispatcher.platformBrightnessTestValue = Brightness.light;
+    addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+    tester.platformDispatcher.textScaleFactorTestValue = 1.8;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+
+    final sync = FakeSync()
+      ..chatList = [
+        for (var i = 0; i < 96; i++)
+          V2ChatSummary(
+            peer: 'long_display_name_for_chat_row_$i',
+            confirmed: true,
+            lastAt: 1700000000000,
+            lastText: 'Длинное сообщение в строке чата ' * 5,
+            unread: i == 0 ? 123 : 0,
+          ),
+      ];
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        v2SessionProvider.overrideWith(_ReadySession.new),
+        v2SyncProvider.overrideWithValue(sync),
+      ],
+      child: Consumer(
+          builder: (context, ref, _) => MaterialApp.router(
+                routerConfig: ref.watch(v2RouterProvider),
+                theme: buildShadeTheme(),
+              )),
+    ));
+    await tester.pumpAndSettle();
+
+    expect(Theme.of(tester.element(find.byType(V2ChatsScreen))).brightness,
+        Brightness.dark);
+    final button = find.byKey(const ValueKey('v2-compose'));
+    final scroll = find.byKey(const PageStorageKey('v2-chats-scroll'));
+    final dock = find.byType(ShadeTabDock);
+    expect(tester.getSize(button).width, greaterThan(48));
+    expect(tester.getBottomLeft(scroll).dy,
+        lessThan(tester.getTopLeft(button).dy));
+    expect(
+        tester.getBottomLeft(button).dy, lessThan(tester.getTopLeft(dock).dy));
+    expect(tester.getBottomLeft(dock).dy, lessThanOrEqualTo(630));
+
+    final targets = find.descendant(of: dock, matching: find.byType(InkWell));
+    expect(targets, findsNWidgets(3));
+    for (final element in targets.evaluate()) {
+      final size = (element.renderObject! as RenderBox).size;
+      expect(size.width, greaterThanOrEqualTo(48));
+      expect(size.height, greaterThanOrEqualTo(48));
+    }
+    expect(find.text('99+'), findsOneWidget);
+    expect(find.byKey(const ValueKey('long_display_name_for_chat_row_95')),
+        findsNothing);
+
+    await tester.drag(scroll, const Offset(0, -250));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(button), const Size(48, 48));
+    final bottomPeer =
+        find.byKey(const ValueKey('long_display_name_for_chat_row_95'));
+    await tester.scrollUntilVisible(bottomPeer, 430,
+        scrollable: find
+            .descendant(of: scroll, matching: find.byType(Scrollable))
+            .first);
+    await tester.pumpAndSettle();
+    expect(tester.getCenter(bottomPeer).dy,
+        lessThan(tester.getTopLeft(button).dy));
+    expect(bottomPeer.hitTestable(), findsOneWidget);
+    await tester.drag(scroll, const Offset(0, 180));
+    await tester.pumpAndSettle();
+    expect(tester.getSize(button).width, greaterThan(48));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('chat search and dock respect the open keyboard', (tester) async {
+    final view = tester.view;
+    view.physicalSize = const Size(320, 600);
+    view.devicePixelRatio = 1;
+    addTearDown(view.resetPhysicalSize);
+    addTearDown(view.resetDevicePixelRatio);
+    addTearDown(view.resetViewInsets);
+    final sync = FakeSync();
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        v2SessionProvider.overrideWith(_ReadySession.new),
+        v2SyncProvider.overrideWithValue(sync),
+      ],
+      child: Consumer(
+          builder: (context, ref, _) => MaterialApp.router(
+                routerConfig: ref.watch(v2RouterProvider),
+                theme: buildShadeTheme(),
+              )),
+    ));
+    await tester.pumpAndSettle();
+    final search = find.byKey(const Key('v2-chat-search'));
+    await tester.tap(find.byTooltip('Скрыть поиск'));
+    await tester.pumpAndSettle();
+    expect(search, findsNothing);
+    await tester.tap(find.byTooltip('Поиск'));
+    await tester.pumpAndSettle();
+    expect(search, findsOneWidget);
+    await tester.enterText(search, 'фрагмент');
+    view.viewInsets = const FakeViewPadding(bottom: 280);
+    await tester.pumpAndSettle();
+    expect(find.byType(ShadeTabDock), findsNothing);
+    expect(find.byKey(const ValueKey('v2-compose')), findsNothing);
+    expect(search.hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+
+    view.resetViewInsets();
+    await tester.pumpAndSettle();
+    expect(find.byType(ShadeTabDock), findsOneWidget);
+    await tester.tap(find.byTooltip('Очистить поиск'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(search).controller?.text, isEmpty);
+    final compose = find.byType(FloatingActionButton);
+    await tester.tap(compose);
+    await tester.tap(compose, warnIfMissed: false);
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+  });
+
+  testWidgets('sync updates leave unchanged chat row contents mounted',
+      (tester) async {
+    final sync = FakeSync()
+      ..chatList = [
+        const V2ChatSummary(
+            peer: 'peer_one', confirmed: true, lastText: 'Первое'),
+        const V2ChatSummary(
+            peer: 'peer_two', confirmed: true, lastText: 'Второе'),
+      ];
+    await tester.pumpWidget(_wrap(sync, const V2ChatsScreen()));
+    await tester.pumpAndSettle();
+    final avatar = find.descendant(
+      of: find.byKey(const ValueKey('peer_one')),
+      matching: find.byType(AvatarView),
+    );
+    final before = tester.widget(avatar);
+    final unchanged = sync.chatList.first.lastText;
+    sync.chatList = [
+      const V2ChatSummary(peer: 'peer_two', confirmed: true, lastText: 'Новое'),
+      V2ChatSummary(peer: 'peer_one', confirmed: true, lastText: unchanged),
+    ];
+    sync.emit();
+    await tester.pumpAndSettle();
+    expect(find.text('Новое'), findsOneWidget);
+    expect(tester.widget(avatar), same(before));
+  });
+
+  for (final scale in [1.0, 1.3, 1.5, 2.0]) {
+    testWidgets('Balanced Glass fits a 320 px screen at text scale $scale',
+        (tester) async {
+      final view = tester.view;
+      view.physicalSize = const Size(320, 680);
+      view.devicePixelRatio = 1;
+      view.padding = const FakeViewPadding(top: 24, bottom: 24);
+      view.viewPadding = view.padding;
+      addTearDown(view.resetPhysicalSize);
+      addTearDown(view.resetDevicePixelRatio);
+      addTearDown(view.resetPadding);
+      addTearDown(view.resetViewPadding);
+      tester.platformDispatcher.textScaleFactorTestValue = scale;
+      addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+
+      final now = DateTime.now();
+      final timestamp = DateTime(now.year, now.month, now.day, 14, 42);
+      final sync = FakeSync()
+        ..chatList = [
+          V2ChatSummary(
+            peer: 'an_unusually_long_handle',
+            confirmed: true,
+            lastAt: timestamp.millisecondsSinceEpoch,
+            lastText: 'Длинное сообщение в переписке ' * 3,
+            unread: 126,
+          ),
+        ];
+      final reducedMotion = scale == 2.0;
+      await tester.pumpWidget(ProviderScope(
+        overrides: [
+          v2SessionProvider.overrideWith(_ReadySession.new),
+          v2SyncProvider.overrideWithValue(sync),
+        ],
+        child: Consumer(
+            builder: (context, ref, _) => MaterialApp.router(
+                  routerConfig: ref.watch(v2RouterProvider),
+                  theme: buildShadeTheme(),
+                  builder: (context, child) => MediaQuery(
+                    data: MediaQuery.of(context)
+                        .copyWith(disableAnimations: reducedMotion),
+                    child: child!,
+                  ),
+                )),
+      ));
+      await tester.pumpAndSettle();
+
+      final dock = find.byType(ShadeTabDock);
+      expect(find.byType(BackdropFilter), findsNothing);
+      expect(find.descendant(of: dock, matching: find.byType(ClipRRect)),
+          findsOneWidget);
+
+      final name = tester.getRect(find.text('@an_unusually_long_handle'));
+      final time = tester.getRect(find.text('14:42'));
+      expect(name.right, lessThan(time.left));
+      expect(find.text('99+'), findsOneWidget);
+      for (final label in ['Чаты', 'Настройки', 'Профиль']) {
+        final target = find.descendant(of: dock, matching: find.text(label));
+        expect(tester.widget<Text>(target).maxLines, 1);
+        final ink = find.ancestor(of: target, matching: find.byType(InkWell));
+        expect(tester.getSize(ink).height, greaterThanOrEqualTo(48));
+        expect(tester.getRect(ink).contains(tester.getCenter(target)), isTrue);
+      }
+
+      final search = find.byKey(const Key('v2-chat-search'));
+      final before = tester.getSize(search);
+      await tester.tap(search);
+      await tester.pump(const Duration(milliseconds: 220));
+      expect(tester.getSize(search), before);
+      FocusManager.instance.primaryFocus?.unfocus();
+
+      final mark = find.byKey(const ValueKey('shade-dock-selection'));
+      final selection = tester.widget<AnimatedAlign>(mark);
+      expect(selection.duration,
+          reducedMotion ? Duration.zero : const Duration(milliseconds: 220));
+      await tester
+          .tap(find.descendant(of: dock, matching: find.text('Настройки')));
+      // Sample both common animation tick intervals. These are logic/layout
+      // checks, not measurements of device refresh rates.
+      final tick = Duration(microseconds: scale <= 1.3 ? 16667 : 8333);
+      for (var i = 0; i < 28; i++) {
+        await tester.pump(tick);
+        expect(tester.takeException(), isNull);
+      }
+      await tester.pumpAndSettle();
+      expect(tester.widget<ShadeTabDock>(dock).selectedIndex, 1);
+      expect(tester.widget<AnimatedAlign>(mark).alignment,
+          AlignmentDirectional.center);
+    });
+  }
 
   testWidgets('v2 welcome uses the full height of a tall phone', (tester) async {
     final view = tester.view;

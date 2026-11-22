@@ -4,8 +4,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:shade/core/theme/shade_theme.dart';
-import 'package:shade/core/widgets/shade_motion.dart';
+import 'package:shade/core/widgets/shade_profile_layout.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shade/core/services/device_v2/crypto.dart';
@@ -198,61 +197,6 @@ Future<String?> _editText(
               ]));
 }
 
-class V2ProfileAction extends StatelessWidget {
-  const V2ProfileAction(this.icon, this.label, this.onTap,
-      {super.key, this.primary = false});
-
-  final IconData icon;
-  final String label;
-  final VoidCallback? onTap;
-  final bool primary;
-
-  @override
-  Widget build(BuildContext context) {
-    final active = onTap != null;
-    final highlighted = active && primary;
-    final foreground = !active
-        ? ShadeColors.textMuted
-        : highlighted
-            ? Colors.black
-            : ShadeColors.textPrimary;
-    final shape = RoundedRectangleBorder(
-      borderRadius: BorderRadius.circular(18),
-      side: BorderSide(
-          color: highlighted ? Colors.transparent : ShadeColors.greyBorder),
-    );
-    return ShadeTapScale(
-      child: Material(
-        color: highlighted ? ShadeColors.textPrimary : ShadeColors.surfaceCard,
-        shape: shape,
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          customBorder: shape,
-          onTap: active
-              ? () {
-                  ShadeMotion.selection(context);
-                  onTap!();
-                }
-              : null,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Icon(icon, color: foreground, size: 21),
-              const SizedBox(height: 9),
-              Text(label,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: foreground)),
-            ]),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class ProfileEditorControl extends ConsumerWidget {
   final String account;
   final Widget? avatar;
@@ -266,7 +210,7 @@ class ProfileEditorControl extends ConsumerWidget {
     final profile = result.valueOrNull;
     if (social == null) {
       return avatar ??
-          const V2ProfileAction(Icons.edit_outlined, 'Имя', null,
+          const ShadeProfileAction(Icons.edit_outlined, 'Имя', null,
               primary: true);
     }
     Future<void> editAvatar() async {
@@ -297,33 +241,9 @@ class ProfileEditorControl extends ConsumerWidget {
     }
     final preview = avatar;
     if (preview != null) {
-      return Tooltip(
-        message: 'Изменить аватар',
-        child: InkWell(
-          customBorder: const CircleBorder(),
-          onTap: editAvatar,
-          child: Stack(clipBehavior: Clip.none, children: [
-            preview,
-            Positioned(
-              right: 0,
-              bottom: 0,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: const Color(0xff111113),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: const Color(0xff29292d), width: 2),
-                ),
-                child: const Padding(
-                  padding: EdgeInsets.all(6),
-                  child: Icon(Icons.edit_outlined, size: 15),
-                ),
-              ),
-            ),
-          ]),
-        ),
-      );
+      return ShadeAvatarEdit(avatar: preview, onTap: editAvatar);
     }
-    return V2ProfileAction(Icons.edit_outlined, 'Имя', () async {
+    return ShadeProfileAction(Icons.edit_outlined, 'Имя', () async {
       final value =
           await _editText(context, 'Отображаемое имя', profile?.name ?? '', 64);
       if (value == null || value.isEmpty || !context.mounted) return;

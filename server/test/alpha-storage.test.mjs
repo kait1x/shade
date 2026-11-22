@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { createVault, unlockVault, saveVault, loadVault, listVaults } from '../../client/web/device_crypto.mjs';
-import { readState, writeState } from '../../client/web/alpha-storage.mjs';
+import { readReadMarks, readState, saveReadMarks, writeState } from '../../client/web/alpha-storage.mjs';
 
 const phrase = 'synthetic storage reliability passphrase';
 // Fresh IndexedDB factory per test: databases never leak between scenarios.
@@ -52,6 +52,24 @@ test('state writes are CAS-protected, verified by read-back and reversible', asy
   assert.equal((await readState(session)).revision, 1);
   assert.equal(await writeState(session, { messages: [], outbox: [] }, 1), 2);
   assert.deepEqual((await readState(session)).value, { messages: [], outbox: [] });
+});
+
+test('read marks survive unlocking the vault again and merge concurrent tabs', async () => {
+  const vault = await createVault('reads_test', phrase);
+  const original = await unlockVault(vault, phrase);
+  const history = { messages: [{ ref: 'a:b:c' }], outbox: [] };
+  const revision = await writeState(original, history, 0);
+  await Promise.all([
+    saveReadMarks(original, { alice: 100 }),
+    saveReadMarks(original, { alice: 200, bob: 300 }),
+  ]);
+  await saveReadMarks(original, { alice: 150 });
+
+  const reopened = await unlockVault(vault, phrase);
+  assert.deepEqual(await readReadMarks(reopened), { alice: 200, bob: 300 });
+  assert.deepEqual(await readState(reopened), { revision, value: history });
+  const otherVault = await createVault('other_reads_test', phrase);
+  assert.deepEqual(await readReadMarks(await unlockVault(otherVault, phrase)), {});
 });
 
 test('deletion journal survives a rolled-back state commit (WebKit loss model)', async () => {
@@ -165,4 +183,29 @@ test('v1 databases upgrade additively to v2 without losing vaults', async () => 
   // The upgraded database accepts the durability flush path.
   await saveVault(await createVault('upgrade_second', phrase));
   assert.equal((await listVaults()).length, 2);
+});
+test('web status refresh retains confirmed reads after reopening the vault', async t => {
+  globalThis.window = new EventTarget();
+  t.after(() => { delete globalThis.window; });
+  const { AlphaClient } = await import('../../client/web/alpha-client.mjs');
+  const vault = await createVault('sender_test', phrase);
+  const session = await unlockVault(vault, phrase);
+  const device = { account: 'receiver', id: 'primary', acknowledgedAt: 100, readAt: 200 };
+  const messages = [
+    { ref: 'text', from: session.account, status: 'accepted', devices: [device] },
+    { ref: 'photo', from: session.account, status: 'accepted', chunkRefs: ['chunk'], devices: [device] },
+  ];
+  await writeState(session, { messages }, 0);
+  const client = new AlphaClient();
+  await client.load(vault, phrase);
+  client.operation = async (op, refs) => {
+    assert.equal(op, 'status');
+    assert.deepEqual(refs, ['text', 'chunk']);
+    return { text: [], chunk: [{ account: device.account, id: device.id, acknowledgedAt: 150 }] };
+  };
+  await client.refreshDelivery();
+
+  const reopened = await readState(session);
+  assert.deepEqual(reopened.value.messages[0].devices, [device]);
+  assert.deepEqual(reopened.value.messages[1].devices, [{ ...device, acknowledgedAt: 150 }]);
 });
