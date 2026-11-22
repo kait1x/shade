@@ -64,7 +64,9 @@ class _CollectionState extends State<StickerCollection> {
         });
       }
     } catch (e) {
-      if (mounted) setState(() => error = 'Не удалось загрузить подарки. Попробуйте обновить.');
+      if (mounted)
+        setState(
+            () => error = 'Не удалось загрузить подарки. Попробуйте обновить.');
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -97,7 +99,9 @@ class _CollectionState extends State<StickerCollection> {
         });
       }
     } catch (e) {
-      if (mounted) setState(() => error = 'Не удалось сохранить стену. Повторите попытку.');
+      if (mounted)
+        setState(
+            () => error = 'Не удалось сохранить стену. Повторите попытку.');
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -173,31 +177,30 @@ class _CollectionState extends State<StickerCollection> {
               padding: EdgeInsets.symmetric(vertical: 10),
               child: Text('Здесь появятся стикеры, которые вам подарят.'),
             ),
-          if (data != null) ...[
-            if (book)
-              _book(gifts)
-            else
-              LayoutBuilder(builder: (ctx, b) {
-                final w = b.maxWidth, h = w * .69, side = w * .23;
-                // The saved wall can reference a gift the inventory list does
-                // not contain (partial load, server-side cleanup); skip such
-                // placements instead of crashing the whole collection.
-                final giftsById = {for (final g in gifts) g.id: g};
-                return Container(
-                    height: h,
-                    decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(18),
-                        boxShadow: const [
-                          BoxShadow(
-                              color: Colors.black38,
-                              blurRadius: 16,
-                              offset: Offset(0, 6))
-                        ]),
-                    clipBehavior: Clip.antiAlias,
-                    child: Stack(children: [
-                      const Positioned.fill(child: ReferenceLid()),
-                      for (final p in wall)
-                        if (giftsById[p.id] != null)
+          if (book) ...[
+            if (data != null) _book(gifts),
+          ] else ...[
+            LayoutBuilder(builder: (ctx, b) {
+              final w = b.maxWidth, h = w * .69, side = w * .23;
+              // The saved wall can reference a gift the inventory list does
+              // not contain (partial load, server-side cleanup); skip such
+              // placements instead of crashing the whole collection.
+              final giftsById = {for (final g in gifts) g.id: g};
+              return Container(
+                  height: h,
+                  decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(18),
+                      boxShadow: const [
+                        BoxShadow(
+                            color: Colors.black38,
+                            blurRadius: 16,
+                            offset: Offset(0, 6))
+                      ]),
+                  clipBehavior: Clip.antiAlias,
+                  child: Stack(children: [
+                    const Positioned.fill(child: ReferenceLid()),
+                    for (final p in wall)
+                      if (giftsById[p.id] != null)
                         Positioned(
                             key: ValueKey(p.id),
                             left: p.x * (w - side),
@@ -257,11 +260,11 @@ class _CollectionState extends State<StickerCollection> {
                                                             color: Colors.amber,
                                                             width: 2)
                                                         : null),
-                                            child: stamp(
-                                                giftsById[p.id]!.art))))))
-                    ]));
-              }),
-            if (widget.owner && !book)
+                                            child:
+                                                stamp(giftsById[p.id]!.art))))))
+                  ]));
+            }),
+            if (widget.owner && data != null)
               Wrap(spacing: 8, children: [
                 TextButton.icon(
                     icon: Icon(editing ? Icons.check : Icons.tune, size: 16),
@@ -445,8 +448,7 @@ class _GiftDialogState extends State<GiftDialog> {
                   request = '';
                 }),
             if (error.isNotEmpty)
-              Text(error,
-                  style: const TextStyle(color: Colors.redAccent))
+              Text(error, style: const TextStyle(color: Colors.redAccent))
           ])),
           actions: [
             TextButton(

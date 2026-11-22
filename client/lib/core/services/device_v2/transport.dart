@@ -32,6 +32,35 @@ class AlphaTransport {
   /// Для восстановленной сессии или тестового fixture; в production cookie
   /// выдаётся сервером после проверки Google.
   String? sessionCookie;
+  Future<void> Function(String cookie)? onSessionRenewed;
+  Future<void>? _sessionRenewal;
+
+  Future<T> _withDeviceSession<T>(String account, String id, String privateKey,
+      Future<T> Function() request) async {
+    final cookie = sessionCookie;
+    try {
+      return await request();
+    } on AlphaTransportException catch (error) {
+      if (error.code != 'login_required' || _disposed) rethrow;
+      if (_sessionRenewal != null || sessionCookie == cookie) {
+        await (_sessionRenewal ??=
+            _renewSession(account, id, privateKey).whenComplete(() {
+          _sessionRenewal = null;
+        }));
+      }
+      return request();
+    }
+  }
+
+  Future<void> _renewSession(
+      String account, String id, String privateKey) async {
+    final result = await deviceSession(account, id, privateKey);
+    final cookie = sessionCookie;
+    check(result['account'] == account && cookie != null,
+        'Device session did not renew');
+    if (!_disposed) await onSessionRenewed?.call(cookie!);
+  }
+
   io.Socket? _socket;
   Timer? _pollTimer;
   Timer? _reconnectTimer;
@@ -197,6 +226,7 @@ class AlphaTransport {
           body: {'idToken': idToken, 'nonce': nonce}) as Map<String, dynamic>;
 
   Future<void> logout() async {
+    await _sessionRenewal;
     try {
       await _send('POST', '/api/logout');
     } on AlphaTransportException catch (error) {
@@ -259,9 +289,11 @@ class AlphaTransport {
       required String privateKey}) async {
     final digest = operationDigest(
         'stickers', {'method': method, 'path': path, 'body': body});
-    final proof = await _proof(digest, account, id, privateKey);
-    return await _send(method, '/api/v2$path',
-        body: body, deviceAuth: jsonEncode(proof)) as Map<String, dynamic>;
+    return _withDeviceSession(account, id, privateKey, () async {
+      final proof = await _proof(digest, account, id, privateKey);
+      return await _send(method, '/api/v2$path',
+          body: body, deviceAuth: jsonEncode(proof)) as Map<String, dynamic>;
+    });
   }
 
   Future<dynamic> operation(String op, Object? body,
@@ -273,11 +305,15 @@ class AlphaTransport {
         op == 'send'
             ? sha256Hex(messageText(body as Map<String, dynamic>))
             : body);
-    return await _send('POST', '/api/v2/operation', body: {
-      'op': op,
-      'body': body,
-      'auth': await _proof(operation, account, id, privateKey)
-    });
+    return _withDeviceSession(
+        account,
+        id,
+        privateKey,
+        () async => _send('POST', '/api/v2/operation', body: {
+              'op': op,
+              'body': body,
+              'auth': await _proof(operation, account, id, privateKey)
+            }));
   }
 
   Future<List<dynamic>> fetch(

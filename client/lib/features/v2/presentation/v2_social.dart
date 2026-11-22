@@ -93,12 +93,30 @@ class V2Social implements StickerBackend {
   }
 
   @override
-  Future<Collection> load(String name, bool owner) async =>
-      Collection(await request(
+  Future<Collection> load(String name, bool owner) async {
+    final cacheKey = 'stickers:${owner ? 'inventory' : 'wall'}:$name';
+    final origin = repo.transport.origin;
+    Map<String, dynamic> json;
+    try {
+      json = await request(
           'GET',
           owner
               ? '/stickers/inventory'
-              : '/user/${Uri.encodeComponent(name)}/stickers'));
+              : '/user/${Uri.encodeComponent(name)}/stickers');
+    } catch (_) {
+      final cached =
+          await database.readAvatarProfile(repo.account, origin, cacheKey);
+      if (cached == null) rethrow;
+      return Collection(cached);
+    }
+    final collection = Collection(json);
+    try {
+      await database.cacheAvatarProfile(repo.account, origin, cacheKey, json);
+    } catch (_) {
+      // The relay response is still usable if the local cache is unavailable.
+    }
+    return collection;
+  }
 
   @override
   Future<Map<String, dynamic>> save(int rev, List<Placement> wall) {
@@ -238,22 +256,44 @@ class V2ProfileAction extends StatelessWidget {
 class ProfileEditorControl extends ConsumerWidget {
   final String account;
   final Widget? avatar;
-  const ProfileEditorControl(this.account, {super.key, this.avatar});
+  final bool avatarShortcut;
+  const ProfileEditorControl(this.account,
+      {super.key, this.avatar, this.avatarShortcut = false});
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final social = ref.watch(v2SocialProvider);
     final result = ref.watch(publicProfileProvider(account));
     final profile = result.valueOrNull;
-    if (social == null || profile == null) {
+    if (social == null) {
       return avatar ??
-          V2ProfileAction(
-            Icons.edit_outlined,
-            'Имя',
-            social != null && result.hasError
-                ? () => ref.invalidate(publicProfileProvider(account))
-                : null,
-            primary: true,
-          );
+          const V2ProfileAction(Icons.edit_outlined, 'Имя', null,
+              primary: true);
+    }
+    Future<void> editAvatar() async {
+      final changed = await Navigator.of(context).push<bool>(MaterialPageRoute(
+        builder: (_) => AlphaAvatarEditor(
+          initialName:
+              profile?.name.isNotEmpty == true ? profile!.name : account,
+          initialImage: profile?.image,
+          initialFrame: profile?.frame ?? AvatarFrame.none,
+          save: ({required frame, required replaceImage, image}) async {
+            final revision =
+                profile?.revision ?? (await social.profile(account)).revision;
+            await social.avatar(revision, frame, replaceImage, image);
+          },
+        ),
+      ));
+      if (changed == true && context.mounted)
+        ref.invalidate(publicProfileProvider(account));
+    }
+
+    if (avatarShortcut) {
+      return ListTile(
+        leading: const Icon(Icons.add_a_photo_outlined),
+        title: const Text('Изменить аватар'),
+        trailing: const Icon(Icons.chevron_right_rounded),
+        onTap: editAvatar,
+      );
     }
     final preview = avatar;
     if (preview != null) {
@@ -261,18 +301,7 @@ class ProfileEditorControl extends ConsumerWidget {
         message: 'Изменить аватар',
         child: InkWell(
           customBorder: const CircleBorder(),
-          onTap: () async {
-            await Navigator.of(context).push(MaterialPageRoute<void>(
-              builder: (_) => AlphaAvatarEditor(
-                initialName: profile.name.isEmpty ? account : profile.name,
-                initialImage: profile.image,
-                initialFrame: profile.frame,
-                save: ({required frame, required replaceImage, image}) =>
-                    social.avatar(profile.revision, frame, replaceImage, image),
-              ),
-            ));
-            if (context.mounted) ref.invalidate(publicProfileProvider(account));
-          },
+          onTap: editAvatar,
           child: Stack(clipBehavior: Clip.none, children: [
             preview,
             Positioned(
@@ -296,7 +325,7 @@ class ProfileEditorControl extends ConsumerWidget {
     }
     return V2ProfileAction(Icons.edit_outlined, 'Имя', () async {
       final value =
-          await _editText(context, 'Отображаемое имя', profile.name, 64);
+          await _editText(context, 'Отображаемое имя', profile?.name ?? '', 64);
       if (value == null || value.isEmpty || !context.mounted) return;
       try {
         await social.name(value);

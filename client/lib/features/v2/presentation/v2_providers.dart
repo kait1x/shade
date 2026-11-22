@@ -174,6 +174,8 @@ class V2SessionNotifier extends StateNotifier<V2SessionState> {
             status: V2SessionStatus.needsEnrollment, account: account);
         return;
       }
+      transport.onSessionRenewed =
+          (value) => secure.write(key: 'alpha_v2_cookie', value: value);
       final sync = V2SyncService(repository: repository, database: database);
       _sync = sync;
       sync.start();

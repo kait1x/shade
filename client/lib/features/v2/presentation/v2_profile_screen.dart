@@ -185,6 +185,9 @@ class _ProfileBody extends ConsumerWidget {
                       const _SectionLabel('Информация'),
                       const SizedBox(height: 8),
                       _ProfileCard(children: [
+                        if (social != null)
+                          ProfileEditorControl(profile.account,
+                              avatarShortcut: true),
                         ListTile(
                           leading: const Icon(Icons.alternate_email_rounded),
                           title: Text(handle),

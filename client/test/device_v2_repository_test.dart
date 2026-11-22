@@ -8,6 +8,7 @@ import 'package:shade/features/v2/presentation/v2_social.dart';
 import 'dart:typed_data';
 
 import 'package:fast_rsa/fast_rsa.dart';
+import 'package:image/image.dart' as image;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shade/core/database/database_service.dart';
@@ -130,8 +131,21 @@ void main() {
     final savedWall = await social.load(repo.account, true);
     expect(savedWall.wall.single.y, 1);
     expect(savedWall.wall.single.rotation, closeTo(pi, .000001));
-    await social.avatar(0, AvatarFrame.silver, false, null);
-    expect((await social.profile(repo.account)).frame, AvatarFrame.silver);
+    // The phone can keep its local keys while its HTTP cookie expires.
+    transport.sessionCookie = null;
+    final renewedCookies = <String>[];
+    transport.onSessionRenewed = (cookie) async => renewedCookies.add(cookie);
+    final source = image.Image(width: 256, height: 256);
+    image.fill(source, color: image.ColorRgb8(48, 120, 200));
+    await Future.wait([
+      social.load(repo.account, true),
+      social.profile(repo.account),
+    ]);
+    expect(renewedCookies, hasLength(1));
+    await social.avatar(0, AvatarFrame.silver, true, image.encodeJpg(source));
+    final savedAvatar = await social.profile(repo.account);
+    expect(savedAvatar.frame, AvatarFrame.silver);
+    expect(image.decodeImage(savedAvatar.image!)?.width, 512);
 
     // Исходящее: outbox → сервер → Web расшифровывает и ACK-ает.
     const toWeb = 'Android → Web через репозиторий 🌍';
