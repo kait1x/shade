@@ -26,6 +26,7 @@ import 'package:shade/core/services/device_v2/sync.dart';
 import 'package:shade/core/services/device_v2/transport.dart';
 import 'package:shade/core/theme/shade_theme.dart';
 import 'package:shade/core/widgets/shade_logo.dart';
+import 'package:shade/core/widgets/shade_tab_dock.dart';
 import 'package:shade/features/v2/presentation/v2_chat_screen.dart';
 import 'package:shade/features/v2/presentation/v2_chats_screen.dart';
 import 'package:shade/features/v2/presentation/v2_connect_screen.dart';
@@ -326,9 +327,11 @@ void main() {
     await tester.pumpAndSettle();
 
     Finder tab(String label) => find.descendant(
-      of: find.byType(NavigationBar),
+      of: find.byType(ShadeTabDock),
       matching: find.text(label),
     );
+    expect(tester.getBottomLeft(find.byType(FloatingActionButton)).dy,
+        lessThanOrEqualTo(tester.getTopLeft(find.byType(ShadeTabDock)).dy));
     final search = find.byKey(const Key('v2-chat-search'));
     await tester.enterText(search, 'избранное');
     await tester.tap(tab('Профиль'));
@@ -340,7 +343,7 @@ void main() {
     await tester.tap(find.text('Устройства'));
     await tester.pumpAndSettle();
     expect(find.byType(V2DevicesScreen), findsOneWidget);
-    expect(find.byType(NavigationBar), findsNothing);
+    expect(find.byType(ShadeTabDock), findsNothing);
 
     await tester.pageBack();
     await tester.pumpAndSettle();

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
+import 'package:shade/core/widgets/shade_tab_dock.dart';
 import 'package:shade/features/stickers/aluminium.dart';
 import 'package:shade/features/web/presentation/alpha_app.dart';
 import 'package:shade/features/web/presentation/alpha_controller.dart';
@@ -513,9 +514,15 @@ void main() {
     // Without the JS bridge the projection does not change on its own.
     c.apply({...data, 'selected': null});
     await tester.pumpAndSettle();
-    // Self profile: logout needs an explicit confirmation.
-    await tester.tap(find.byTooltip('Профиль'));
+    final dock = find.byType(ShadeTabDock);
+    Finder tab(String label) => find.descendant(of: dock, matching: find.text(label));
+    await tester.tap(tab('Профиль'));
     await tester.pumpAndSettle();
+    expect(tester.widget<ShadeTabDock>(dock).selectedIndex, 2);
+    await tester.tap(tab('Настройки'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<ShadeTabDock>(dock).selectedIndex, 1);
+    // Logging out still requires confirmation after moving it to Settings.
     await tester.dragUntilVisible(
         find.text('Выйти из аккаунта'), find.byType(ListView).first,
         const Offset(0, -160));

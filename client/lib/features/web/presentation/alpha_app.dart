@@ -9,6 +9,7 @@ import 'package:shade/core/widgets/avatar_view.dart';
 import 'package:shade/core/widgets/shade_logo.dart';
 import 'package:shade/core/widgets/shade_motion.dart';
 import 'package:shade/core/widgets/shade_states.dart';
+import 'package:shade/core/widgets/shade_tab_dock.dart';
 import 'package:shade/features/chats/presentation/widgets/message_bubble.dart';
 import 'package:shade/features/chats/presentation/widgets/message_input.dart';
 import 'package:shade/features/stickers/collection.dart';
@@ -45,11 +46,13 @@ class _Shell extends StatefulWidget {
 
 class _ShellState extends State<_Shell> {
   bool profile = false;
+  bool settings = false;
   bool peerProfile = false;
   // Экран «Новый разговор» живёт в той же оболочке, что и профили.
   bool newChat = false;
   void openNewChat() => setState(() {
         profile = false;
+        settings = false;
         peerProfile = false;
         newChat = true;
       });
@@ -58,12 +61,20 @@ class _ShellState extends State<_Shell> {
     final c = widget.controller;
     return LayoutBuilder(builder: (context, bounds) {
       final wide = bounds.maxWidth >= 900;
-      final right = newChat
+      final showDock = !wide && !newChat && !peerProfile && c.selected == null &&
+          MediaQuery.viewInsetsOf(context).bottom == 0;
+      void selectTab(int index) => setState(() {
+        settings = index == 1;
+        profile = index == 2;
+      });
+      final right = settings
+          ? _Profile(controller: c, settingsOnly: true, close: () => selectTab(0))
+          : newChat
           ? _NewChat(
               controller: c, close: () => setState(() => newChat = false))
           : profile
               ? _Profile(
-                  controller: c, close: () => setState(() => profile = false))
+                  controller: c, showSettings: wide, close: () => setState(() => profile = false))
               : peerProfile && c.selected != null
                   ? _PeerProfile(
                       controller: c,
@@ -75,21 +86,25 @@ class _ShellState extends State<_Shell> {
                       back: () => c.act('back', {'account': c.selected}),
                       openPeer: () => setState(() => peerProfile = true));
       return PopScope(
-          canPop: c.selected == null && !profile && !peerProfile && !newChat,
+          canPop: c.selected == null && !profile && !settings && !peerProfile && !newChat,
           onPopInvokedWithResult: (didPop, _) {
             if (!didPop) {
               if (newChat) {
                 setState(() => newChat = false);
               } else if (peerProfile) {
                 setState(() => peerProfile = false);
-              } else if (profile) {
-                setState(() => profile = false);
+              } else if (profile || settings) {
+                selectTab(0);
               } else {
                 c.act('back', {'account': c.selected});
               }
             }
           },
           child: Scaffold(
+              extendBody: showDock,
+              bottomNavigationBar: showDock
+                  ? ShadeTabDock(selectedIndex: settings ? 1 : profile ? 2 : 0, onSelected: selectTab)
+                  : null,
               body: SafeArea(
                   bottom: false,
                   child: Center(
@@ -104,18 +119,19 @@ class _ShellState extends State<_Shell> {
                                           newChat: openNewChat,
                                           openChat: () => setState(() {
                                                 profile = false;
+                                                settings = false;
                                                 peerProfile = false;
                                                 newChat = false;
                                               }),
                                           profile: () => setState(
-                                              () => profile = !profile))),
+                                              () { settings = false; profile = !profile; }))),
                                   const VerticalDivider(width: 1),
                                   Expanded(child: right),
                                 ])
                               : AnimatedSwitcher(
                                   duration: ShadeMotion.duration(context),
                                   child: newChat ||
-                                          profile ||
+                                          profile || settings ||
                                           peerProfile && c.selected != null ||
                                           c.selected != null
                                       ? right
@@ -124,6 +140,7 @@ class _ShellState extends State<_Shell> {
                                           newChat: openNewChat,
                                           openChat: () => setState(() {
                                                 profile = false;
+                                                settings = false;
                                                 peerProfile = false;
                                                 newChat = false;
                                               }),
@@ -426,7 +443,7 @@ class _ChatsState extends State<_Chats> {
       // переписки вместо каталога всех пользователей.
       Positioned(
           right: 16,
-          bottom: 58,
+          bottom: 58 + MediaQuery.paddingOf(context).bottom,
           child: FloatingActionButton.extended(
               elevation: 0,
               heroTag: 'alpha-compose',
@@ -1275,7 +1292,9 @@ class _NewChatState extends State<_NewChat> {
 }
 
 class _Profile extends StatelessWidget {
-  const _Profile({required this.controller, required this.close});
+  const _Profile({required this.controller, required this.close, this.showSettings = true, this.settingsOnly = false});
+  final bool showSettings;
+  final bool settingsOnly;
   final AlphaController controller;
   final VoidCallback close;
 
@@ -1445,15 +1464,16 @@ class _Profile extends StatelessWidget {
               tooltip: 'Назад',
               onPressed: close,
               icon: const Icon(Icons.chevron_left_rounded)),
-          const Text('Профиль',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700))
+          Text(settingsOnly ? 'Настройки' : 'Профиль',
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700))
         ]),
         Expanded(
             child: Center(
                 child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 560),
                     child:
-                        ListView(padding: const EdgeInsets.all(24), children: [
+                        ListView(padding: EdgeInsets.fromLTRB(24, 24, 24, 24 + MediaQuery.paddingOf(context).bottom), children: [
+                      if (!settingsOnly) ...[
                       Center(
                           child: GestureDetector(
                               onTap: () => _editAvatar(context),
@@ -1654,6 +1674,8 @@ class _Profile extends StatelessWidget {
                           owner: true,
                           backend: AlphaStickerBackend(controller)),
                       const SizedBox(height: 24),
+                      ],
+                      if (showSettings) ...[
                       const Text('ПОДКЛЮЧЁННЫЕ УСТРОЙСТВА',
                           style: TextStyle(
                               fontSize: 11,
@@ -1753,6 +1775,7 @@ class _Profile extends StatelessWidget {
                               fontSize: 12,
                               height: 1.6,
                               color: ShadeColors.textMuted)),
+                      ],
                     ])))),
       ]);
 }

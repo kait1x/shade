@@ -34,6 +34,7 @@ class V2ChatsScreen extends ConsumerWidget {
     return Scaffold(
       backgroundColor: HomeStyle.background,
       body: SafeArea(
+        bottom: false,
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 760),
@@ -129,16 +130,20 @@ class V2ChatsScreen extends ConsumerWidget {
           ),
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        tooltip: 'Новый чат',
-        elevation: 0,
-        backgroundColor: HomeStyle.ink,
-        foregroundColor: Colors.black,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        onPressed: () => _showNewChatDialog(context, ref),
-        icon: const Icon(Icons.edit_outlined, size: 20),
-        label: const Text('Написать',
-            style: TextStyle(fontWeight: FontWeight.w700)),
+      floatingActionButton: Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.paddingOf(context).bottom),
+        child: FloatingActionButton.extended(
+          tooltip: 'Новый чат',
+          elevation: 0,
+          backgroundColor: HomeStyle.ink,
+          foregroundColor: Colors.black,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          onPressed: () => _showNewChatDialog(context, ref),
+          icon: const Icon(Icons.edit_outlined, size: 20),
+          label: const Text('Написать',
+              style: TextStyle(fontWeight: FontWeight.w700)),
+        ),
       ),
     );
   }
@@ -204,7 +209,8 @@ class V2ChatsScreen extends ConsumerWidget {
     }
     return ListView.builder(
         keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-        padding: const EdgeInsets.only(bottom: 96),
+        padding:
+            EdgeInsets.only(bottom: 76 + MediaQuery.paddingOf(context).bottom),
         itemCount: chats.length,
         itemBuilder: (context, index) {
           final chat = chats[index];

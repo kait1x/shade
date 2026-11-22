@@ -160,7 +160,7 @@ class _ProfileBody extends ConsumerWidget {
               constraints: const BoxConstraints(maxWidth: 640),
               child: Padding(
                 padding: EdgeInsets.fromLTRB(
-                    20, 4, 20, 32 + MediaQuery.viewPaddingOf(context).bottom),
+                    20, 4, 20, 32 + MediaQuery.paddingOf(context).bottom),
                 child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
