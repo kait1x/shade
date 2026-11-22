@@ -29,9 +29,6 @@ class V2ChatsScreen extends ConsumerWidget {
     final sync = ref.watch(v2SyncProvider);
     final account = sync?.account ?? '';
 
-    final profile = account.isEmpty
-        ? null
-        : ref.watch(publicProfileProvider(account)).asData?.value;
     final syncError = sync?.lastError;
 
     return Scaffold(
@@ -63,18 +60,6 @@ class V2ChatsScreen extends ConsumerWidget {
                           ? null
                           : () => context.push('/chat/$account'),
                       icon: const Icon(Icons.bookmark_border_rounded),
-                    ),
-                    IconButton(
-                      tooltip: 'Мой профиль',
-                      onPressed: () => context.push('/profile'),
-                      icon: AvatarView(
-                        name: profile?.name.isNotEmpty == true
-                            ? profile!.name
-                            : account,
-                        size: 34,
-                        image: profile?.image,
-                        frame: profile?.frame ?? AvatarFrame.none,
-                      ),
                     ),
                     const SizedBox(width: 12),
                   ],

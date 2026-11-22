@@ -241,7 +241,7 @@ class _ProfileBody extends ConsumerWidget {
                             owner: true,
                             backend: social),
                       const SizedBox(height: 22),
-                      const _SectionLabel('Настройки'),
+                      const _SectionLabel('Устройства и доступ'),
                       const SizedBox(height: 8),
                       _ProfileCard(children: [
                         ListTile(
@@ -252,24 +252,6 @@ class _ProfileBody extends ConsumerWidget {
                           trailing: const Icon(Icons.chevron_right_rounded),
                           onTap: () => context.push('/devices'),
                         ),
-                        if (push != null)
-                          SwitchListTile(
-                              title: const Text('Уведомления о сообщениях'),
-                              value: push.enabled,
-                              onChanged: push.busy
-                                  ? null
-                                  : (value) async {
-                                      try {
-                                        await push.setEnabled(value);
-                                      } catch (e) {
-                                        if (context.mounted)
-                                          ScaffoldMessenger.of(context)
-                                              .showSnackBar(SnackBar(
-                                                  content: Text(e is StateError
-                                                      ? e.message
-                                                      : 'Не удалось изменить уведомления. Проверьте разрешение и доступность сервера.')));
-                                      }
-                                    }),
                         ExpansionTile(
                           title: const Text('Сведения об устройствах'),
                           leading: const Icon(Icons.info_outline_rounded),

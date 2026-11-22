@@ -301,7 +301,56 @@ class _ScriptedTransport extends AlphaTransport {
           required String privateKey}) async {}
 }
 
+class _ReadySession extends V2SessionNotifier {
+  _ReadySession(super.ref);
+
+  @override
+  Future<void> restore() async {
+    state = const V2SessionState(status: V2SessionStatus.ready);
+  }
+}
+
 void main() {
+  testWidgets('нижние вкладки сохраняют поиск, открывают профиль и настройки',
+      (tester) async {
+    final sync = FakeSync();
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        v2SessionProvider.overrideWith(_ReadySession.new),
+        v2SyncProvider.overrideWithValue(sync),
+      ],
+      child: Consumer(builder: (context, ref, _) => MaterialApp.router(
+        routerConfig: ref.watch(v2RouterProvider),
+      )),
+    ));
+    await tester.pumpAndSettle();
+
+    Finder tab(String label) => find.descendant(
+      of: find.byType(NavigationBar),
+      matching: find.text(label),
+    );
+    final search = find.byKey(const Key('v2-chat-search'));
+    await tester.enterText(search, 'избранное');
+    await tester.tap(tab('Профиль'));
+    await tester.pumpAndSettle();
+    expect(find.byType(V2ProfileScreen), findsOneWidget);
+
+    await tester.tap(tab('Настройки'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Устройства'));
+    await tester.pumpAndSettle();
+    expect(find.byType(V2DevicesScreen), findsOneWidget);
+    expect(find.byType(NavigationBar), findsNothing);
+
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+    await tester.tap(tab('Чаты'));
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextField>(search).controller?.text ??
+        tester.widget<EditableText>(find.byType(EditableText)).controller.text,
+        'избранное');
+  });
+
   testWidgets('v2 welcome uses the full height of a tall phone', (tester) async {
     final view = tester.view;
     view.physicalSize = const Size(393, 920);

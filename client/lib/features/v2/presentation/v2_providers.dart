@@ -33,6 +33,8 @@ import 'v2_connect_screen.dart';
 import 'v2_devices_screen.dart';
 import 'v2_enrollment_route.dart';
 import 'v2_profile_screen.dart';
+import 'v2_main_tabs.dart';
+import 'v2_settings_screen.dart';
 
 /// Модели проекций sync-слоя доступны экранам через единый импорт провайдеров.
 export 'package:shade/core/services/device_v2/sync.dart';
@@ -560,7 +562,26 @@ final v2RouterProvider = Provider<GoRouter>((ref) {
       GoRoute(
           path: '/connect',
           builder: (context, state) => const V2ConnectScreen()),
-      GoRoute(path: '/', builder: (context, state) => const V2ChatsScreen()),
+      StatefulShellRoute.indexedStack(
+        builder: (context, state, navigation) =>
+            V2MainTabs(navigation: navigation),
+        branches: [
+          StatefulShellBranch(routes: [
+            GoRoute(
+                path: '/', builder: (context, state) => const V2ChatsScreen()),
+          ]),
+          StatefulShellBranch(routes: [
+            GoRoute(
+                path: '/settings',
+                builder: (context, state) => const V2SettingsScreen()),
+          ]),
+          StatefulShellBranch(routes: [
+            GoRoute(
+                path: '/profile',
+                builder: (context, state) => const V2ProfileScreen()),
+          ]),
+        ],
+      ),
       GoRoute(
           path: '/chat/:peer',
           pageBuilder: (context, state) {
@@ -574,10 +595,6 @@ final v2RouterProvider = Provider<GoRouter>((ref) {
             }
             return _v2Page(context, state, V2ChatScreen(peer: peer));
           }),
-      GoRoute(
-          path: '/profile',
-          pageBuilder: (context, state) =>
-              _v2Page(context, state, const V2ProfileScreen())),
       GoRoute(
           path: '/devices',
           pageBuilder: (context, state) =>
