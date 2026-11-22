@@ -4,6 +4,8 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:shade/core/theme/shade_theme.dart';
+import 'package:shade/core/widgets/shade_motion.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shade/core/services/device_v2/crypto.dart';
@@ -172,24 +174,80 @@ Future<String?> _editText(
               ]));
 }
 
-class ProfileEditorActions extends ConsumerWidget {
+class V2ProfileAction extends StatelessWidget {
+  const V2ProfileAction(this.icon, this.label, this.onTap,
+      {super.key, this.primary = false});
+
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+  final bool primary;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = onTap != null;
+    final highlighted = active && primary;
+    final foreground = !active
+        ? ShadeColors.textMuted
+        : highlighted
+            ? Colors.black
+            : ShadeColors.textPrimary;
+    final shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(18),
+      side: BorderSide(
+          color: highlighted ? Colors.transparent : ShadeColors.greyBorder),
+    );
+    return ShadeTapScale(
+      child: Material(
+        color: highlighted ? ShadeColors.textPrimary : ShadeColors.surfaceCard,
+        shape: shape,
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          customBorder: shape,
+          onTap: active
+              ? () {
+                  ShadeMotion.selection(context);
+                  onTap!();
+                }
+              : null,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Icon(icon, color: foreground, size: 21),
+              const SizedBox(height: 9),
+              Text(label,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: foreground)),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class ProfileEditorControl extends ConsumerWidget {
   final String account;
   final Widget? avatar;
-  const ProfileEditorActions(this.account, {super.key, this.avatar});
+  const ProfileEditorControl(this.account, {super.key, this.avatar});
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final social = ref.watch(v2SocialProvider);
-    if (social == null) return avatar ?? const SizedBox.shrink();
     final result = ref.watch(publicProfileProvider(account));
     final profile = result.asData?.value;
-    if (profile == null) {
-      if (avatar != null) return avatar!;
-      return result.hasError
-          ? TextButton.icon(
-              onPressed: () => ref.invalidate(publicProfileProvider(account)),
-              icon: const Icon(Icons.refresh),
-              label: const Text('Загрузить профиль'))
-          : const LinearProgressIndicator();
+    if (social == null || profile == null) {
+      return avatar ??
+          V2ProfileAction(
+            Icons.edit_outlined,
+            'Имя',
+            social != null && result.hasError
+                ? () => ref.invalidate(publicProfileProvider(account))
+                : null,
+            primary: true,
+          );
     }
     final preview = avatar;
     if (preview != null) {
@@ -230,27 +288,21 @@ class ProfileEditorActions extends ConsumerWidget {
         ),
       );
     }
-    return Center(
-      child: TextButton.icon(
-        icon: const Icon(Icons.edit_outlined, size: 16),
-        label: const Text('Изменить имя'),
-        onPressed: () async {
-          final value =
-              await _editText(context, 'Отображаемое имя', profile.name, 64);
-          if (value == null || value.isEmpty || !context.mounted) return;
-          try {
-            await social.name(value);
-            if (context.mounted) ref.invalidate(publicProfileProvider(account));
-          } catch (_) {
-            if (context.mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Не удалось сохранить имя')),
-              );
-            }
-          }
-        },
-      ),
-    );
+    return V2ProfileAction(Icons.edit_outlined, 'Имя', () async {
+      final value =
+          await _editText(context, 'Отображаемое имя', profile.name, 64);
+      if (value == null || value.isEmpty || !context.mounted) return;
+      try {
+        await social.name(value);
+        if (context.mounted) ref.invalidate(publicProfileProvider(account));
+      } catch (_) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Не удалось сохранить имя')),
+          );
+        }
+      }
+    }, primary: true);
   }
 }
 
