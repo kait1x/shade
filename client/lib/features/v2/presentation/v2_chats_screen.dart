@@ -12,6 +12,8 @@ import 'package:shade/core/services/device_v2/protocol.dart';
 import 'package:shade/core/theme/shade_theme.dart';
 import 'package:shade/core/widgets/avatar_view.dart';
 import 'package:shade/core/widgets/shade_motion.dart';
+import 'package:shade/core/widgets/shade_logo.dart';
+import 'package:shade/features/home/presentation/widgets/home_style.dart';
 import 'package:shade/core/widgets/shade_ui.dart';
 
 import 'v2_social.dart';
@@ -27,62 +29,157 @@ class V2ChatsScreen extends ConsumerWidget {
     final sync = ref.watch(v2SyncProvider);
     final account = sync?.account ?? '';
 
+    final profile = account.isEmpty
+        ? null
+        : ref.watch(publicProfileProvider(account)).asData?.value;
+    final syncError = sync?.lastError;
+
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Чаты'),
-        actions: [
-          IconButton(
-              tooltip: 'Новый чат',
-              icon: const Icon(Icons.add_rounded),
-              onPressed: () => _showNewChatDialog(context, ref)),
-          IconButton(
-              tooltip: 'Устройства',
-              icon: const Icon(Icons.devices_outlined),
-              onPressed: () => context.push('/devices')),
-          IconButton(
-              tooltip: 'Профиль',
-              icon: const Icon(Icons.person_outline_rounded),
-              onPressed: () => context.push('/profile')),
-          const SizedBox(width: 4),
-        ],
+      backgroundColor: HomeStyle.background,
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 760),
+            child: NestedScrollView(
+              headerSliverBuilder: (context, scrolled) => [
+                SliverAppBar(
+                  pinned: true,
+                  backgroundColor: HomeStyle.background,
+                  toolbarHeight: 64,
+                  titleSpacing: 24,
+                  title: const Row(mainAxisSize: MainAxisSize.min, children: [
+                    ShadeLogo(size: 28),
+                    SizedBox(width: 10),
+                    Text('SHADE',
+                        style: TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 3.2)),
+                  ]),
+                  actions: [
+                    IconButton(
+                      tooltip: 'Открыть Избранное',
+                      onPressed: account.isEmpty
+                          ? null
+                          : () => context.push('/chat/$account'),
+                      icon: const Icon(Icons.bookmark_border_rounded),
+                    ),
+                    IconButton(
+                      tooltip: 'Мой профиль',
+                      onPressed: () => context.push('/profile'),
+                      icon: AvatarView(
+                        name: profile?.name.isNotEmpty == true
+                            ? profile!.name
+                            : account,
+                        size: 34,
+                        image: profile?.image,
+                        frame: profile?.frame ?? AvatarFrame.none,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                  ],
+                  bottom: PreferredSize(
+                    preferredSize: const Size.fromHeight(1),
+                    child: AnimatedContainer(
+                      duration: HomeStyle.duration(context),
+                      height: 1,
+                      color: scrolled ? HomeStyle.border : Colors.transparent,
+                    ),
+                  ),
+                ),
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 22, 24, 12),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Сообщения',
+                            style: TextStyle(
+                                fontSize: 34,
+                                height: 1.15,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -1.3)),
+                        if (syncError != null)
+                          TextButton.icon(
+                            onPressed: notifier.refresh,
+                            icon:
+                                const Icon(Icons.cloud_off_outlined, size: 18),
+                            label: Text(syncError),
+                          ),
+                        const SizedBox(height: 20),
+                        TextField(
+                          key: const Key('v2-chat-search'),
+                          onChanged: notifier.setQuery,
+                          textInputAction: TextInputAction.search,
+                          decoration: InputDecoration(
+                            hintText: 'Поиск в переписках',
+                            filled: true,
+                            fillColor: HomeStyle.surface,
+                            prefixIcon:
+                                const Icon(Icons.search_rounded, size: 21),
+                            contentPadding:
+                                const EdgeInsets.symmetric(vertical: 14),
+                            border: HomeStyle.searchBorder,
+                            enabledBorder: HomeStyle.searchBorder,
+                            focusedBorder: HomeStyle.searchBorder.copyWith(
+                              borderSide: const BorderSide(
+                                  color: ShadeColors.textMuted),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Wrap(spacing: 8, children: [
+                          _filter('Все чаты', false, state.savedOnly,
+                              notifier.filterSaved),
+                          _filter('Избранное', true, state.savedOnly,
+                              notifier.filterSaved),
+                        ]),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+              body: _content(context, state, notifier, account),
+            ),
+          ),
+        ),
       ),
-      body: Column(children: [
-        if (sync?.lastError case final String error)
-          ListTile(
-              dense: true,
-              leading: const Icon(Icons.cloud_off_outlined),
-              title: Text(error),
-              trailing: IconButton(
-                  tooltip: 'Повторить синхронизацию',
-                  icon: const Icon(Icons.refresh),
-                  onPressed: notifier.refresh)),
-        Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-            child: TextField(
-                key: const Key('v2-chat-search'),
-                onChanged: notifier.setQuery,
-                style: const TextStyle(fontSize: 15),
-                decoration: const InputDecoration(
-                    hintText: 'Поиск',
-                    prefixIcon: Icon(Icons.search_rounded,
-                        color: ShadeColors.textMuted, size: 22),
-                    isDense: true,
-                    contentPadding:
-                        EdgeInsets.symmetric(horizontal: 16, vertical: 12)))),
-        Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Align(
-                alignment: Alignment.centerLeft,
-                child: FilterChip(
-                    label: const Text('Только избранное'),
-                    selected: state.savedOnly,
-                    onSelected: notifier.filterSaved))),
-        Expanded(child: _content(context, ref, state, notifier, account)),
-      ]),
+      floatingActionButton: FloatingActionButton.extended(
+        tooltip: 'Новый чат',
+        elevation: 0,
+        backgroundColor: HomeStyle.ink,
+        foregroundColor: Colors.black,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        onPressed: () => _showNewChatDialog(context, ref),
+        icon: const Icon(Icons.edit_outlined, size: 20),
+        label: const Text('Написать',
+            style: TextStyle(fontWeight: FontWeight.w700)),
+      ),
     );
   }
 
-  Widget _content(BuildContext context, WidgetRef ref, V2ChatListState state,
+  Widget _filter(
+      String label, bool saved, bool savedOnly, ValueChanged<bool> onChanged) {
+    final selected = savedOnly == saved;
+    return ChoiceChip(
+      key: ValueKey(saved ? 'v2-saved-filter' : 'v2-all-filter'),
+      label: Text(label),
+      selected: selected,
+      showCheckmark: false,
+      selectedColor: HomeStyle.ink,
+      backgroundColor: HomeStyle.surface,
+      labelStyle: TextStyle(
+        fontSize: 13,
+        fontWeight: FontWeight.w700,
+        color: selected ? Colors.black : ShadeColors.textSecondary,
+      ),
+      side: BorderSide(color: selected ? Colors.transparent : HomeStyle.border),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      onSelected: (_) => onChanged(saved),
+    );
+  }
+
+  Widget _content(BuildContext context, V2ChatListState state,
       V2ChatListNotifier notifier, String account) {
     if (state.loading && state.chats.isEmpty) {
       return const Center(
@@ -122,11 +219,12 @@ class V2ChatsScreen extends ConsumerWidget {
     }
     return ListView.builder(
         keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-        padding: const EdgeInsets.only(bottom: 24),
+        padding: const EdgeInsets.only(bottom: 96),
         itemCount: chats.length,
         itemBuilder: (context, index) {
           final chat = chats[index];
           return _ChatTile(
+              key: ValueKey(chat.peer),
               chat: chat,
               isSelf: chat.peer == account,
               onTap: () => context.push('/chat/${chat.peer}'));
@@ -245,7 +343,10 @@ class _ChatTile extends ConsumerWidget {
   final VoidCallback onTap;
 
   const _ChatTile(
-      {required this.chat, required this.isSelf, required this.onTap});
+      {super.key,
+      required this.chat,
+      required this.isSelf,
+      required this.onTap});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {

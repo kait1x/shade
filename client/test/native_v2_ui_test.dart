@@ -369,7 +369,7 @@ void main() {
     await tester.pumpWidget(_wrap(sync, const V2ChatsScreen()));
     await tester.pumpAndSettle();
 
-    expect(find.text('Избранное'), findsOneWidget);
+    expect(find.descendant(of: find.byKey(const ValueKey('native_android')), matching: find.text('Избранное')), findsOneWidget);
     expect(find.text('@native_web'), findsOneWidget);
     expect(find.text('@queued_peer'), findsOneWidget);
     expect(find.text('Вы: ждёт сети'), findsOneWidget);
@@ -381,22 +381,22 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('@native_web'), findsOneWidget);
     expect(find.text('@queued_peer'), findsNothing);
-    expect(find.text('Избранное'), findsNothing);
+    expect(find.descendant(of: find.byKey(const ValueKey('native_android')), matching: find.text('Избранное')), findsNothing);
 
     await tester.enterText(find.byKey(const Key('v2-chat-search')), 'привет');
     await tester.pumpAndSettle();
     expect(find.text('@native_web'), findsOneWidget);
     expect(find.text('@queued_peer'), findsNothing);
     await tester.enterText(find.byKey(const Key('v2-chat-search')), '');
-    await tester.tap(find.text('Только избранное'));
+    await tester.tap(find.byKey(const ValueKey('v2-saved-filter')));
     await tester.pumpAndSettle();
     expect(find.text('@native_web'), findsNothing);
-    expect(find.text('Избранное'), findsOneWidget);
-    await tester.tap(find.text('Только избранное'));
+    expect(find.descendant(of: find.byKey(const ValueKey('native_android')), matching: find.text('Избранное')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('v2-all-filter')));
     // «Избранное» ищется по названию.
     await tester.enterText(find.byKey(const Key('v2-chat-search')), 'избран');
     await tester.pumpAndSettle();
-    expect(find.text('Избранное'), findsOneWidget);
+    expect(find.descendant(of: find.byKey(const ValueKey('native_android')), matching: find.text('Избранное')), findsOneWidget);
     expect(find.text('@native_web'), findsNothing);
 
     // Пустой результат поиска — честное состояние.
@@ -423,7 +423,7 @@ void main() {
     ];
     await tester.tap(find.text('Повторить'));
     await tester.pumpAndSettle();
-    expect(find.text('Избранное'), findsOneWidget);
+    expect(find.descendant(of: find.byKey(const ValueKey('native_android')), matching: find.text('Избранное')), findsOneWidget);
     expect(find.text('Ваши личные заметки'), findsOneWidget);
   });
 

@@ -82,14 +82,18 @@ class _ProfileBody extends ConsumerWidget {
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 560),
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
+          padding: const EdgeInsets.fromLTRB(20, 28, 20, 32),
           children: [
             Center(
-                child: AvatarView(
-                    name: visibleName,
-                    size: 108,
-                    image: remote?.image,
-                    frame: remote?.frame ?? AvatarFrame.none)),
+                child: ProfileEditorActions(
+              profile.account,
+              avatar: AvatarView(
+                name: visibleName,
+                size: 108,
+                image: remote?.image,
+                frame: remote?.frame ?? AvatarFrame.none,
+              ),
+            )),
             const SizedBox(height: 12),
             Text(
               visibleName,

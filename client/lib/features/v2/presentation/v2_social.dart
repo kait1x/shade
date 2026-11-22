@@ -174,52 +174,83 @@ Future<String?> _editText(
 
 class ProfileEditorActions extends ConsumerWidget {
   final String account;
-  const ProfileEditorActions(this.account, {super.key});
+  final Widget? avatar;
+  const ProfileEditorActions(this.account, {super.key, this.avatar});
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final social = ref.watch(v2SocialProvider);
-    if (social == null) return const SizedBox.shrink();
+    if (social == null) return avatar ?? const SizedBox.shrink();
     final result = ref.watch(publicProfileProvider(account));
     final profile = result.asData?.value;
-    if (profile == null)
+    if (profile == null) {
+      if (avatar != null) return avatar!;
       return result.hasError
           ? TextButton.icon(
               onPressed: () => ref.invalidate(publicProfileProvider(account)),
               icon: const Icon(Icons.refresh),
               label: const Text('Загрузить профиль'))
           : const LinearProgressIndicator();
-    return Wrap(alignment: WrapAlignment.center, children: [
-      TextButton.icon(
-          icon: const Icon(Icons.edit_outlined),
-          label: const Text('Изменить имя'),
-          onPressed: () async {
-            final value =
-                await _editText(context, 'Отображаемое имя', profile.name, 64);
-            if (value == null || value.isEmpty || !context.mounted) return;
-            try {
-              await social.name(value);
-            } catch (_) {
-              if (context.mounted)
-                ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Не удалось сохранить имя')));
-            }
-            if (context.mounted) ref.invalidate(publicProfileProvider(account));
-          }),
-      TextButton.icon(
-          icon: const Icon(Icons.add_a_photo_outlined),
-          label: const Text('Изменить аватар'),
-          onPressed: () async {
+    }
+    final preview = avatar;
+    if (preview != null) {
+      return Tooltip(
+        message: 'Изменить аватар',
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: () async {
             await Navigator.of(context).push(MaterialPageRoute<void>(
-                builder: (_) => AlphaAvatarEditor(
-                    initialName: profile.name.isEmpty ? account : profile.name,
-                    initialImage: profile.image,
-                    initialFrame: profile.frame,
-                    save: ({required frame, required replaceImage, image}) =>
-                        social.avatar(
-                            profile.revision, frame, replaceImage, image))));
+              builder: (_) => AlphaAvatarEditor(
+                initialName: profile.name.isEmpty ? account : profile.name,
+                initialImage: profile.image,
+                initialFrame: profile.frame,
+                save: ({required frame, required replaceImage, image}) =>
+                    social.avatar(profile.revision, frame, replaceImage, image),
+              ),
+            ));
             if (context.mounted) ref.invalidate(publicProfileProvider(account));
-          })
-    ]);
+          },
+          child: Stack(clipBehavior: Clip.none, children: [
+            preview,
+            Positioned(
+              right: 0,
+              bottom: 0,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: const Color(0xff111113),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: const Color(0xff29292d), width: 2),
+                ),
+                child: const Padding(
+                  padding: EdgeInsets.all(6),
+                  child: Icon(Icons.edit_outlined, size: 15),
+                ),
+              ),
+            ),
+          ]),
+        ),
+      );
+    }
+    return Center(
+      child: TextButton.icon(
+        icon: const Icon(Icons.edit_outlined, size: 16),
+        label: const Text('Изменить имя'),
+        onPressed: () async {
+          final value =
+              await _editText(context, 'Отображаемое имя', profile.name, 64);
+          if (value == null || value.isEmpty || !context.mounted) return;
+          try {
+            await social.name(value);
+            if (context.mounted) ref.invalidate(publicProfileProvider(account));
+          } catch (_) {
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Не удалось сохранить имя')),
+              );
+            }
+          }
+        },
+      ),
+    );
   }
 }
 
