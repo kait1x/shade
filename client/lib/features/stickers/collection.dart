@@ -47,6 +47,7 @@ class _CollectionState extends State<StickerCollection> {
   }
 
   Future<void> load() async {
+    if (busy) return;
     setState(() {
       busy = true;
       error = null;
@@ -63,7 +64,7 @@ class _CollectionState extends State<StickerCollection> {
         });
       }
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted) setState(() => error = 'Не удалось загрузить подарки. Попробуйте обновить.');
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -96,7 +97,7 @@ class _CollectionState extends State<StickerCollection> {
         });
       }
     } catch (e) {
-      if (mounted) setState(() => error = '$e');
+      if (mounted) setState(() => error = 'Не удалось сохранить стену. Повторите попытку.');
     } finally {
       if (mounted) setState(() => busy = false);
     }
@@ -167,6 +168,11 @@ class _CollectionState extends State<StickerCollection> {
           if (error != null)
             Text(error!, style: const TextStyle(color: Colors.redAccent)),
           if (busy) const LinearProgressIndicator(),
+          if (!busy && data != null && gifts.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 10),
+              child: Text('Здесь появятся стикеры, которые вам подарят.'),
+            ),
           if (data != null) ...[
             if (book)
               _book(gifts)

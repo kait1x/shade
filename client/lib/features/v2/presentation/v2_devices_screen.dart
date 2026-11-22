@@ -44,8 +44,10 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text(target == null
-              ? 'Добавлено записей: $count'
-              : 'Подготовлено записей: $count. На втором Android откройте «Получить переписку».')));
+              ? (count == 0
+                  ? 'Новых сообщений для переноса нет'
+                  : 'Добавлено записей: $count')
+              : 'Подготовлено записей: $count. На телефоне-получателе откройте «Получить переписку».')));
       if (target == null) await ref.read(v2SyncProvider)?.syncNow();
     } catch (_) {
       if (mounted)
@@ -132,8 +134,8 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
                       ListTile(
                           leading: const Icon(Icons.move_to_inbox_outlined),
                           title: const Text('Получить переписку'),
-                          subtitle:
-                              const Text('Со связанного Android-устройства'),
+                          subtitle: const Text(
+                              'Со связанного телефона или из Shade Web'),
                           onTap: _copying ? null : () => _history()),
                       if (_copying) const LinearProgressIndicator(),
                       if (backup != null && genesis != null) ...[

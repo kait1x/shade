@@ -1045,6 +1045,13 @@ async function openApp() {
         case 'stickers.load': return JSON.stringify({ ok: true, data: await client.loadStickers(data.name, data.owner === true) });
         case 'stickers.save': return JSON.stringify({ ok: true, data: await client.saveStickers(data.revision, data.wall) });
         case 'stickers.gift': return JSON.stringify({ ok: true, data: await client.giftSticker(data.to, data.art, data.note, data.requestId) });
+        case 'history.send': {
+          const { sent, skipped } = await client.transferSavedHistory(data.id);
+          notice(sent
+            ? `Подготовлено записей: ${sent}. На Android откройте «Устройства» → «Получить переписку».${skipped ? ` Пропущено слишком больших сообщений: ${skipped}.` : ''}`
+            : skipped ? 'Сообщения превышают лимит переноса.' : 'Нет сохранённых сообщений для переноса.');
+          break;
+        }
         case 'devices.revoke': await client.revokeDevice(data.id); break;
         case 'devices.pair': pairDeviceDialog(); break;
         case 'push.toggle': {

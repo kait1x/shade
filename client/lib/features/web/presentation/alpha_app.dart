@@ -1680,17 +1680,30 @@ class _Profile extends StatelessWidget {
                                               color: ShadeColors.textMuted)),
                                       trailing: d['current'] == true
                                           ? null
-                                          : IconButton(
-                                              tooltip: 'Отозвать устройство',
-                                              icon: const Icon(
-                                                  Icons.delete_outline_rounded,
-                                                  size: 18,
-                                                  color: ShadeColors
-                                                      .textSecondary),
-                                              onPressed: () =>
-                                                  _confirmRevoke(context,
-                                                      controller,
-                                                      d['id'] as String))))
+                                          : PopupMenuButton<String>(
+                                              tooltip: 'Действия с устройством',
+                                              onSelected: (action) async {
+                                                final id = d['id'] as String;
+                                                if (action == 'revoke') {
+                                                  await _confirmRevoke(context, controller, id);
+                                                  return;
+                                                }
+                                                try {
+                                                  await controller.act('history.send', {'id': id});
+                                                } catch (_) {
+                                                  // The browser bridge presents the server error.
+                                                }
+                                              },
+                                              itemBuilder: (_) => const [
+                                                PopupMenuItem(
+                                                  value: 'history',
+                                                  child: Text('Передать переписку на Android'),
+                                                ),
+                                                PopupMenuItem(
+                                                  value: 'revoke',
+                                                  child: Text('Отозвать устройство'),
+                                                ),
+                                              ])))
                                   .toList())),
                       const SizedBox(height: 12),
                       Card(

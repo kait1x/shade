@@ -26,7 +26,8 @@ class AlphaTransportException implements Exception {
 class AlphaTransport {
   final String origin;
   final CryptoService crypto;
-  final HttpClient _client = HttpClient();
+  final HttpClient _client = HttpClient()
+    ..connectionTimeout = const Duration(seconds: 12);
 
   /// Для восстановленной сессии или тестового fixture; в production cookie
   /// выдаётся сервером после проверки Google.
@@ -70,13 +71,20 @@ class AlphaTransport {
     if (deviceAuth != null) request.headers.set('x-device-auth', deviceAuth);
     if (sessionCookie != null) request.headers.set('Cookie', sessionCookie!);
     if (body != null) request.add(utf8.encode(jsonEncode(body)));
-    final response = await request.close();
+    final response = await request.close().timeout(const Duration(seconds: 25),
+        onTimeout: () {
+      request.abort();
+      throw const HttpException('Server response timed out');
+    });
     for (final cookie in response.cookies) {
       if (cookie.name == 'shade-alpha' || cookie.name == '__Host-shade-alpha') {
         sessionCookie = '${cookie.name}=${cookie.value}';
       }
     }
-    final text = await response.transform(utf8.decoder).join();
+    final text = await response
+        .timeout(const Duration(seconds: 25))
+        .transform(utf8.decoder)
+        .join();
     if (response.statusCode == 429) {
       final seconds =
           int.tryParse(response.headers.value('retry-after') ?? '') ?? 15;

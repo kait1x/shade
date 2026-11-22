@@ -271,6 +271,65 @@ export class AlphaClient extends EventTarget {
     }
     return { sent };
   }
+  // Android imports the same signed record format used between two phones.
+  async transferSavedHistory(toDevice) {
+    const account = this.session.account;
+    const directory = await this.verifyDirectory(await this.operation('directory', account), this.state.own);
+    const target = directory.history.at(-1).devices.find(d => d.id === toDevice);
+    check(target && target.id !== this.session.id, 'Выберите другое подключённое устройство');
+    const snapshot = this.state.messages.slice();
+    let packages = [], sent = 0;
+    const sendBatch = async () => {
+      if (!packages.length) return;
+      await this.operation('history.transfer', { to: toDevice, packages });
+      packages = [];
+    };
+    const append = async (message, reference, plain) => {
+      const [, , id] = reference.split(':');
+      const mine = message.from === account;
+      const status = message.status === 'retracted' ? 'retracted' : mine ? 'server' : 'received';
+      const record = JSON.stringify({
+        account, fromDevice: this.session.id, toDevice, ref: reference,
+        peer: mine ? message.to : message.from, direction: mine ? 'out' : 'in',
+        id, createdAt: message.createdAt, status, plain
+      });
+      const signature = await sign(`shade-history-v2:${record}`, this.session.signing);
+      const payload = JSON.stringify(await c.encryptLegacy(JSON.stringify([record, signature]), target.encryptionKey));
+      check(payload.length <= 87384, 'Сообщение превышает лимит переноса сервера');
+      packages.push({ id: await hash(JSON.stringify([account, toDevice, reference, status])), seq: ++sent, payload });
+      if (packages.length === 16) await sendBatch();
+    };
+    const liveRef = /^[a-z0-9_]{3,32}:(?:primary|[a-f0-9]{64}):[a-f0-9]{64}$/;
+    let skipped = 0;
+    for (const message of snapshot) {
+      if (!['accepted', 'sent', 'received', 'retracted'].includes(message.status)) continue;
+      if (message.media?.data && /^media:[a-f0-9]{32}$/.test(message.ref)) {
+        const mediaId = message.ref.slice(6);
+        const raw = atob(message.media.data);
+        const total = Math.ceil(raw.length / 32768);
+        for (let index = 0; index < total; index++) {
+          const knownRef = message.chunkRefs?.[index];
+          const reference = liveRef.test(knownRef) ? knownRef : `${message.from}:primary:${await hash(JSON.stringify([message.from, message.to, mediaId, index]))}`;
+          const plain = JSON.stringify({ shade: 1, m: {
+            id: mediaId, mime: message.media.mime || 'image/jpeg', index, total,
+            chunk: btoa(raw.slice(index * 32768, (index + 1) * 32768))
+          }});
+          await append(message, reference, plain);
+        }
+      } else if (liveRef.test(message.ref)) {
+        const plain = message.status === 'retracted' ? '' :
+          message.reply ? encodePayload(message.text ?? '', message.reply) : message.text ?? '';
+        // Leave room for JSON escaping, metadata and the device signature.
+        if (new TextEncoder().encode(JSON.stringify(plain)).length > 63000) {
+          skipped++;
+          continue;
+        }
+        await append(message, message.ref, plain);
+      }
+    }
+    await sendBatch();
+    return { sent, skipped };
+  }
   async fetchHistory(since = 0) { return this.operation('history.fetch', { since }); }
   async ackHistory(ids) { return this.operation('history.ack', { ids }); }
   // ── Когортная миграция диалога (D1, V2_COHORT_MIGRATION.md) ──────────────

@@ -1372,7 +1372,9 @@ class V2ChatRepository {
   /// Auth — текущим устройством: readAt фиксируется для него же.
   Future<void> markRead(List<String> refs) async {
     if (refs.isEmpty) return;
-    await transport.read(refs,
+    final relayRefs = await store.relayReadRefs(refs);
+    if (relayRefs.isEmpty) return;
+    await transport.read(relayRefs,
         account: account,
         id: session.id,
         privateKey: session.signingPrivateKey);
@@ -1670,8 +1672,15 @@ class V2ChatRepository {
     }
     for (final entry in mediaParts.entries) {
       final parts = entry.value;
-      final assembled = assembleMedia(
-          parts.map((r) => r['media'] as Map<String, dynamic>).toList());
+      final byIndex = <int, Map<String, dynamic>>{};
+      for (final row in parts) {
+        final media = row['media'] as Map<String, dynamic>;
+        final index = media['index'] as int;
+        if (!byIndex.containsKey(index) || row['status'] != 'imported') {
+          byIndex[index] = media;
+        }
+      }
+      final assembled = assembleMedia(byIndex.values.toList());
       final first = parts.first;
       final chunkRefs = [for (final part in parts) part['ref'] as String];
       if (parts.any((part) => part['status'] == 'retracted')) {

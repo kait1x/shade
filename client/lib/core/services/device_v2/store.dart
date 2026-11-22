@@ -283,6 +283,18 @@ class V2Store {
     return {for (final r in rows) r['peer'] as String: r['unread'] as int};
   }
 
+  Future<List<String>> relayReadRefs(List<String> refs) async {
+    final db = await chatDatabase;
+    final rows = await db.query(
+      'v2_messages',
+      columns: ['ref'],
+      where:
+          "status != 'imported' AND ref IN (${List.filled(refs.length, '?').join(',')})",
+      whereArgs: refs,
+    );
+    return rows.map((row) => row['ref'] as String).toList();
+  }
+
   Future<void> rememberRead(List<String> refs) async {
     if (refs.isEmpty) return;
     final db = await chatDatabase;

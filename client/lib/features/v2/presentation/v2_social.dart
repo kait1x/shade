@@ -50,7 +50,11 @@ class V2Social implements StickerBackend {
     try {
       final data =
           await request('GET', '/user/${Uri.encodeComponent(name)}/avatar');
-      await database.cacheAvatarProfile(repo.account, origin, name, data);
+      try {
+        await database.cacheAvatarProfile(repo.account, origin, name, data);
+      } catch (_) {
+        // A local cache failure must not hide the profile returned by the relay.
+      }
       return PublicProfile(data);
     } catch (_) {
       final cached =
@@ -100,7 +104,9 @@ class V2Social implements StickerBackend {
   Future<Map<String, dynamic>> save(int rev, List<Placement> wall) {
     // Match JSON.stringify on the relay, including integral coordinates.
     num coordinate(double value) {
-      final rounded = double.parse(value.toStringAsFixed(6));
+      // Rounding ±π to six decimals would exceed the relay's limit.
+      final safe = value.clamp(-3.141592, 3.141592);
+      final rounded = double.parse(safe.toStringAsFixed(6));
       return rounded == rounded.truncateToDouble() ? rounded.toInt() : rounded;
     }
 
@@ -237,7 +243,7 @@ class ProfileEditorControl extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final social = ref.watch(v2SocialProvider);
     final result = ref.watch(publicProfileProvider(account));
-    final profile = result.asData?.value;
+    final profile = result.valueOrNull;
     if (social == null || profile == null) {
       return avatar ??
           V2ProfileAction(
@@ -330,7 +336,7 @@ class _PeerProfileState extends ConsumerState<PeerProfile> {
   Widget build(BuildContext context) {
     final peer = widget.peer;
     final result = ref.watch(publicProfileProvider(peer));
-    final profile = result.asData?.value;
+    final profile = result.valueOrNull;
     final social = ref.watch(v2SocialProvider)!;
     return Scaffold(
         appBar: AppBar(title: const Text('Профиль собеседника')),

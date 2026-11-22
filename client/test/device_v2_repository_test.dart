@@ -1,6 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' show pi;
+import 'package:shade/features/stickers/repository.dart';
+import 'package:shade/core/widgets/avatar_frame.dart';
+import 'package:shade/features/v2/presentation/v2_social.dart';
 import 'dart:typed_data';
 
 import 'package:fast_rsa/fast_rsa.dart';
@@ -39,9 +43,8 @@ void main() {
 
     final process = await Process.start(
         'node', ['../server/tools/alpha-native-transport.mjs']);
-    final lines = StreamIterator(process.stdout
-        .transform(utf8.decoder)
-        .transform(const LineSplitter()));
+    final lines = StreamIterator(
+        process.stdout.transform(utf8.decoder).transform(const LineSplitter()));
     final stderr = process.stderr.transform(utf8.decoder).join();
     addTearDown(() async {
       await process.stdin.close();
@@ -117,7 +120,18 @@ void main() {
     await profile('PUT', '/profile/name', {'displayName': 'Тест Android'});
     expect((await profile('GET', '/user/native_android/avatar'))['displayName'],
         'Тест Android');
-    expect((await profile('GET', '/stickers/inventory'))['inventory'], isList);
+    final gift = await request({'action': 'web-gift-native'});
+    final social = V2Social(repo, db);
+    final inventory = await social.load(repo.account, true);
+    expect(inventory.gifts.single.id, gift['giftId']);
+    final placement =
+        Placement(inventory.gifts.single.id, x: 0.2, y: 1, rotation: pi);
+    await social.save(inventory.revision, [placement]);
+    final savedWall = await social.load(repo.account, true);
+    expect(savedWall.wall.single.y, 1);
+    expect(savedWall.wall.single.rotation, closeTo(pi, .000001));
+    await social.avatar(0, AvatarFrame.silver, false, null);
+    expect((await social.profile(repo.account)).frame, AvatarFrame.silver);
 
     // Исходящее: outbox → сервер → Web расшифровывает и ACK-ает.
     const toWeb = 'Android → Web через репозиторий 🌍';
@@ -192,8 +206,10 @@ void main() {
     final readTarget = (await repo.getMessages('native_web'))
         .firstWhere((m) => m['direction'] == 'in')['ref'] as String;
     await repo.markRead([readTarget]);
-    final webStatus = await request({'action': 'web-status', 'ref': readTarget});
-    final readDevices = (webStatus[readTarget] as List).cast<Map<String, dynamic>>();
+    final webStatus =
+        await request({'action': 'web-status', 'ref': readTarget});
+    final readDevices =
+        (webStatus[readTarget] as List).cast<Map<String, dynamic>>();
     expect(readDevices.single['readAt'], isA<int>());
 
     // Delete-for-all (C3): Android отзывает своё исходящее — Web видит tombstone.
@@ -218,14 +234,16 @@ void main() {
     expect(base64.decode(assembled['b64'] as String), photo);
 
     // Web → Android медиа: Dart собирает чанки в изображение.
-    final photo2 = Uint8List.fromList(List.generate(50000, (i) => (i * 7) % 256));
+    final photo2 =
+        Uint8List.fromList(List.generate(50000, (i) => (i * 7) % 256));
     await request({'action': 'web-send', 'media': base64.encode(photo2)});
     await repo.syncInbox();
     final images = (await repo.getMessages('native_web'))
         .where((m) => m['isImage'] == true)
         .toList();
     expect(images.length, 2);
-    expect(images.firstWhere((m) => m['direction'] == 'in')['imageData'], photo2);
+    expect(
+        images.firstWhere((m) => m['direction'] == 'in')['imageData'], photo2);
 
     // Продление lease и отправка после него.
     await repo.renewLease(force: true);
@@ -239,7 +257,8 @@ void main() {
     // Recovery-пакет сохранён и разблокируется той же фразой.
     final recovery = renewed['recovery'] as Map<String, dynamic>;
     final v2 = DeviceV2Crypto(crypto);
-    final pem = await v2.unlockRecoveryBackup(recovery,
+    final pem = await v2.unlockRecoveryBackup(
+        recovery,
         'synthetic native offline recovery phrase',
         renewed['genesis'] as Map<String, dynamic>);
     expect(pem, contains('BEGIN PRIVATE KEY'));

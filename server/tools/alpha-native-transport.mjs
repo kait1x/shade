@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
-import { fixture, identity, register, operation } from '../test/helpers/alpha-fixture.mjs';
+import { fixture, identity, register, operation, stickers } from '../test/helpers/alpha-fixture.mjs';
 import { buildV1Fixture, writeV1Queue } from '../test/helpers/v1-fixture.mjs';
 import { legacyRoot, messageRef } from '../multidevice/registry.mjs';
 import { sealMessage, openMessage } from '../../client/web/device_crypto.mjs';
@@ -119,6 +119,12 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     } else if (request.action === 'accept-native') {
       nativeGenesis = request.genesis; nativeManifest = request.manifest;
       result = { accepted: true };
+    } else if (request.action === 'web-gift-native') {
+      const gift = await stickers(f, web, wc, 'POST', '/stickers/gift', {
+        toUsername: nativeAccount, stickerId: 'flowers', note: 'Test gift', requestId: randomBytes(16).toString('hex')
+      });
+      if (gift.response.status !== 200) throw Error(JSON.stringify(gift.result));
+      result = gift.result;
     } else if (request.action === 'web-send') {
       const trust = { senderRoot: web.vault.signingKey, recipientRoot: nativeRoot,
         senderGenesis: web.genesis, recipientGenesis: nativeGenesis };

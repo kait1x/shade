@@ -21,7 +21,7 @@ class V2ProfileScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final result = ref.watch(v2ProfileProvider);
-    final profile = result.asData?.value;
+    final profile = result.valueOrNull;
     return Scaffold(
       backgroundColor: ShadeColors.black,
       appBar: profile == null ? AppBar(title: const Text('Профиль')) : null,
@@ -61,7 +61,7 @@ class _ProfileBody extends ConsumerWidget {
     final push = ref.watch(androidPushProvider);
     final email = ref.watch(v2EmailProvider).asData?.value;
     final remote =
-        ref.watch(publicProfileProvider(profile.account)).asData?.value;
+        ref.watch(publicProfileProvider(profile.account)).valueOrNull;
     final handle = '@${profile.account}';
     final name = profile.account;
     final visibleName = remote?.name.isNotEmpty == true

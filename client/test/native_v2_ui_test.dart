@@ -676,6 +676,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Ревизия 3'), findsOneWidget);
     expect(find.text('2 в каталоге'), findsOneWidget);
+    sync.emit();
+    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(find.text('Ревизия 3'), findsOneWidget);
   });
 
   testWidgets('устройства: ростер, текущее устройство, сверка и error',
