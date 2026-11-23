@@ -23,6 +23,10 @@
 # Usage:
 #   rollback-v2.sh guard-off <guard-file>
 #   rollback-v2.sh snapshot-restore <backup-device-v2.enc> <v2-data-dir>
+# A code-only rollback to a release without compact snapshot support must
+# first stop shade-staging and run the NEW release's converter against its
+# protected Alpha environment. This preserves the latest state and receipts:
+#   node --env-file=/var/lib/shade-staging/staging.env server/tools/rewrite-alpha-snapshot-legacy.mjs
 # Nothing here ever writes into /var/lib/shade/data.
 set -euo pipefail
 CMD=${1:?usage: rollback-v2.sh <guard-off|snapshot-restore> ...}

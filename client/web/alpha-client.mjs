@@ -3,7 +3,7 @@
 // только на устройстве: сервер видит лишь подписанные протокольные структуры
 // и конверты, ключи и расшифрованная история не покидают браузер.
 import * as c from './device_crypto.mjs';
-import { check, hash, sign, requestText, messageText, verifyHistory, genesisText } from './protocol/device-v2.mjs';
+import { b64, unb64, check, hash, sign, requestText, messageText, verifyHistory, genesisText } from './protocol/device-v2.mjs';
 import { readState, writeState, refreshDurability } from './alpha-storage.mjs';
 import { createPairingChallenge, decodeChallenge, buildPairingOffer, encodeOffer, decodeOffer,
   verifyPairingOffer, buildPairingConfirmation, encodeConfirmation, decodeConfirmation,
@@ -566,9 +566,7 @@ export class AlphaClient extends EventTarget {
       next.outbox.push(m); next.messages.push({ ref: ref(m), from: m.from, to: m.to, text, reply,
         createdAt: m.createdAt, status: 'queued', devices: [] });
       await this.save(next);
-      if (navigator.onLine) {
-        try { await this.flush(); } catch (error) { this.lastError = error.message; this.changed(); }
-      }
+      if (navigator.onLine) this.scheduleSync();
       return m.id; // Local commit succeeded; keep retrying the exact ciphertext.
     });
   }
@@ -644,7 +642,8 @@ export class AlphaClient extends EventTarget {
   async sendMedia(account, imageBase64, mime = 'image/jpeg') {
     return this.exclusive(async () => {
       check(typeof imageBase64 === 'string' && imageBase64.length > 4, 'Не удалось прочитать изображение');
-      const raw = Uint8Array.from(atob(imageBase64), ch => ch.charCodeAt(0));
+      check(imageBase64.length <= 2796204, 'Изображение слишком большое');
+      const raw = unb64(imageBase64, 2796204);
       const total = Math.ceil(raw.length / 32768);
       check(raw.length >= 128 && raw.length <= 2097152, 'Изображение слишком большое');
       const id = Array.from(crypto.getRandomValues(new Uint8Array(16)),
@@ -655,29 +654,23 @@ export class AlphaClient extends EventTarget {
           const nx = structuredClone(this.state); putContact(nx, account, await this.inspectContact(account)); await this.save(nx);
         }
       }
-      const next = structuredClone(this.state);
+      const messages = [];
       const createdAt = Date.now();
-      next.messages.push({ ref: `media:${id}`, media: { mime, data: imageBase64 },
-        from: this.session.account, to: account, createdAt, status: 'queued',
-        devices: [], chunkRefs: [] });
-      await this.save(next);
+      const history = account === this.session.account ? this.state.own.history : contact(this.state, account)?.history;
+      const trust = this.trust(this.session.account, account);
       for (let index = 0; index < total; index++) {
         const slice = raw.subarray(index * 32768, Math.min((index + 1) * 32768, raw.length));
-        let binary = '';
-        for (const b of slice) binary += String.fromCharCode(b);
-        const payload = JSON.stringify({ shade: 1, m: { id, mime, index, total, chunk: btoa(binary) } });
-        const m = await c.sealMessage(payload, this.state.own.history,
-          account === this.session.account ? this.state.own.history : contact(this.state, account)?.history,
-          this.session, this.trust(this.session.account, account));
-        const nx = structuredClone(this.state);
-        nx.outbox.push(m);
-        const display = nx.messages.find(item => item.ref === `media:${id}`);
-        display.chunkRefs.push(ref(m));
-        await this.save(nx);
-        if (navigator.onLine) {
-          try { await this.flush(); } catch (error) { this.lastError = error.message; this.changed(); }
-        }
+        const payload = JSON.stringify({ shade: 1, m: { id, mime, index, total, chunk: b64(slice) } });
+        messages.push(await c.sealMessage(payload, this.state.own.history, history, this.session, trust));
       }
+      // Commit the entire photo at once before the first network send.
+      const next = structuredClone(this.state);
+      next.outbox.push(...messages);
+      next.messages.push({ ref: `media:${id}`, media: { mime, data: imageBase64 },
+        from: this.session.account, to: account, createdAt, status: 'queued',
+        devices: [], chunkRefs: messages.map(ref) });
+      await this.save(next);
+      if (navigator.onLine) this.scheduleSync();
       return id;
     });
   }
@@ -893,14 +886,19 @@ export class AlphaClient extends EventTarget {
   // Доставка outbox на сервер. 400/409 (конфликт/откат) переводят сообщение
   // в 'blocked'; прочие ошибки прерывают цикл: после неоднозначной отправки
   // ciphertext никогда не пересоздаётся, чтобы не задвоить сообщение.
-  async flush() {
+  async flush(limit = Infinity) {
     let rejection;
-    for (const message of [...this.state.outbox]) {
+    let accepted = 0, next;
+    const textRefs = new Set(this.state.messages.filter(item => !item.chunkRefs).map(item => item.ref));
+    const pending = [...this.state.outbox].sort((a, b) => Number(textRefs.has(ref(b))) - Number(textRefs.has(ref(a))));
+    for (const message of pending) {
+      if (accepted >= limit) break;
       if ((this.queueRetryAt.get(message.to) ?? 0) > Date.now()) continue;
       this.queueRetryAt.delete(message.to);
       try {
         await this.operation('send', message);
-        const next = structuredClone(this.state);
+        next ??= structuredClone(this.state);
+        accepted++;
         next.outbox = next.outbox.filter(m => m.id !== message.id);
         // Агрегация media-статусов: у собранной записи нет собственного конверта,
         // её 'accepted' выводится из того, что все чанки покинули outbox.
@@ -911,12 +909,10 @@ export class AlphaClient extends EventTarget {
         if (record) record.status = 'accepted';
         else {
           const display = next.messages.find(m => m.chunkRefs?.includes(ref(message)));
-          if (display && display.status !== 'blocked' &&
-            display.chunkRefs.every(r => !next.outbox.some(o => ref(o) === r))) {
+          if (display && display.chunkRefs.every(r => !next.outbox.some(o => ref(o) === r))) {
             display.status = 'accepted';
           }
         }
-        await this.save(next);
       } catch (error) {
         if (error.message === 'device_queue_full') {
           this.queueRetryAt.set(message.to, Date.now() + 30000);
@@ -924,15 +920,21 @@ export class AlphaClient extends EventTarget {
           continue;
         }
         if (error.status === 400 || error.status === 409) {
-          const next = structuredClone(this.state);
-          const record = next.messages.find(m => m.ref === ref(message))
-            || next.messages.find(m => m.chunkRefs?.includes(ref(message)));
-          if (record) record.status = 'blocked'; await this.save(next);
+          const find = state => state.messages.find(m => m.ref === ref(message) || m.chunkRefs?.includes(ref(message)));
+          const record = find(next ?? this.state);
+          if (record && record.status !== 'blocked') {
+            next ??= structuredClone(this.state);
+            find(next).status = 'blocked';
+          }
           rejection = error; continue;
         }
-        throw error; // Never replace/re-encrypt a message after ambiguous acceptance.
+        // Never replace/re-encrypt a message after ambiguous acceptance.
+        rejection = error;
+        break;
       }
     }
+    if (next) await this.save(next);
+    if (accepted > 0 && this.state.outbox.length) this.scheduleSync();
     if (rejection) throw rejection;
   }
   // Полный цикл синхронизации: продление своей директории, доставка outbox,
@@ -949,7 +951,7 @@ export class AlphaClient extends EventTarget {
         const inboxFirst = [...this.queueRetryAt.values()].some(at => at > Date.now());
         let sendError;
         if (!inboxFirst) {
-          try { await this.flush(); } catch (error) { sendError = error; }
+          try { await this.flush(4); } catch (error) { sendError = error; }
         }
         const bundles = await this.operation('fetch');
         let next = bundles.length ? structuredClone(this.state) : this.state;
@@ -994,11 +996,9 @@ export class AlphaClient extends EventTarget {
                 const raw = Uint8Array.from(atob(part), ch => ch.charCodeAt(0));
                 bytes.set(raw, position); position += raw.length;
               }
-              let binary = '';
-              for (const b of bytes) binary += String.fromCharCode(b);
               if (!next.messages.some(item => item.ref === `media:${decoded.media.id}`)) {
                 next.messages.push({ ref: `media:${decoded.media.id}`,
-                  media: { mime: slot.mime, data: btoa(binary) },
+                  media: { mime: slot.mime, data: b64(bytes) },
                   from: slot.from, to: slot.to, createdAt: slot.createdAt,
                   status: slot.from === this.session.account ? 'accepted' : 'received', devices: [] });
               }
@@ -1034,7 +1034,7 @@ export class AlphaClient extends EventTarget {
           committed.pendingAck = committed.pendingAck.filter(ref => !batch.includes(ref)); await this.save(committed);
         }
         if (inboxFirst) {
-          try { await this.flush(); } catch (error) { sendError = error; }
+          try { await this.flush(4); } catch (error) { sendError = error; }
         }
         await this.refreshDelivery();
         if (sendError) throw sendError;
@@ -1151,7 +1151,7 @@ export class AlphaClient extends EventTarget {
       if (data?.account === this.session.account) this.loadProfile().catch(() => {});
     });
     if (navigator.onLine) this.socket.connect();
-    this.timer = setInterval(() => this.sync().catch(() => {}), 15000);
+    this.timer = setInterval(() => this.scheduleSync(), 15000);
     document.addEventListener('visibilitychange', this.foreground); window.addEventListener('online', this.online);
     window.addEventListener('offline', this.offline);
     document.addEventListener('visibilitychange', this.hidden); window.addEventListener('pagehide', this.persistNow);

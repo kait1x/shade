@@ -1,13 +1,42 @@
-// Separate alpha data only. Compatible with server.js AES-GCM at-rest format;
-// never opens, migrates or writes the legacy server's files.
+// Separate alpha data only. Reads the original AES-GCM JSON wrapper and the
+// compact encrypted snapshot format. Never opens legacy server data.
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { promisify } from 'node:util';
+import { brotliCompress, brotliDecompress, constants } from 'node:zlib';
 
-export async function alphaStore(directory, secret, { checkpointDir = null, checkpointKeep = 20 } = {}) {
+const compactHeader = Buffer.from('SHD2BR01');
+const isCompact = bytes => Buffer.isBuffer(bytes) && bytes.subarray(0, compactHeader.length).equals(compactHeader);
+const compress = promisify(brotliCompress);
+const decompress = promisify(brotliDecompress);
+const deriveKey = secret => createHash('sha256').update(secret).digest();
+
+async function decode(content, key) {
+  if (isCompact(content)) {
+    const nonceEnd = compactHeader.length + 12;
+    const tagEnd = nonceEnd + 16;
+    const decipher = createDecipheriv('aes-256-gcm', key, content.subarray(compactHeader.length, nonceEnd));
+    decipher.setAAD(compactHeader);
+    decipher.setAuthTag(content.subarray(nonceEnd, tagEnd));
+    const compressed = Buffer.concat([decipher.update(content.subarray(tagEnd)), decipher.final()]);
+    return JSON.parse((await decompress(compressed)).toString('utf8'));
+  }
+  const value = JSON.parse(content);
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(value.nonce, 'hex'));
+  decipher.setAuthTag(Buffer.from(value.tag, 'hex'));
+  return JSON.parse(Buffer.concat([decipher.update(Buffer.from(value.data, 'hex')), decipher.final()]).toString('utf8'));
+}
+
+export async function readAlphaSnapshot(directory, secret) {
+  try { return await decode(await fs.readFile(path.join(directory, 'device-v2.enc')), deriveKey(secret)); }
+  catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
+}
+
+export async function alphaStore(directory, secret, { checkpointDir = null, checkpointKeep = 20, compactSnapshots = false } = {}) {
   if (!secret || secret.length < 32) throw Error('ALPHA_STORAGE_SECRET must contain at least 32 characters');
   directory = path.resolve(directory);
-  const key = createHash('sha256').update(secret).digest();
+  const key = deriveKey(secret);
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
   if (checkpointDir) {
     checkpointDir = path.resolve(checkpointDir);
@@ -26,16 +55,22 @@ export async function alphaStore(directory, secret, { checkpointDir = null, chec
   const presenceFilename = path.join(directory, 'presence.enc');
   const sessionsFilename = path.join(directory, 'sessions.enc');
   let closed = false;
-  const decode = content => {
-    const value = JSON.parse(content);
-    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(value.nonce, 'hex'));
-    decipher.setAuthTag(Buffer.from(value.tag, 'hex'));
-    return JSON.parse(Buffer.concat([decipher.update(Buffer.from(value.data, 'hex')), decipher.final()]).toString('utf8'));
-  };
-  const writeEncrypted = async (target, value) => {
+  const writeEncrypted = async (target, value, useCompact = false) => {
     const nonce = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key, nonce);
-    const data = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
-    const encoded = JSON.stringify({ nonce: nonce.toString('hex'), tag: cipher.getAuthTag().toString('hex'), data: data.toString('hex') });
+    const json = JSON.stringify(value);
+    let encoded;
+    if (useCompact && json.length >= 512 * 1024) {
+      const packed = await compress(Buffer.from(json), { params: {
+        [constants.BROTLI_PARAM_QUALITY]: 2,
+        [constants.BROTLI_PARAM_LGWIN]: 24,
+      } });
+      cipher.setAAD(compactHeader);
+      const data = cipher.update(packed), final = cipher.final();
+      encoded = Buffer.concat([compactHeader, nonce, cipher.getAuthTag(), data, final]);
+    } else {
+      const data = Buffer.concat([cipher.update(json, 'utf8'), cipher.final()]);
+      encoded = JSON.stringify({ nonce: nonce.toString('hex'), tag: cipher.getAuthTag().toString('hex'), data: data.toString('hex') });
+    }
     const temporary = `${target}.${randomBytes(8).toString('hex')}.tmp`;
     try {
       await fs.writeFile(temporary, encoded, { mode: 0o600, flush: true, flag: 'wx' });
@@ -50,24 +85,33 @@ export async function alphaStore(directory, secret, { checkpointDir = null, chec
   return {
     async load() {
       let content;
-      try { content = await fs.readFile(filename, 'utf8'); } catch (e) { if (e.code === 'ENOENT') return undefined; throw e; }
-      return decode(content);
+      try { content = await fs.readFile(filename); } catch (e) { if (e.code === 'ENOENT') return undefined; throw e; }
+      return decode(content, key);
+    },
+    // Used after stopping the current writer, immediately before rolling back
+    // to binaries that only understand the original AES-GCM JSON wrapper.
+    async rewriteLegacySnapshot() {
+      let bytes;
+      try { bytes = await fs.readFile(filename); } catch (e) { if (e.code === 'ENOENT') return false; throw e; }
+      if (!isCompact(bytes)) return false;
+      await writeEncrypted(filename, await decode(bytes, key));
+      return true;
     },
     // Last-seen hints survive restarts; live "online" itself is socket-derived.
     async loadPresence() {
-      try { return decode(await fs.readFile(presenceFilename, 'utf8')); }
+      try { return await decode(await fs.readFile(presenceFilename), key); }
       catch (e) { if (e.code === 'ENOENT') return {}; throw e; }
     },
     savePresence(presence) { return writeEncrypted(presenceFilename, presence); },
     // Browser sessions survive restarts: a deploy must never log users out.
     async loadSessions() {
-      try { return decode(await fs.readFile(sessionsFilename, 'utf8')); }
+      try { return await decode(await fs.readFile(sessionsFilename), key); }
       catch (e) { if (e.code === 'ENOENT') return {}; throw e; }
     },
     saveSessions(sessions) { return writeEncrypted(sessionsFilename, sessions); },
     async save(snapshot) {
       // Checkpoints reuse the exact bytes committed to the main file.
-      const encoded = await writeEncrypted(filename, snapshot);
+      const encoded = await writeEncrypted(filename, snapshot, compactSnapshots);
       // Durable rolling checkpoints for lossless rollback (best-effort: a
       // checkpoint failure must never break messaging; the main save already
       // committed atomically above). Same encrypted bytes, separate directory.

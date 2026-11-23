@@ -41,7 +41,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   vapidKeys = null, pushSender = null, pushAllowedHosts = null, androidPushSender = null,
   legacySource = null, guardFile = null, bridgeAckFile = null, reverseReplayFile = null, checkpointDir = null, checkpointKeep = 20,
   allowedOrigins = [], oauthAllowlist = [], handoffTtlMs = 60000,
-  recoverySessionMs = RECOVERY_SESSION_MS_MAX } = {}) {
+  recoverySessionMs = RECOVERY_SESSION_MS_MAX, compactSnapshots = true } = {}) {
   check(dataDir && publicOrigin, 'Explicit alpha dataDir and publicOrigin required');
   const origin = new URL(publicOrigin);
   check(origin.origin === publicOrigin && (origin.protocol === 'https:' ||
@@ -64,7 +64,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   check(path.resolve(dataDir) !== path.join(here, 'data'), 'Production directory forbidden');
   check(Number.isSafeInteger(recoverySessionMs) && recoverySessionMs > 0 &&
     recoverySessionMs <= RECOVERY_SESSION_MS_MAX, 'Recovery session TTL must be at most 10 minutes');
-  const store = await alphaStore(dataDir, storageSecret, { checkpointDir, checkpointKeep });
+  const store = await alphaStore(dataDir, storageSecret, { checkpointDir, checkpointKeep, compactSnapshots });
   const sessions = new Map(), flows = new Map(), handoffs = new Map();
   // Browser sessions survive restarts (encrypted at rest, same AES-GCM as the
   // registry): a deploy must never log users out. sid is a 64-hex random;

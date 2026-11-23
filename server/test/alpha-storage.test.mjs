@@ -8,6 +8,7 @@ import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
 import { createVault, unlockVault, saveVault, loadVault, listVaults, unlockRecoveryBackup } from '../../client/web/device_crypto.mjs';
 import { createDeviceRegistry } from '../multidevice/registry.mjs';
+import { identity } from './helpers/alpha-fixture.mjs';
 import { readReadMarks, readState, saveReadMarks, writeState } from '../../client/web/alpha-storage.mjs';
 
 const phrase = 'synthetic storage reliability passphrase';
@@ -230,6 +231,28 @@ for (const replacePendingRecovery of [false, true]) {
   });
 }
 
+test('a web photo commits every signed chunk together before sending', async t => {
+  globalThis.window = new EventTarget();
+  Object.defineProperty(navigator, 'onLine', { value: false, configurable: true });
+  t.after(() => { delete globalThis.window; delete navigator.onLine; });
+  const { AlphaClient, ref } = await import('../../client/web/alpha-client.mjs');
+  const client = new AlphaClient();
+  const { session, genesis, manifest } = await identity('photo_test');
+  client.session = session;
+  client.state = { own: { root: genesis.firstDevice.signingKey, genesis, history: [manifest] },
+    outbox: [], messages: [] };
+  let saves = 0;
+  client.save = async next => { saves++; client.state = next; };
+  client.operation = async () => assert.fail('Offline photo attempted to use the network');
+  const source = Buffer.alloc(70 * 1024, 123).toString('base64');
+  await client.sendMedia(session.account, source);
+  assert.equal(saves, 1);
+  assert.equal(client.state.outbox.length, 3);
+  assert.equal(client.state.messages[0].status, 'queued');
+  assert.equal(client.state.messages[0].media.data, source);
+  assert.deepEqual(client.state.messages[0].chunkRefs, client.state.outbox.map(ref));
+});
+
 test('a full device queue backs off that peer and keeps other sends working', async t => {
   globalThis.window = new EventTarget();
   t.after(() => { delete globalThis.window; });
@@ -240,6 +263,7 @@ test('a full device queue backs off that peer and keeps other sends working', as
   const three = { ...one, id: 'three', to: 'carol' };
   client.state = { outbox: [one, two, three], messages: [] };
   client.save = async next => { client.state = next; };
+  client.scheduleSync = () => {};
   const attempted = [];
   let full = true;
   client.operation = async (_, message) => {

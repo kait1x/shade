@@ -1092,6 +1092,7 @@ function sessionOverlay(show) {
 function render() {
   if (!ready || !window.shadeReceive) return;
   hookDialogRouting();
+  if (MIGRATION_HOLD_CODES.has(client.lastError)) refreshDialogRouting(selected);
   const accounts = [...new Set([...users.map(u => u.account), ...Object.keys(client.state.contacts),
     ...client.state.messages.flatMap(m => [m.from,m.to]), ...(client.unverified || [])])]
     .filter(a => a !== client.session.account);
@@ -1294,14 +1295,8 @@ async function openApp() {
           } break;
         }
         case 'position': ui.positions[data.account] = {offset:Math.max(0,data.offset),bottom:!!data.bottom}; saveUi(); break;
-        case 'send': await client.send(data.account, data.text, data.reply || null);
-          // 409 миграции: состояние диалога только что обнаружено/изменилось —
-          // немедленный подписанный fetch для баннера (сообщение осталось в outbox).
-          if (MIGRATION_HOLD_CODES.has(client.lastError)) refreshDialogRouting(data.account, true);
-          client.sync().catch(e => notice(errors[e.message] || e.message)); break;
-        case 'sendMedia': await client.sendMedia(data.account, data.image, data.mime || 'image/jpeg');
-          if (MIGRATION_HOLD_CODES.has(client.lastError)) refreshDialogRouting(data.account, true);
-          client.sync().catch(e => notice(errors[e.message] || e.message)); break;
+        case 'send': await client.send(data.account, data.text, data.reply || null); break;
+        case 'sendMedia': await client.sendMedia(data.account, data.image, data.mime || 'image/jpeg'); break;
         case 'deleteLocal': await client.deleteLocal(data.ref); break;
         case 'retract': await client.retract(data.ref); break;
         case 'sync': await client.sync(); break;

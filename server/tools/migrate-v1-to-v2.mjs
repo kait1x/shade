@@ -33,8 +33,8 @@
 import { parseArgs } from 'node:util';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createHash, createDecipheriv, createPublicKey, randomBytes } from 'node:crypto';
-import { alphaStore } from '../multidevice/alpha-store.mjs';
+import { createPublicKey, randomBytes } from 'node:crypto';
+import { alphaStore, readAlphaSnapshot } from '../multidevice/alpha-store.mjs';
 import { createDeviceRegistry } from '../multidevice/registry.mjs';
 import { createMigration } from '../multidevice/migration.mjs';
 import { mergeRollbackSnapshots } from '../multidevice/rollback-journal.mjs';
@@ -73,17 +73,7 @@ async function openSource() {
 }
 
 // Read-only snapshot loader for dry-run/status/verify: never creates files.
-async function readSnapshot(dir, secret) {
-  const file = path.join(path.resolve(dir), 'device-v2.enc');
-  let content;
-  try { content = await fs.readFile(file, 'utf8'); }
-  catch (e) { if (e.code === 'ENOENT') return undefined; throw e; }
-  const value = JSON.parse(content);
-  const key = createHash('sha256').update(secret).digest();
-  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(value.nonce, 'hex'));
-  decipher.setAuthTag(Buffer.from(value.tag, 'hex'));
-  return JSON.parse(Buffer.concat([decipher.update(Buffer.from(value.data, 'hex')), decipher.final()]).toString('utf8'));
-}
+const readSnapshot = readAlphaSnapshot;
 
 async function openTarget({ write }) {
   if (!opts.target) fail('--target <v2-data-dir> required');

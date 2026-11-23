@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { alphaStore } from '../multidevice/alpha-store.mjs';
+import { alphaStore, readAlphaSnapshot } from '../multidevice/alpha-store.mjs';
 import { createVault, unlockVault, createRecoveryBackup, finalizeRecoveryBackup, unlockRecoveryBackup,
   createGenesis, rebindPendingBackup } from '../../client/web/device_crypto.mjs';
 
@@ -62,6 +62,36 @@ test('rolling checkpoint retains the previous atomic snapshot', async () => {
     assert.notDeepEqual(await fs.readFile(currentPath), oldBytes);
   } finally {
     await store.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('compact snapshots keep all state and can be converted for rollback', async () => {
+  await fs.mkdir('build', { recursive: true });
+  const root = await fs.mkdtemp(path.join(process.cwd(), 'build', 'alpha-compact-'));
+  const secret = 'synthetic compact snapshot encryption secret';
+  const filename = path.join(root, 'device-v2.enc');
+  const payload = randomBytes(192 * 1024).toString('base64');
+  const first = { format: 2, queues: { first: [payload], second: [payload] }, receipts: { message: 'signature' } };
+  const next = { ...first, receipts: { ...first.receipts, newer: 'signature-two' } };
+  const legacy = await alphaStore(root, secret);
+  try { await legacy.save(first); } finally { await legacy.close(); }
+  const originalSize = (await fs.stat(filename)).size;
+
+  const compact = await alphaStore(root, secret, { compactSnapshots: true });
+  try {
+    assert.deepEqual(await compact.load(), first);
+    await compact.save(next);
+    const bytes = await fs.readFile(filename);
+    assert.ok(bytes.length < originalSize / 2);
+    assert.deepEqual(await readAlphaSnapshot(root, secret), next);
+    await assert.rejects(readAlphaSnapshot(root, 'synthetic but incorrect snapshot secret'));
+    assert.equal(await compact.rewriteLegacySnapshot(), true);
+    assert.ok(JSON.parse(await fs.readFile(filename, 'utf8')).data);
+    assert.deepEqual(await compact.load(), next);
+    assert.equal(await compact.rewriteLegacySnapshot(), false);
+  } finally {
+    await compact.close();
     await fs.rm(root, { recursive: true, force: true });
   }
 });
