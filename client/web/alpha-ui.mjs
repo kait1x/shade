@@ -47,6 +47,7 @@ const errors = { google_login_required: 'Сессия Google истекла. В�
   login_required: 'Сессия истекла. Войдите снова; ключи сохранены.',
   rate_limited: 'Слишком много запросов. Подождите немного и повторите.',
   stale_registration: 'Обновите заявку с помощью пароля Shade. Ключи устройства сохранятся.',
+  registration_password_invalid: 'Пароль Shade не подошёл. Введите пароль, который выбрали при регистрации.',
   operation_rejected: 'Операция отклонена. Проверьте сеть, срок каталога и доступ устройства. Сообщение не отмечено доставленным.',
   account_requires_linking: 'Аккаунт уже существует. Нужна привязка доверенным устройством; новые ключи не назначены.',
   // D1: честные HOLD-тексты когортной миграции. Сообщение остаётся в outbox
@@ -551,9 +552,9 @@ function registrationStep({ protection, initialNickname = '', initialPassword = 
 }
 
 
-async function finishRegistration(note, { newAccount = false } = {}) {
+async function finishRegistration(note, { newAccount = false, recoveryPassword } = {}) {
   showProgress(note, 'Подключаемся к Shade…');
-  try { await client.register(); }
+  try { await client.register({ recoveryPassword }); }
   catch (error) {
     if (newAccount) resumeRegistrationStep({ expired: error.message === 'stale_registration' });
     if (error.message === 'operation_rejected') {
@@ -579,6 +580,7 @@ function resumeRegistrationStep({ expired = false } = {}) {
   const renew = expander('Если срок регистрации истёк',
     [node('p', 'Введите пароль восстановления. Shade сохранит ключи этого устройства.', 'expain-body'), renewForm]);
   renew.open = expired;
+  form.hidden = expired;
   onboard({
     cardTitle: 'Продолжите регистрацию',
     cardSubtitle: 'Ключи уже сохранены в этом браузере.',
@@ -590,7 +592,10 @@ function resumeRegistrationStep({ expired = false } = {}) {
       if (!form.isConnected) return;
       try { await finishRegistration(note); }
       catch (error) {
-        if (error.message === 'stale_registration') renew.open = true;
+        if (error.message === 'stale_registration') {
+          form.hidden = true;
+          renew.open = true;
+        }
         throw error;
       }
       finally { note.hidden = true; }
@@ -600,11 +605,9 @@ function resumeRegistrationStep({ expired = false } = {}) {
     event.preventDefault();
     action(async () => {
       if (!renewForm.isConnected) return;
-      showProgress(note, 'Обновляем данные регистрации…');
       try {
-        await client.renewPending(recovery.value);
+        await finishRegistration(note, { recoveryPassword: recovery.value });
         recovery.value = '';
-        await finishRegistration(note);
       } finally { note.hidden = true; }
     });
   };
@@ -717,7 +720,12 @@ function unlockStep(candidates, status) {
       }
       phraseField.value = '';
       if (result.pending) { pairingOfferStage(); return; }
-      if (status.account) await openApp(); else resumeRegistrationStep();
+      if (status.account) await openApp();
+      else {
+        const now = status.serverTime ?? Date.now();
+        const createdAt = client.state.own.genesis.createdAt;
+        resumeRegistrationStep({ expired: createdAt < now - 240000 || createdAt > now + 30000 });
+      }
     }).finally(() => {
       unlocking = false;
       if (select) select.disabled = false;

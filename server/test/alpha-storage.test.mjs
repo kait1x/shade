@@ -213,8 +213,9 @@ test('web registration resumes on the server clock without replacing local keys'
 
   serverTime += 6 * 60_000;
   await assert.rejects(client.register(), /stale_registration/);
-  await client.renewPending(recoveryPassword);
-  await client.register();
+  await assert.rejects(client.register({ recoveryPassword: 'wrong password' }), /registration_password_invalid/);
+  assert.equal(client.state.own.genesis, original);
+  await client.register({ recoveryPassword });
 
   const registered = registry.directory('resume_test');
   assert.equal(registered.genesis.createdAt, serverTime);

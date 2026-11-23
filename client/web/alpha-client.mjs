@@ -180,37 +180,36 @@ export class AlphaClient extends EventTarget {
   }
   // Регистрация genesis на сервере. Genesis должен быть свежим (окно 4 минуты):
   // похищенный пакет нельзя зарегистрировать задним числом.
-  async register() {
+  async register({ recoveryPassword } = {}) {
     return this.exclusive(async () => {
       check(this.state && !this.state.registered, 'Регистрация уже завершена');
       const status = await api('/api/session');
       if (status.account === this.session.account) { await this.refreshOwn(); return; }
       check(status.authenticated, 'google_login_required');
       check(!status.account, 'Google уже привязан к другому аккаунту');
-      const now = status.serverTime ?? Date.now();
-      const createdAt = this.state.own.genesis.createdAt;
+      // Renewal and submission share one serialized action. Sign the roster
+      // and proof at a fresh server time after the local backup is rebound.
+      let now = status.serverTime ?? Date.now();
+      const previous = this.state.own.genesis;
+      let genesis = previous, backup = this.state.backup;
+      if (recoveryPassword !== undefined) {
+        genesis = await c.createGenesis(this.vault, this.session, previous.recoveryKey, now);
+        try {
+          backup = await c.rebindPendingBackup(backup, recoveryPassword, previous, genesis);
+        } catch (error) {
+          if (error.name === 'OperationError') throw Error('registration_password_invalid');
+          throw error;
+        }
+        now = (await api('/api/session')).serverTime ?? Date.now();
+      }
+      const { createdAt } = genesis;
       check(createdAt >= now - 240000 && createdAt <= now + 30000, 'stale_registration');
-      const manifest = await c.approveDevices(this.state.own.genesis, [], [c.descriptor(this.vault)], this.session, null, now);
-      const pending = structuredClone(this.state); pending.own.history = [manifest]; await this.save(pending);
-      await api('/api/v2/register', { genesis: this.state.own.genesis, manifest,
-        proofs: [await c.pairingProof(this.vault, this.session, now)], recoveryBackup: this.state.backup }, { timeoutMs: 60000 });
+      const manifest = await c.approveDevices(genesis, [], [c.descriptor(this.vault)], this.session, null, now);
+      await this.save({ ...this.state, own: { ...this.state.own, genesis, history: [manifest] }, backup });
+      await api('/api/v2/register', { genesis, manifest,
+        proofs: [await c.pairingProof(this.vault, this.session, now)], recoveryBackup: backup }, { timeoutMs: 60000 });
       const next = structuredClone(this.state); next.own.history = [manifest]; next.registered = true;
       await this.save(next);
-    });
-  }
-  // Пересоздание ещё не зарегистрированного genesis (например, после истечения
-  // окна регистрации) с перепривязкой backup к той же recovery-фразе.
-  async renewPending(recoveryPhrase) {
-    return this.exclusive(async () => {
-      const status = await api('/api/session');
-      check(status.authenticated, 'google_login_required');
-      check(!this.state.registered && !status.account, 'Аккаунт уже существует; genesis неизменяем');
-      const now = status.serverTime ?? Date.now();
-      const genesis = await c.createGenesis(this.vault, this.session, this.state.own.genesis.recoveryKey, now);
-      const backup = await c.rebindPendingBackup(this.state.backup, recoveryPhrase, this.state.own.genesis, genesis);
-      const manifest = await c.approveDevices(genesis, [], [c.descriptor(this.vault)], this.session, null, now);
-      const next = structuredClone(this.state); next.own = {root:this.vault.signingKey,genesis,history:[manifest]};
-      next.backup = backup; await this.save(next);
     });
   }
   // Challenge-response: сервер выдаёт одноразовый nonce, устройство подписывает
