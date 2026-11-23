@@ -11,7 +11,7 @@ import os
 ROOT = r"C:\Users\Kait1x\Documents\Shade"
 SHOT = os.path.join(ROOT, "docs", "hackathon", "screenshots")
 LOGO = os.path.join(ROOT, "outputs", "telegram", "shade-avatar-1024.png")
-OUT = os.path.join(ROOT, "docs", "hackathon", "Shade_Защита_ТехноНаставники.pptx")
+OUT = os.path.join(ROOT, "docs", "hackathon", "Shade_Akseleratory_presentation_v3.pptx")
 
 BLACK = RGBColor(0x00, 0x00, 0x00)
 SURFACE = RGBColor(0x11, 0x11, 0x13)
