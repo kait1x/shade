@@ -180,7 +180,7 @@ export class AlphaClient extends EventTarget {
   }
   // Регистрация genesis на сервере. Genesis должен быть свежим (окно 4 минуты):
   // похищенный пакет нельзя зарегистрировать задним числом.
-  async register({ recoveryPassword } = {}) {
+  async register({ recoveryPassword, replacePendingRecovery = false } = {}) {
     return this.exclusive(async () => {
       check(this.state && !this.state.registered, 'Регистрация уже завершена');
       const status = await api('/api/session');
@@ -192,7 +192,12 @@ export class AlphaClient extends EventTarget {
       let now = status.serverTime ?? Date.now();
       const previous = this.state.own.genesis;
       let genesis = previous, backup = this.state.backup;
-      if (recoveryPassword !== undefined) {
+      if (replacePendingRecovery) {
+        backup = await c.createRecoveryBackup(this.vault.account, this.vault.signingKey, recoveryPassword);
+        now = (await api('/api/session')).serverTime ?? Date.now();
+        genesis = await c.createGenesis(this.vault, this.session, backup.publicKey, now);
+        backup = await c.finalizeRecoveryBackup(backup, recoveryPassword, genesis);
+      } else if (recoveryPassword !== undefined) {
         genesis = await c.createGenesis(this.vault, this.session, previous.recoveryKey, now);
         try {
           backup = await c.rebindPendingBackup(backup, recoveryPassword, previous, genesis);

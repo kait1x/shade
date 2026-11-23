@@ -47,7 +47,7 @@ const errors = { google_login_required: 'Сессия Google истекла. В�
   login_required: 'Сессия истекла. Войдите снова; ключи сохранены.',
   rate_limited: 'Слишком много запросов. Подождите немного и повторите.',
   stale_registration: 'Обновите заявку с помощью пароля Shade. Ключи устройства сохранятся.',
-  registration_password_invalid: 'Пароль Shade не подошёл. Введите пароль, который выбрали при регистрации.',
+  registration_password_invalid: 'Не удалось открыть черновую копию. Проверьте пароль или задайте новый.',
   operation_rejected: 'Операция отклонена. Проверьте сеть, срок каталога и доступ устройства. Сообщение не отмечено доставленным.',
   account_requires_linking: 'Аккаунт уже существует. Нужна привязка доверенным устройством; новые ключи не назначены.',
   // D1: честные HOLD-тексты когортной миграции. Сообщение остаётся в outbox
@@ -552,9 +552,9 @@ function registrationStep({ protection, initialNickname = '', initialPassword = 
 }
 
 
-async function finishRegistration(note, { newAccount = false, recoveryPassword } = {}) {
+async function finishRegistration(note, { newAccount = false, ...options } = {}) {
   showProgress(note, 'Подключаемся к Shade…');
-  try { await client.register({ recoveryPassword }); }
+  try { await client.register(options); }
   catch (error) {
     if (newAccount) resumeRegistrationStep({ expired: error.message === 'stale_registration' });
     if (error.message === 'operation_rejected') {
@@ -579,12 +579,19 @@ function resumeRegistrationStep({ expired = false } = {}) {
   download.onclick = downloadBackup;
   const renew = expander('Если срок регистрации истёк',
     [node('p', 'Введите пароль восстановления. Shade сохранит ключи этого устройства.', 'expain-body'), renewForm]);
+  const resetForm = node('form');
+  const newPassword = recoveryPasswordInput(resetForm);
+  const confirmPassword = input(resetForm, 'Повторите новый пароль', 'confirm-recovery',
+    'password', MIN_RECOVERY_PASSWORD_LENGTH, { autocomplete: 'new-password' });
+  submit(resetForm, 'Задать пароль и завершить регистрацию');
+  const reset = expander('Задать новый пароль Shade',
+    [node('p', 'Доступно до завершения регистрации. Ключи устройства сохранятся. Если вы скачивали черновую резервную копию, скачайте новую после регистрации.', 'expain-body'), resetForm]);
   renew.open = expired;
   form.hidden = expired;
   onboard({
     cardTitle: 'Продолжите регистрацию',
     cardSubtitle: 'Ключи уже сохранены в этом браузере.',
-    children: [form, note, renew, download],
+    children: [form, note, renew, reset, download],
   });
   form.onsubmit = event => {
     event.preventDefault();
@@ -608,6 +615,21 @@ function resumeRegistrationStep({ expired = false } = {}) {
       try {
         await finishRegistration(note, { recoveryPassword: recovery.value });
         recovery.value = '';
+      } catch (error) {
+        if (error.message === 'registration_password_invalid') reset.open = true;
+        throw error;
+      } finally { note.hidden = true; }
+    });
+  };
+  resetForm.onsubmit = event => {
+    event.preventDefault();
+    action(async () => {
+      if (!resetForm.isConnected) return;
+      const password = readRecoveryPassword(newPassword);
+      check(password === confirmPassword.value, 'Пароли не совпадают.');
+      try {
+        await finishRegistration(note, { recoveryPassword: password, replacePendingRecovery: true });
+        newPassword.value = confirmPassword.value = '';
       } finally { note.hidden = true; }
     });
   };
