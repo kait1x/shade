@@ -684,6 +684,8 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       if (migration && routing?.state === 'v2_active') await migration.journalV2Send(body);
       relations.add(pairKey(body.from, body.to));
       for (const e of body.envelopes) io.to(room(e.account, e.deviceId)).emit('inbox');
+      // Delivery is committed. A notification provider must not hold the send acknowledgment.
+      res.json(result);
       if (pushEnabled || androidPushSender) {
         for (const e of body.envelopes) {
           if (e.account === body.from) continue;
@@ -697,11 +699,14 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
           catch (error) {
             // Gone endpoints are pruned; push never fails the E2EE send.
             if (error?.statusCode === 404 || error?.statusCode === 410 || error?.code === 'messaging/registration-token-not-registered') {
-              await registry.dropPushSubscription(e.account, e.deviceId);
+              await registry.dropPushSubscription(e.account, e.deviceId, sub).catch(() => {
+                console.error('[alpha] Could not remove an expired push subscription');
+              });
             }
           }
         }
       }
+      return;
     } else if (op === 'fetch') result = await registry.fetch(auth);
     else if (op === 'ack') {
       const pending = registry.exportSnapshot().queues[room(auth.account, auth.id)] || [];

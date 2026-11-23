@@ -7,6 +7,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { setTimeout as delay } from 'node:timers/promises';
 import { io } from 'socket.io-client';
 import { fixture, identity, register, operation, proof, stickers } from './helpers/alpha-fixture.mjs';
 import * as c from '../../client/web/device_crypto.mjs';
@@ -28,7 +29,12 @@ test('full device-v2 PWA lifecycle integrates every backend feature', async () =
   const dataDir = await tempDir(), storageSecret = randomBytes(32).toString('hex');
   const vapidKeys = webPush.generateVAPIDKeys();
   const pushes = [];
-  const pushSender = async (sub, payload) => { pushes.push({ sub, payload }); };
+  const resumePush = Promise.withResolvers();
+  let holdPush = false;
+  const pushSender = async (sub, payload) => {
+    pushes.push({ sub, payload });
+    if (holdPush) await resumePush.promise;
+  };
   const f = await fixture({ dataDir, storageSecret, vapidKeys, pushSender });
   const alice = await identity('alice_int'), bob = await identity('bob_int');
   const ac = await f.login('synthetic-alice'), bc = await f.login('synthetic-bob');
@@ -108,7 +114,24 @@ test('full device-v2 PWA lifecycle integrates every backend feature', async () =
     for (let index = 0; index < chunks.length; index++) {
       const payload = JSON.stringify({ shade: 1, m: { id: 'intmedia', mime: 'image/jpeg', index, total: 3, chunk: chunks[index].toString('base64') } });
       const m = await c.sealMessage(payload, [alice.manifest, manifest2], [bob.manifest], alice.session, trustAB(alice, bob));
-      await operation(f, alice, ac, 'send', m);
+      if (index === 0) {
+        holdPush = true;
+        const timeout = new AbortController();
+        try {
+          const reply = await Promise.race([
+            operation(f, alice, ac, 'send', m),
+            delay(5000, null, { signal: timeout.signal }),
+          ]);
+          assert.equal(reply?.result.accepted, true, 'send acknowledgment must precede push completion');
+          assert.equal(pushes.length, 1);
+        } finally {
+          timeout.abort();
+          holdPush = false;
+          resumePush.resolve();
+        }
+      } else {
+        assert.equal((await operation(f, alice, ac, 'send', m)).result.accepted, true);
+      }
     }
     assert.equal(pushes.length, 3);
     assert.ok(pushes.every(p => p.payload.type === 'wake' && Object.keys(p.payload).length === 1));

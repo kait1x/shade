@@ -3,6 +3,7 @@
 // No production data is read or changed. A real adapter must reuse encrypted,
 // atomic server storage and introduce separate device-scoped transport routes.
 import { createPublicKey, randomBytes } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { check, hash, manifestText, deviceId, fingerprint, genesisText,
   pairingText, pairingTextV2, requestText, verify, verifyMessage, messageText, verifyGenesis, verifyHistory } from '../../client/web/protocol/device-v2.mjs';
 
@@ -409,9 +410,11 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     })),
     pushSubscription: (account, id) => state.pushSubscriptions[`${account}:${id}`]
       ? structuredClone(state.pushSubscriptions[`${account}:${id}`]) : null,
-    dropPushSubscription: (account, id) => serial(() => transaction(next => {
-      delete next.pushSubscriptions[`${account}:${id}`];
-    })),
+    dropPushSubscription: (account, id, expired) => serial(async () => {
+      const key = `${account}:${id}`;
+      if (!isDeepStrictEqual(state.pushSubscriptions[key], expired)) return;
+      await transaction(next => { delete next.pushSubscriptions[key]; });
+    }),
     assertLegacyAllowed(account) {
       check(!current(state, account), 'Client upgrade required: account uses device protocol v2');
     },
