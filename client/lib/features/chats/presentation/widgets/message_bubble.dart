@@ -229,7 +229,8 @@ class _MessageBubbleState extends State<MessageBubble> {
                               icon: const Icon(Icons.play_arrow_rounded),
                               label: const Text('Голосовое'),
                             ),
-                          if (widget.onOpenLocation != null)
+                          if (widget.onOpenLocation != null) ...[
+                            _LocationPreview(text: text),
                             TextButton.icon(
                               onPressed: widget.onOpenLocation,
                               style: TextButton.styleFrom(
@@ -241,6 +242,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                               icon: const Icon(Icons.location_on_outlined),
                               label: const Text('Открыть карту'),
                             ),
+                          ],
                           if (!isImage && widget.onPlayVoice == null) ...[
                             Text(
                               isEncrypted
@@ -433,5 +435,81 @@ class _FullScreenImage extends StatelessWidget {
         );
       }
     }
+  }
+}
+
+/// Bundled overview based on Natural Earth (public domain).
+/// Rendering a chat never sends coordinates to a tile provider.
+class _LocationPreview extends StatelessWidget {
+  const _LocationPreview({required this.text});
+
+  final String text;
+  static final _coordinates = RegExp(
+    r'^📍 Геопозиция\n(-?\d{1,2}\.\d{5}), (-?\d{1,3}\.\d{5})$',
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final match = _coordinates.firstMatch(text);
+    if (match == null) return const SizedBox.shrink();
+    final latitude = double.parse(match[1]!);
+    final longitude = double.parse(match[2]!);
+    if (latitude.abs() > 90 || longitude.abs() > 180) {
+      return const SizedBox.shrink();
+    }
+
+    return Semantics(
+      image: true,
+      label: 'Геопозиция на обзорной карте',
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: SizedBox(
+          width: 280,
+          child: AspectRatio(
+            aspectRatio: 2,
+            child: LayoutBuilder(
+              builder: (context, bounds) {
+                const markerSize = 13.0;
+                final x = (longitude + 180) / 360 * bounds.maxWidth;
+                final y = (90 - latitude) / 180 * bounds.maxHeight;
+                return Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Image.asset(
+                      'assets/maps/world.png',
+                      fit: BoxFit.fill,
+                      excludeFromSemantics: true,
+                    ),
+                    Positioned(
+                      left: (x - markerSize / 2)
+                          .clamp(
+                              0.0,
+                              (bounds.maxWidth - markerSize)
+                                  .clamp(0.0, double.infinity))
+                          .toDouble(),
+                      top: (y - markerSize / 2)
+                          .clamp(
+                              0.0,
+                              (bounds.maxHeight - markerSize)
+                                  .clamp(0.0, double.infinity))
+                          .toDouble(),
+                      child: Container(
+                        width: markerSize,
+                        height: markerSize,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFF685C),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

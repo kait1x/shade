@@ -1476,8 +1476,8 @@ async function openApp() {
           const text = client.state.messages.find(message => message.ref === data.ref)?.text;
           const match = /^📍 Геопозиция\n(-?\d{1,2}\.\d{5}), (-?\d{1,3}\.\d{5})$/.exec(text);
           check(match && Math.abs(Number(match[1])) <= 90 && Math.abs(Number(match[2])) <= 180, 'Координаты недоступны.');
-          const link = node('a', 'Открыть в OpenStreetMap', 'btn');
-          link.href = 'https://www.openstreetmap.org/?mlat=' + match[1] + '&mlon=' + match[2] + '#map=16/' + match[1] + '/' + match[2];
+          const link = node('a', 'Открыть в Google Maps', 'btn');
+          link.href = 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(match[1] + ',' + match[2]);
           link.target = '_blank';
           link.rel = 'noopener noreferrer';
           openVoicePanel('Геопозиция', [node('p', match[1] + ', ' + match[2]), link], () => {});

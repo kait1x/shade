@@ -988,6 +988,9 @@ export class AlphaClient extends EventTarget {
         if (bundles.length) next.parts ??= {};
         for (const bundle of bundles) {
           const m = bundle.message, peer = m.from === this.session.account ? m.to : m.from;
+          // Keep entries with expired peer leases queued without blocking other senders.
+          const peerHistory = m.from === this.session.account ? bundle.recipientHistory : bundle.senderHistory;
+          if (peer !== this.session.account && peerHistory.at(-1)?.expiresAt <= Date.now()) continue;
           if (!contact(next, peer) && m.from !== m.to) {
             // TOFU для входящих: неизвестный отправитель закрепляется автоматически
             // (цепь проверяется от genesis), чтобы ответ не требовал ручной сверки.

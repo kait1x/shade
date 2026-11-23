@@ -99,6 +99,7 @@ flutter:
   assets:
     - assets/stickers/flowers.png
     - assets/stickers/lid-reference.png
+    - assets/maps/world.png
   shaders:
     - shaders/holo_sticker.frag
 
