@@ -1595,6 +1595,20 @@ class _Profile extends StatelessWidget {
                           onTap: () => controller.act('backup'),
                         ),
                       ),
+                      if (controller.profile['canSaveRecovery'] == true)
+                        Card(
+                          child: ListTile(
+                            leading: const Icon(Icons.cloud_outlined),
+                            title: Text(
+                              controller.profile['cloudRecoverySaved'] == true
+                                  ? 'Копия сохранена на сервере'
+                                  : 'Сохранить копию на сервере',
+                            ),
+                            onTap: controller.profile['cloudRecoverySaved'] == true
+                                ? null
+                                : () => controller.act('backup.cloud'),
+                          ),
+                        ),
                       const SizedBox(height: 24),
                       const Text(
                         'ПОДАРКИ · ВИНИЛОВАЯ СТЕНА',

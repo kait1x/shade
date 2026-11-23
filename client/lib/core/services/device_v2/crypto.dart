@@ -204,11 +204,11 @@ class DeviceV2Crypto {
     return crypto.decryptData(jsonEncode(own!['payload']), session.encryptionPrivateKey);
   }
 
-  /// Recovery-бэкап: независимый RSA-PSS ключ, шифрованный фразой (24+).
+  /// Recovery-бэкап: независимый RSA-PSS ключ, шифрованный паролем.
   Future<Map<String, dynamic>> createRecoveryBackup(
       String account, String anchorSpki, String passphrase) async {
-    check(passphrase.length >= 24,
-        'Use a strong independent recovery passphrase (24+ characters)');
+    check(passphrase.length >= minRecoveryPasswordLength,
+        'Use an independent recovery password ($minRecoveryPasswordLength+ characters)');
     check(accountPattern.hasMatch(account));
     final pair = await RSA.generate(4096);
     final publicKey = await publicSpki(pair.publicKey);

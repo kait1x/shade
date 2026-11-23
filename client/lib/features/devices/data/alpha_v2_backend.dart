@@ -14,6 +14,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/services/crypto_service.dart';
 import '../../../core/services/device_v2/crypto.dart';
 import '../../../core/services/device_v2/protocol.dart';
+import '../../../core/services/device_v2/recovery_setup.dart';
 import '../../../core/services/device_v2/repository.dart';
 import '../../../core/services/device_v2/store.dart';
 import '../../../core/services/device_v2/transport.dart';
@@ -56,6 +57,10 @@ abstract class AlphaV2Backend {
   void Function(String account, int until)? onTyping;
   void Function(String account, bool online)? onPresence;
   void dispose();
+}
+
+class PendingSavedRecoveryPhrase implements Exception {
+  const PendingSavedRecoveryPhrase();
 }
 
 class RealAlphaV2Backend implements AlphaV2Backend {
@@ -290,12 +295,29 @@ class RealAlphaV2Backend implements AlphaV2Backend {
     final transport = _transport;
     if (origin == null || transport == null)
       throw StateError('Сначала войдите через Google.');
+    final store = V2Store(database);
+    final deferred = DeferredRecoveryPhrase(transport.origin, account);
+    final savedPhrase = await deferred.read();
+    final journal = await store.loadEnrollmentJournal(account);
+    final pending = journal?['phase'] == 'registering';
+    final savedForRetry = pending ? savedPhrase : null;
+    if (savedForRetry != null &&
+        recoveryPassphrase.isNotEmpty &&
+        recoveryPassphrase != savedForRetry) {
+      throw const PendingSavedRecoveryPhrase();
+    }
+    final password =
+        recoveryPassphrase.isEmpty ? (savedForRetry ?? '') : recoveryPassphrase;
+    if (password.length < minRecoveryPasswordLength) {
+      throw StateError(
+          'Пароль восстановления: минимум $minRecoveryPasswordLength символов.');
+    }
+    // A generated phrase from a previous beta is valid only for its journal.
+    if (savedPhrase != null && !pending) await deferred.complete();
     final repo = V2ChatRepository.pairing(
-        transport: transport,
-        crypto: crypto,
-        store: V2Store(database),
-        account: account);
-    final recovery = await repo.registerNewAccount(recoveryPassphrase);
+        transport: transport, crypto: crypto, store: store, account: account);
+    final recovery =
+        await repo.registerNewAccount(password, cloudRecovery: true);
     await _saveSession(origin, account, transport);
     _repo = repo;
     _account = account;

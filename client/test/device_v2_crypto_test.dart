@@ -55,7 +55,7 @@ void main() {
     expect(ready['ready'], true);
     final web = ready['web'] as Map<String, dynamic>;
 
-    const nativePhrase = 'synthetic native offline recovery phrase';
+    const nativePhrase = 'CobaltMaples';
     final backup = await v2.createRecoveryBackup('port_native', root, nativePhrase);
     final genesis = v2.buildLegacyGenesis('port_native', root, backup['publicKey'] as String);
     genesis['signature'] = await crypto.signData(genesisText(genesis), kp.privateKey);

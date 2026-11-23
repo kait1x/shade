@@ -124,13 +124,23 @@ class V2ChatRepository {
   /// Снимок локального аккаунта (genesis/history/checkpoint) для UI.
   Map<String, dynamic>? get accountSnapshot => _accountCache;
 
+  Future<void> saveCloudRecoveryBackup() async {
+    final backup = _requireAccount()['recovery'];
+    check(backup is Map<String, dynamic>, 'Recovery backup unavailable');
+    final device = session;
+    final result = await transport.operation('recovery.backup', backup,
+        account: account, id: device.id, privateKey: device.signingPrivateKey);
+    check(result is Map && result['saved'] == true, 'Recovery backup unavailable');
+  }
+
   /// Enroll the first device and retain the exact identity across interruptions.
   Future<Map<String, dynamic>> registerNewAccount(
-      String recoveryPassphrase) async {
+      String recoveryPassphrase, {bool cloudRecovery = false}) async {
     check(
         RegExp(r'^[a-z0-9_]{3,32}$').hasMatch(account), 'Некорректный никнейм');
     check(
-        recoveryPassphrase.length >= 24, 'Recovery-фраза: минимум 24 символа');
+        recoveryPassphrase.length >= minRecoveryPasswordLength,
+        'Пароль восстановления: минимум $minRecoveryPasswordLength символов');
     final login = await transport.session();
     check(login['authenticated'] == true, 'Сессия Google истекла');
     final remoteAccount = login['account'];
@@ -214,7 +224,8 @@ class V2ChatRepository {
 
     if (remoteAccount == null) {
       await transport.registerAccount(
-          genesis, manifest, await v2.pairingProof(device));
+          genesis, manifest, await v2.pairingProof(device),
+          recoveryBackup: cloudRecovery ? finalized : null);
     }
     final directory =
         (await transport.session())['directory'] as Map<String, dynamic>;
@@ -934,7 +945,7 @@ class V2ChatRepository {
   bool _recovering = false;
 
   /// [pkg] — {backup, genesis} из файла recovery-пакета; [recoveryPhrase] —
-  /// фраза, расшифровывающая пакет (≥24 символа, проверяется расшифровкой).
+  /// пароль, которым расшифровывается пакет.
   /// [onStep] — шаги потока: unlock/keys/session/install/bootstrap.
   Future<Map<String, dynamic>> recoverWithBackup(
       Map<String, dynamic> pkg, String recoveryPhrase,

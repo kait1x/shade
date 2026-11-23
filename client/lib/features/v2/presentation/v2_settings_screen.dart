@@ -3,7 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shade/core/theme/shade_theme.dart';
 
+import 'v2_providers.dart';
 import 'v2_push.dart';
+import 'v2_recovery_setup.dart';
 
 class V2SettingsScreen extends ConsumerWidget {
   const V2SettingsScreen({super.key});
@@ -11,6 +13,8 @@ class V2SettingsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final push = ref.watch(androidPushProvider);
+    final repository = ref.read(v2SessionProvider.notifier).repository;
+    final snapshot = repository?.accountSnapshot;
     return Scaffold(
       appBar: AppBar(title: const Text('Настройки')),
       body: Center(
@@ -30,6 +34,21 @@ class V2SettingsScreen extends ConsumerWidget {
                     trailing: const Icon(Icons.chevron_right_rounded),
                     onTap: () => context.push('/devices'),
                   ),
+                  if (repository != null &&
+                      snapshot?['recovery'] != null &&
+                      snapshot?['genesis'] != null) ...[
+                    const Divider(height: 1, indent: 56),
+                    ListTile(
+                      leading: const Icon(Icons.key_outlined),
+                      title: const Text('Настроить восстановление'),
+                      subtitle: const Text('Сохранить фразу и файл'),
+                      trailing: const Icon(Icons.chevron_right_rounded),
+                      onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                              builder: (_) =>
+                                  V2RecoverySetup(repository: repository))),
+                    ),
+                  ],
                   if (push != null) ...[
                     const Divider(
                         height: 1, indent: 56, color: ShadeColors.greyBorder),

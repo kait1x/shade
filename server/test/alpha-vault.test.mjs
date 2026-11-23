@@ -41,3 +41,27 @@ test('alpha store fails closed on concurrent writer, wrong secret and a legacy d
   await fs.writeFile(path.join(legacy,'users.json'),'synthetic legacy sentinel');
   await assert.rejects(alphaStore(legacy,secret),/legacy\/production/);
 });
+
+
+test('rolling checkpoint retains the previous atomic snapshot', async () => {
+  await fs.mkdir('build', { recursive: true });
+  const root = await fs.mkdtemp(path.join(process.cwd(), 'build', 'alpha-checkpoint-'));
+  const dir = path.join(root, 'state');
+  const checkpoints = path.join(root, 'checkpoints');
+  const store = await alphaStore(dir, 'synthetic local checkpoint retention secret', { checkpointDir: checkpoints });
+  try {
+    await store.save({ generation: 1 });
+    const [first] = await fs.readdir(checkpoints);
+    const savedPath = path.join(checkpoints, first);
+    const currentPath = path.join(dir, 'device-v2.enc');
+    assert.equal((await fs.stat(savedPath)).ino, (await fs.stat(currentPath)).ino);
+    const oldBytes = await fs.readFile(savedPath);
+    await store.save({ generation: 2 });
+    assert.deepEqual(await store.load(), { generation: 2 });
+    assert.deepEqual(await fs.readFile(savedPath), oldBytes);
+    assert.notDeepEqual(await fs.readFile(currentPath), oldBytes);
+  } finally {
+    await store.close();
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

@@ -3,6 +3,10 @@ import { b64, unb64, check, deviceId, publicKey, textBytes, sign, hash,
 
 const RSA = { modulusLength: 4096, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' };
 const ITERATIONS = 600000;
+export const MIN_RECOVERY_PASSWORD_LENGTH = 12;
+export const DEVICE_PIN_LENGTHS = Object.freeze([4, 6]);
+export const validDevicePin = (pin, length) => DEVICE_PIN_LENGTHS.includes(length) &&
+  typeof pin === 'string' && pin.length === length && /^[0-9]+$/.test(pin);
 const random = n => crypto.getRandomValues(new Uint8Array(n));
 const decode = bytes => new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 
@@ -15,19 +19,24 @@ async function wrappingKey(passphrase, salt) {
   } finally { password.fill(0); }
 }
 function vaultAAD(vault) {
-  return textBytes(JSON.stringify(['shade-vault:v2', vault.account, vault.id,
-    vault.encryptionKey, vault.signingKey, ITERATIONS]));
+  const fields = ['shade-vault:v2', vault.account, vault.id, vault.encryptionKey, vault.signingKey, ITERATIONS];
+  if (vault.pinLength !== undefined) fields.push('pin', vault.pinLength);
+  return textBytes(JSON.stringify(fields));
 }
 async function importPrivate(bytes, name, usage) {
   const key = await crypto.subtle.importKey('pkcs8', bytes, { name, hash: 'SHA-256' }, false, [usage]);
   check(key.algorithm.modulusLength === 4096, 'Unsupported vault key');
   return key;
 }
-// A strong, user-supplied passphrase is required. Neither it nor unwrapped
-// PKCS8 bytes are persisted. Unlocked keys are non-extractable and memory-only.
-export async function createVault(account, passphrase) {
+// PIN mode is explicit. Neither the unlock secret nor unwrapped PKCS8 bytes
+// are persisted. Unlocked keys are non-extractable and memory-only.
+export async function createVault(account, passphrase, { pinLength } = {}) {
   check(/^[a-z0-9_]{3,32}$/.test(account));
-  check(typeof passphrase === 'string' && passphrase.length >= 16, 'Use a strong passphrase of at least 16 characters');
+  if (pinLength === undefined) {
+    check(typeof passphrase === 'string' && passphrase.length >= 16, 'Use a strong passphrase of at least 16 characters');
+  } else {
+    check(validDevicePin(passphrase, pinLength), 'Invalid device PIN');
+  }
   const encryption = await crypto.subtle.generateKey({ name: 'RSA-OAEP', ...RSA }, true, ['encrypt', 'decrypt']);
   const signing = await crypto.subtle.generateKey({ name: 'RSA-PSS', ...RSA }, true, ['sign', 'verify']);
   const encryptionKey = b64(await crypto.subtle.exportKey('spki', encryption.publicKey));
@@ -35,6 +44,7 @@ export async function createVault(account, passphrase) {
   const salt = random(16), iv = random(12);
   const vault = { version: 2, account, id: await deviceId(encryptionKey, signingKey),
     encryptionKey, signingKey, salt: b64(salt), iv: b64(iv), ciphertext: '' };
+  if (pinLength !== undefined) vault.pinLength = pinLength;
   const encBytes = new Uint8Array(await crypto.subtle.exportKey('pkcs8', encryption.privateKey));
   const sigBytes = new Uint8Array(await crypto.subtle.exportKey('pkcs8', signing.privateKey));
   const plaintext = textBytes(JSON.stringify([b64(encBytes), b64(sigBytes)]));
@@ -49,6 +59,7 @@ export async function unlockVault(vault, passphrase) {
   check(vault.id === await deviceId(vault.encryptionKey, vault.signingKey), 'Vault identity mismatch');
   const salt = unb64(vault.salt, 32), iv = unb64(vault.iv, 24);
   check(salt.length === 16 && iv.length === 12);
+  if (vault.pinLength !== undefined) check(validDevicePin(passphrase, vault.pinLength), 'Invalid device PIN');
   const key = await wrappingKey(passphrase, salt);
   let plaintext;
   const privateBytes = [];
@@ -76,7 +87,8 @@ export function descriptor(vault) {
   return { id: vault.id, encryptionKey: vault.encryptionKey, signingKey: vault.signingKey };
 }
 export async function createRecoveryBackup(account, anchor, passphrase) {
-  check(typeof passphrase === 'string' && passphrase.length >= 24, 'Use a strong independent recovery passphrase (24+ characters)');
+  check(typeof passphrase === 'string' && passphrase.length >= MIN_RECOVERY_PASSWORD_LENGTH,
+    `Use an independent recovery password (${MIN_RECOVERY_PASSWORD_LENGTH}+ characters)`);
   check(/^[a-z0-9_]{3,32}$/.test(account));
   const pair = await crypto.subtle.generateKey({ name: 'RSA-PSS', ...RSA }, true, ['sign', 'verify']);
   const publicKey = b64(await crypto.subtle.exportKey('spki', pair.publicKey));
@@ -302,9 +314,11 @@ function validBinding(binding) {
 }
 export async function saveVault(vault) {
   check(vault && ['account,binding,ciphertext,encryptionKey,id,iv,salt,signingKey,version',
+    'account,ciphertext,encryptionKey,id,iv,pinLength,salt,signingKey,version',
     'account,ciphertext,encryptionKey,id,iv,salt,signingKey,version']
     .includes(Object.keys(vault).sort().join(',')), 'Unexpected vault fields');
   check(validBinding(vault.binding), 'Invalid binding metadata');
+  check(vault.pinLength === undefined || DEVICE_PIN_LENGTHS.includes(vault.pinLength), 'Invalid PIN metadata');
   check(vault.version === 2 && typeof vault.account === 'string' && /^[a-z0-9_]{3,32}$/.test(vault.account) &&
     vault.id === await deviceId(vault.encryptionKey, vault.signingKey), 'Invalid vault identity');
   check(unb64(vault.salt, 32).length === 16 && unb64(vault.iv, 24).length === 12 &&

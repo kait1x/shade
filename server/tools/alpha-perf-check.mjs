@@ -63,7 +63,7 @@ try {
   // 1. Cold shell: fresh profile, throttled CPU — page-driven bytes to first UI.
   const [shellMs] = await t(async () => {
     await page.goto(f.origin);
-    await page.getByText('Войти через Google', { exact: true }).waitFor();
+    await page.getByRole('link', { name: 'Продолжить с Google' }).waitFor();
   });
   results.coldShell = { ms: shellMs, pageBytesMB: +(pageBytes / 1048576).toFixed(2), pageRequests };
   console.log('COLD_SHELL', JSON.stringify(results.coldShell));
@@ -72,15 +72,19 @@ try {
   // Register (unthrottled: RSA-4096 keygen is registration-specific, measured
   // once as a reference, not an app-start metric).
   await session.send('Emulation.setCPUThrottlingRate', { rate: 1 });
-  await page.getByText('Войти через Google', { exact: true }).click();
-  await page.getByLabel('Имя пользователя').fill('perf_alice');
-  await page.getByLabel('Фраза устройства ·').fill(phrase);
-  await page.getByLabel('Повторите фразу устройства').fill(phrase);
-  await page.getByLabel('Отдельная recovery-фраза').fill('perf QA independent offline recovery phrase');
-  await page.getByRole('button', { name: 'Создать ключи на этом устройстве' }).click();
-  await page.getByRole('heading', { name: 'Сохраните recovery-пакет' }).waitFor({ timeout: 120000 });
-  await page.getByRole('checkbox').check();
-  await page.getByRole('button', { name: 'Завершить регистрацию' }).click();
+  await page.getByRole('link', { name: 'Продолжить с Google' }).click();
+  await page.getByLabel('Ваш никнейм').fill('perf_alice');
+  const recovery = page.getByLabel('Пароль восстановления ·');
+  await recovery.waitFor();
+  const local = page.getByLabel('Пароль этого браузера ·');
+  if (!await local.isVisible()) {
+    const usePin = page.getByRole('button', { name: 'Использовать PIN', exact: true });
+    if (await usePin.isVisible()) await usePin.click();
+    await page.getByRole('button', { name: 'Использовать пароль браузера' }).click();
+  }
+  await local.fill(phrase);
+  await recovery.fill('perf QA independent offline recovery phrase');
+  await page.getByRole('button', { name: 'Создать аккаунт', exact: true }).click();
   await page.getByText('Подключено · E2EE', { exact: true }).waitFor({ timeout: 120000 });
   // Wait for the Flutter UI and the offline cache to settle before reload.
   await page.evaluate(() => window.shadeAction('sync', '{}'));

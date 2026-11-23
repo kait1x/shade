@@ -76,7 +76,14 @@ export async function alphaStore(directory, secret, { checkpointDir = null, chec
           const stamp = new Date().toISOString().replace(/[:.]/g, '-');
           const name = `checkpoint-${stamp}-${randomBytes(4).toString('hex')}.enc`;
           const tmp = path.join(checkpointDir, `${name}.tmp`);
-          await fs.writeFile(tmp, encoded, { mode: 0o600, flush: true, flag: 'wx' });
+          // The committed file is never modified in place. A hard link keeps
+          // the previous bytes intact when the next snapshot atomically replaces it.
+          try {
+            await fs.link(filename, tmp);
+          } catch (error) {
+            if (!['EXDEV', 'ENOTSUP', 'EPERM'].includes(error.code)) throw error;
+            await fs.writeFile(tmp, encoded, { mode: 0o600, flush: true, flag: 'wx' });
+          }
           await fs.rename(tmp, path.join(checkpointDir, name));
           const entries = (await fs.readdir(checkpointDir)).filter(f => f.startsWith('checkpoint-') && f.endsWith('.enc')).sort();
           for (const old of entries.slice(0, Math.max(0, entries.length - checkpointKeep))) {

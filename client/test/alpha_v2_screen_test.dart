@@ -5,6 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:shade/core/services/device_v2/recovery_setup.dart';
+import 'package:shade/features/v2/presentation/v2_recovery_setup.dart';
 import 'package:shade/core/services/crypto_service.dart';
 import 'package:shade/core/services/device_v2/repository.dart';
 import 'package:shade/core/services/device_v2/store.dart';
@@ -17,6 +20,7 @@ import 'package:shade/features/devices/presentation/alpha_v2_screen.dart';
 class FakeBackend implements AlphaV2Backend {
   bool session = false;
   Future<String>? pendingGoogle;
+  String? providedRecoveryPhrase;
   @override
   bool registrationPending = false;
   @override
@@ -24,6 +28,7 @@ class FakeBackend implements AlphaV2Backend {
   @override
   Future<Map<String, dynamic>> register(
       String account, String recoveryPassphrase) async {
+    providedRecoveryPhrase = recoveryPassphrase;
     isEnrolled = true;
     return {'backup': {}, 'genesis': {}};
   }
@@ -185,6 +190,18 @@ Widget _wrap(AlphaV2Backend backend, {bool startWithGoogle = false}) =>
             home: AlphaV2Screen(
                 backend: backend, startWithGoogle: startWithGoogle)));
 
+class _RecoverySetupRepository extends V2ChatRepository {
+  _RecoverySetupRepository(AlphaTransport transport, CryptoService crypto)
+      : super.pairing(
+            transport: transport,
+            crypto: crypto,
+            store: V2Store(DatabaseService()),
+            account: 'backup_test');
+
+  @override
+  Map<String, dynamic> get accountSnapshot => {'recovery': {}, 'genesis': {}};
+}
+
 void main() {
   testWidgets('connect stage validates origin and advances to enrollment',
       (tester) async {
@@ -246,36 +263,94 @@ void main() {
   });
 
   testWidgets(
-      'public sign-in opens registration and saves a recovery file without showing JSON',
+      'public signup asks for a nickname and a chosen recovery password',
       (tester) async {
     final backend = FakeBackend()..registrationPending = true;
-    Map<dynamic, dynamic>? saved;
-    const channel = MethodChannel('com.shade.app/security');
-    final messenger =
-        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-    messenger.setMockMethodCallHandler(channel, (call) async {
-      expect(call.method, 'saveRecoveryPackage');
-      saved = call.arguments as Map<dynamic, dynamic>;
-      return true;
-    });
-    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
     await tester.pumpWidget(_wrap(backend, startWithGoogle: true));
     await tester.pumpAndSettle();
     expect(find.text('Создать аккаунт Shade v2'), findsOneWidget);
-    expect(find.text('Адрес сервера'), findsNothing);
-    await tester.enterText(find.byType(TextField).first, 'beta_friend');
-    await tester.enterText(
-        find.byType(TextField).last, 'synthetic phrase for beta testing');
-    final submit = find.text('Зарегистрироваться');
+    final nickname = find.widgetWithText(TextField, 'Никнейм');
+    final password = find.widgetWithText(TextField, 'Пароль восстановления');
+    await tester.enterText(nickname, 'beta_friend');
+    final submit = find.text('Создать аккаунт');
     await tester.ensureVisible(submit);
     await tester.tap(submit);
     await tester.pumpAndSettle();
-    expect(find.text('Сохраните файл восстановления'), findsOneWidget);
-    expect(find.byType(SelectableText), findsNothing);
+    expect(backend.providedRecoveryPhrase, isNull);
+    expect(find.textContaining('минимум 12 символов'), findsOneWidget);
+
+    await tester.enterText(password, 'CobaltMaple');
+    await tester.ensureVisible(submit);
+    await tester.tap(submit);
+    await tester.pumpAndSettle();
+    expect(backend.providedRecoveryPhrase, isNull);
+    expect(find.textContaining('минимум 12 символов'), findsOneWidget);
+
+    const chosenPassword = 'CobaltMaples';
+    await tester.enterText(password, chosenPassword);
+    await tester.ensureVisible(submit);
+    await tester.tap(submit);
+    await tester.pumpAndSettle();
+    expect(backend.providedRecoveryPhrase, chosenPassword);
+    expect(backend.isEnrolled, true);
+    expect(find.text('@native_android'), findsOneWidget);
+    expect(find.text('Сохраните файл восстановления'), findsNothing);
+  });
+
+  testWidgets(
+      'recovery setup retains the phrase until file and phrase are saved',
+      (tester) async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final crypto = CryptoService();
+    final transport = AlphaTransport('https://alpha.test', crypto);
+    addTearDown(transport.dispose);
+    final repo = _RecoverySetupRepository(transport, crypto);
+    final secret = DeferredRecoveryPhrase(transport.origin, repo.account);
+    const phrase = 'abcde-fghjk-mnpqr-stuvw-xyz23-45678';
+    expect(phrase, matches(RegExp(r'^[a-z2-9]{5}(-[a-z2-9]{5}){5}$')));
+    await secret.save(phrase);
+    expect(
+        await DeferredRecoveryPhrase('https://other.test', repo.account).read(),
+        isNull);
+
+    const channel = MethodChannel('com.shade.app/security');
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    bool saveFile = false;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      expect(call.method, 'saveRecoveryPackage');
+      expect((call.arguments as Map)['json'], contains('"backup"'));
+      return saveFile;
+    });
+    addTearDown(() => messenger.setMockMethodCallHandler(channel, null));
+    await tester.pumpWidget(MaterialApp(home: Builder(builder: (context) {
+      return TextButton(
+        onPressed: () => Navigator.push<void>(
+            context,
+            MaterialPageRoute(
+                builder: (_) => V2RecoverySetup(repository: repo))),
+        child: const Text('Открыть настройку'),
+      );
+    })));
+    await tester.tap(find.text('Открыть настройку'));
+    await tester.pumpAndSettle();
+    expect(find.text(phrase), findsNothing);
+    await tester.tap(find.text('Показать фразу'));
+    await tester.pumpAndSettle();
+    expect(find.text(phrase), findsOneWidget);
+    await tester.tap(find.byType(CheckboxListTile));
     await tester.tap(find.text('Сохранить файл'));
     await tester.pumpAndSettle();
-    expect(saved?['json'], contains('"backup"'));
-    expect(find.text('Файл восстановления сохранён'), findsOneWidget);
+    final done = find.widgetWithText(TextButton, 'Готово');
+    expect(tester.widget<TextButton>(done).onPressed, isNull);
+    expect(await secret.read(), phrase);
+    saveFile = true;
+    await tester.tap(find.text('Сохранить файл'));
+    await tester.pumpAndSettle();
+    await tester.tap(done);
+    await tester.pumpAndSettle();
+    expect(await secret.read(), isNull);
+    expect(find.text('Открыть настройку'), findsOneWidget);
   });
 
   testWidgets('Google sign-in keeps the branded screen visible while waiting',

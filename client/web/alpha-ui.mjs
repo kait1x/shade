@@ -1,9 +1,9 @@
 import { AlphaClient, api } from './alpha-client.mjs';
-import { listVaults } from './device_crypto.mjs';
+import { listVaults, MIN_RECOVERY_PASSWORD_LENGTH, DEVICE_PIN_LENGTHS, validDevicePin } from './device_crypto.mjs';
 import { mergeReadMarks, readReadMarks, saveReadMarks } from './alpha-storage.mjs';
 import { hash, genesisText, check } from './protocol/device-v2.mjs';
 import { createDeviceBinding, unlockDeviceBinding, platformAuthenticatorAvailable,
-  generateRecoveryPhrase, bindingErrorText } from './device_binding.mjs';
+  bindingErrorText } from './device_binding.mjs';
 
 const root = document.querySelector('#root'), dialog = document.querySelector('#dialog');
 const client = new AlphaClient();
@@ -12,8 +12,6 @@ const client = new AlphaClient();
 window.__shadeClient = client;
 const contact = account => client.state && Object.hasOwn(client.state.contacts, account) ? client.state.contacts[account] : null;
 let selected = null, users = [], ready = false, actionTail = Promise.resolve(), noticeTimer, loggedIn = false;
-// Registration draft shared by the onboarding steps (nickname → identity → recovery).
-const draft = { account: '' };
 function node(tag, text, className) { const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (className) n.className = className; return n; }
 function notice(text, ms = 9000) { const n = document.querySelector('#notice'); n.textContent = text; n.classList.add('visible'); clearTimeout(noticeTimer); noticeTimer = setTimeout(() => n.classList.remove('visible'), ms); }
 // Floating arrival toast for messages in chats that are not open, mirroring
@@ -206,8 +204,8 @@ function expander(summaryText, children) {
   return details;
 }
 // Common onboarding frame: brand row, optional medallion and title, the form
-// card, step dots, fineprint and a quiet details expander.
-function onboard({ title, subtitle, cardTitle, cardSubtitle, medallion = false, dots = 0, footer, details, children }) {
+// card, fineprint and a quiet details expander.
+function onboard({ title, subtitle, cardTitle, cardSubtitle, medallion = false, footer, details, children }) {
   const section = node('section', undefined, 'onboard enter');
   const inner = node('div', undefined, 'onboard-inner');
   const brand = node('div', undefined, 'brand');
@@ -221,13 +219,6 @@ function onboard({ title, subtitle, cardTitle, cardSubtitle, medallion = false, 
   if (cardSubtitle) card.append(node('p', cardSubtitle, 'card-sub'));
   card.append(...children);
   inner.append(card);
-  if (dots) {
-    const dotsEl = node('div', undefined, 'dots');
-    dotsEl.setAttribute('role', 'img');
-    dotsEl.setAttribute('aria-label', `Шаг ${dots} из 3`);
-    for (let step = 1; step <= 3; step++) dotsEl.append(node('span', undefined, step === dots ? 'dot active' : 'dot'));
-    inner.append(dotsEl);
-  }
   if (footer) inner.append(node('p', footer, 'fineprint'));
   if (details) inner.append(details);
   section.append(inner);
@@ -304,10 +295,159 @@ function welcomeStep(status) {
       [node('p', 'Google подтверждает имя, email и фото профиля. Shade не получает пароль Google. Шифрование переписки использует отдельные ключи на вашем устройстве.', 'expain-body')]),
   });
 }
-function nicknameStep() {
+// The recovery password stays separate from this browser's vault protection.
+function recoveryPasswordInput(form) {
+  return input(form, `Пароль восстановления · от ${MIN_RECOVERY_PASSWORD_LENGTH} символов`,
+    'recovery-password', 'password', MIN_RECOVERY_PASSWORD_LENGTH, { autocomplete: 'new-password' });
+}
+
+function passwordVisibility(form, fields) {
+  const label = fields.length === 1 ? 'пароль' : 'пароли';
+  const toggle = node('button', `Показать ${label}`, 'btn-text');
+  toggle.type = 'button';
+  toggle.setAttribute('aria-pressed', 'false');
+  toggle.onclick = () => {
+    const show = fields[0].type === 'password';
+    for (const field of fields) field.type = show ? 'text' : 'password';
+    toggle.setAttribute('aria-pressed', String(show));
+    toggle.textContent = show ? `Скрыть ${label}` : `Показать ${label}`;
+  };
+  form.append(toggle);
+}
+
+function readRecoveryPassword(field) {
+  const password = field.value;
+  check(password.length >= MIN_RECOVERY_PASSWORD_LENGTH,
+    `Пароль восстановления: минимум ${MIN_RECOVERY_PASSWORD_LENGTH} символов.`);
+  check(password === password.trim().replace(/\s+/g, ' '),
+    'Уберите пробелы с краёв и двойные пробелы.');
+  return password;
+}
+
+function configurePinInput(field, length) {
+  field.inputMode = length ? 'none' : 'text';
+  if (length) {
+    field.minLength = length;
+    field.maxLength = length;
+    field.pattern = `[0-9]{${length}}`;
+  } else {
+    for (const attribute of ['minlength', 'maxlength', 'pattern']) field.removeAttribute(attribute);
+  }
+}
+
+function attachPinPad(field, onComplete) {
+  const label = field.closest('label');
+  const fieldBox = field.parentElement;
+  const dots = node('span', undefined, 'pin-dots');
+  dots.setAttribute('aria-hidden', 'true');
+  fieldBox.append(dots);
+  const feedback = node('p', undefined, 'pin-feedback');
+  feedback.setAttribute('role', 'alert');
+  feedback.hidden = true;
+  const keypad = node('div', undefined, 'pin-keypad');
+  keypad.setAttribute('role', 'group');
+  keypad.setAttribute('aria-label', 'Цифровая клавиатура PIN');
+  label.after(feedback, keypad);
+  let length;
+  let busy = false;
+  const keys = [];
+  let erase;
+
+  function update() {
+    for (let i = 0; i < dots.children.length; i++) {
+      dots.children[i].classList.toggle('filled', i < field.value.length);
+    }
+    for (const key of keys) key.disabled = busy;
+    erase.disabled = busy || !field.value;
+  }
+
+  function enter(value) {
+    if (!length || busy) return;
+    const sanitized = value.replace(/[^0-9]/g, '').slice(0, length);
+    if (field.value !== sanitized) field.value = sanitized;
+    feedback.hidden = true;
+    field.removeAttribute('aria-invalid');
+    update();
+    if (field.value.length === length) onComplete?.();
+  }
+
+  function button(text, label, handle) {
+    const key = node('button', text, 'pin-key');
+    key.type = 'button';
+    if (label) key.setAttribute('aria-label', label);
+    key.onclick = handle;
+    keypad.append(key);
+    keys.push(key);
+    return key;
+  }
+
+  for (let digit = 1; digit <= 9; digit++) {
+    button(String(digit), null, () => enter(field.value + digit));
+  }
+  keypad.append(node('span', undefined, 'pin-spacer'));
+  button('0', null, () => enter(field.value + '0'));
+  erase = button('⌫', 'Удалить цифру', () => enter(field.value.slice(0, -1)));
+  erase.classList.add('pin-erase');
+  field.addEventListener('input', () => enter(field.value));
+  keypad.addEventListener('keydown', event => {
+    if (!length || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key === 'Backspace') {
+      event.preventDefault();
+      enter(field.value.slice(0, -1));
+    } else if (/^[0-9]$/.test(event.key)) {
+      event.preventDefault();
+      enter(field.value + event.key);
+    }
+  });
+
+  return {
+    setLength(value) {
+      length = value;
+      field.value = '';
+      configurePinInput(field, length);
+      label.classList.toggle('pin-entry', Boolean(length));
+      dots.hidden = keypad.hidden = !length;
+      dots.replaceChildren(...Array.from({ length: length || 0 }, () => node('span', undefined, 'pin-dot')));
+      feedback.hidden = true;
+      field.removeAttribute('aria-invalid');
+      update();
+    },
+    setBusy(value) {
+      busy = value;
+      field.readOnly = value;
+      update();
+    },
+    showError(message) {
+      field.value = '';
+      field.setAttribute('aria-invalid', 'true');
+      feedback.textContent = message;
+      feedback.hidden = false;
+      update();
+    },
+  };
+}
+
+function pinLengthInput(form) {
+  const label = node('label', undefined, 'field');
+  const select = node('select');
+  select.name = 'pin-length';
+  for (const length of DEVICE_PIN_LENGTHS) {
+    const option = node('option', length === 4 ? '4 цифры' : '6 цифр');
+    option.value = String(length);
+    select.append(option);
+  }
+  select.value = '6';
+  label.append(node('span', 'Длина PIN', 'field-label'), select);
+  form.append(label);
+  return select;
+}
+
+function registrationStep({ protection, initialNickname = '', initialPassword = '' }) {
+  const useDeviceProtection = protection === 'system';
   const form = node('form');
   const nickname = input(form, 'Ваш никнейм', 'account', 'text', 0,
-    { prefix: '@', placeholder: 'например, kait1x', autocomplete: 'off' });
+    { prefix: '@', placeholder: 'например, mira_22', autocomplete: 'username' });
+  nickname.value = initialNickname;
   nickname.maxLength = 32;
   nickname.autocapitalize = 'none';
   nickname.spellcheck = false;
@@ -316,15 +456,42 @@ function nicknameStep() {
   error.setAttribute('role', 'alert');
   error.hidden = true;
   form.append(error);
-  submit(form, 'Продолжить');
-  const box = onboard({
-    cardTitle: 'Давайте познакомимся',
-    cardSubtitle: 'По никнейму друзья смогут найти вас.',
-    children: [form, changeAccountButton()],
-    dots: 1,
-    footer: 'Ключи и история остаются в этом браузере.',
+
+  const recovery = recoveryPasswordInput(form);
+  recovery.value = initialPassword;
+  const pinLength = protection === 'pin' ? pinLengthInput(form) : null;
+  const phrase = useDeviceProtection ? null
+    : input(form, pinLength ? 'PIN этого браузера' : 'Пароль этого браузера · от 16 символов',
+      'passphrase', 'password', pinLength ? 0 : 16, { autocomplete: 'new-password' });
+  const pinPad = pinLength ? attachPinPad(phrase) : null;
+  if (pinPad) {
+    pinPad.setLength(Number(pinLength.value));
+    pinLength.onchange = () => pinPad.setLength(Number(pinLength.value));
+  }
+  passwordVisibility(form, phrase && !pinPad ? [recovery, phrase] : [recovery]);
+  const note = node('p', undefined, 'gen-progress');
+  note.hidden = true;
+  submit(form, 'Создать аккаунт');
+
+  const fallback = node('button', protection === 'pin' ? 'Использовать пароль браузера' : 'Использовать PIN', 'btn-text');
+  fallback.type = 'button';
+  function switchProtection(next) {
+    registrationStep({
+      protection: next, initialNickname: nickname.value, initialPassword: recovery.value,
+    });
+  }
+  fallback.onclick = () => switchProtection(protection === 'pin' ? 'password' : 'pin');
+  onboard({
+    cardTitle: 'Создать аккаунт',
+    cardSubtitle: useDeviceProtection
+      ? 'Сохраните пароль восстановления. Для входа на этом устройстве Shade использует системную защиту.'
+      : pinLength ? 'PIN открывает Shade в этом браузере даже без интернета. Сохраните пароль восстановления отдельно.'
+        : 'Пароль браузера открывает Shade на этом устройстве. Отдельный пароль восстановления нужен при потере всех устройств.',
+    children: [form, fallback, note, changeAccountButton()],
+    footer: 'Shade автоматически сохранит зашифрованную копию аккаунта.',
   });
-  const fieldBox = box.querySelector('.field-box');
+
+  const fieldBox = nickname.parentElement;
   nickname.addEventListener('input', () => {
     error.hidden = true;
     nickname.removeAttribute('aria-invalid');
@@ -332,8 +499,8 @@ function nicknameStep() {
   });
   form.onsubmit = event => {
     event.preventDefault();
-    const value = nickname.value.trim().toLowerCase();
-    if (!/^[a-z0-9_]{3,32}$/.test(value)) {
+    const account = nickname.value.trim().toLowerCase();
+    if (!/^[a-z0-9_]{3,32}$/.test(account)) {
       error.textContent = 'От 3 до 32 символов: a–z, 0–9 и _';
       error.hidden = false;
       nickname.setAttribute('aria-invalid', 'true');
@@ -341,139 +508,99 @@ function nicknameStep() {
       nickname.focus();
       return;
     }
-    draft.account = value;
-    identityStep();
-  };
-}
-// Identity step: keys are generated automatically. When the platform
-// authenticator supports PRF, the device passphrase is derived from it and the
-// user invents nothing; otherwise a single device passphrase is requested.
-function identityStep() {
-  platformAuthenticatorAvailable().then(available => available ? prfIdentityStep() : phraseIdentityStep(true));
-}
-function prfIdentityStep() {
-  const form = node('form');
-  const note = node('p', undefined, 'gen-progress');
-  note.hidden = true;
-  submit(form, 'Создать ключи и включить защиту');
-  const fallbackLink = node('button', 'Использовать фразу устройства', 'btn-text');
-  fallbackLink.type = 'button';
-  fallbackLink.onclick = () => phraseIdentityStep(false);
-  onboard({
-    cardTitle: 'Создаём вашу идентичность',
-    cardSubtitle: 'RSA-ключи создаются в этом браузере и защищаются биометрией устройства. Придумывать фразу не нужно.',
-    children: [form, fallbackLink, note],
-    dots: 2,
-    footer: 'Сервер и Google не получают ключи шифрования.',
-  });
-  form.onsubmit = event => {
-    event.preventDefault();
     action(async () => {
-      showProgress(note, 'Подтверждаем защиту устройства…');
-      let binding, passphrase;
-      try { ({ binding, passphrase } = await createDeviceBinding(draft.account)); }
-      catch (error) {
-        note.hidden = true;
-        if (error.message === 'prf_unavailable') {
-          // The authenticator cannot produce PRF results (Edge/Windows Hello
-          // without PRF, older Safari): switch to the passphrase path instead
-          // of failing the registration. Nothing was created yet — no keys or
-          // vault have been touched.
-          notice('Аутентификатор не поддерживает вывод ключа (PRF). Придумайте фразу устройства — шифрование остаётся прежним.');
-          phraseIdentityStep(false);
-          return;
+      if (!form.isConnected) return;
+      const password = readRecoveryPassword(recovery);
+      let passphrase = phrase?.value;
+      const length = pinLength ? Number(pinLength.value) : undefined;
+      let binding;
+      fallback.disabled = true;
+      if (pinLength) pinLength.disabled = true;
+      pinPad?.setBusy(true);
+      try {
+        if (useDeviceProtection) {
+          showProgress(note, 'Подтвердите защиту устройства…');
+          try { ({ binding, passphrase } = await createDeviceBinding(account)); }
+          catch (error) {
+            if (error.message === 'prf_unavailable') {
+              switchProtection('pin');
+              notice('Системная защита здесь недоступна. Задайте PIN браузера.');
+              return;
+            }
+            throw Error(bindingErrorText(error) || error.message);
+          }
+        } else if (pinLength) {
+          check(validDevicePin(passphrase, length), 'Введите PIN выбранной длины.');
+        } else {
+          check(passphrase !== password, 'Задайте отдельный пароль восстановления.');
         }
-        throw Error(bindingErrorText(error) || `Не удалось настроить защиту устройства: ${error.message}`);
+        showProgress(note, 'Создаём аккаунт…');
+        await client.prepare(account, passphrase, password, binding, { pinLength: length });
+        if (phrase) phrase.value = '';
+        recovery.value = '';
+        await finishRegistration(note, { newAccount: true });
+      } finally {
+        fallback.disabled = false;
+        if (pinLength) pinLength.disabled = false;
+        pinPad?.setBusy(false);
+        note.hidden = true;
       }
-      showProgress(note, 'Создаём RSA-4096 ключи… Оставьте страницу открытой.');
-      const recoveryPhrase = generateRecoveryPhrase();
-      await client.prepare(draft.account, passphrase, recoveryPhrase, binding);
-      await backupStep(recoveryPhrase);
     });
   };
 }
-function phraseIdentityStep(auto) {
+
+
+async function finishRegistration(note, { newAccount = false } = {}) {
+  showProgress(note, 'Подключаемся к Shade…');
+  try { await client.register(); }
+  catch (error) {
+    if (newAccount) resumeRegistrationStep();
+    throw error;
+  }
+  await openApp();
+}
+
+function resumeRegistrationStep() {
   const form = node('form');
-  const phrase = input(form, 'Фраза устройства · от 16 символов', 'passphrase', 'password', 16, { autocomplete: 'new-password' });
-  const confirm = input(form, 'Повторите фразу устройства', 'confirm', 'password', 16, { autocomplete: 'new-password' });
+  submit(form, 'Продолжить регистрацию');
   const note = node('p', undefined, 'gen-progress');
   note.hidden = true;
-  form.append(note);
-  submit(form, 'Создать ключи на этом устройстве');
-  onboard({
-    cardTitle: 'Создаём вашу идентичность',
-    cardSubtitle: auto
-      ? 'Биометрическая защита недоступна в этом браузере. Придумайте фразу устройства — она шифрует ключи и историю только здесь.'
-      : 'Фраза устройства шифрует ключи и историю в этом браузере. Сервер её не получает.',
-    children: [form],
-    dots: 2,
-    footer: 'Recovery-фразу сгенерируем автоматически на следующем шаге.',
-  });
-  form.onsubmit = event => {
-    event.preventDefault();
-    action(async () => {
-      if (phrase.value !== confirm.value) throw Error('Фразы устройства не совпадают');
-      showProgress(note, 'Создаём RSA-4096 ключи… Оставьте страницу открытой.');
-      const recoveryPhrase = generateRecoveryPhrase();
-      await client.prepare(draft.account, phrase.value, recoveryPhrase);
-      phrase.value = ''; confirm.value = '';
-      await backupStep(recoveryPhrase);
-    });
-  };
-}
-function backupStep(recoveryPhrase) {
-  const box = onboard({
-    cardTitle: 'Сохраните recovery-пакет',
-    cardSubtitle: 'Пакет зашифрован этой фразой. Сохраните файл вне устройства и запишите фразу отдельно. Без пакета или другого доверенного устройства потерянные ключи не восстановить.',
-    children: [],
-    dots: 3,
-    footer: 'Пакет содержит только зашифрованный recovery-ключ. Приватные ключи устройства в него не входят.',
-  });
-  const card = box.querySelector('.onboard-card');
-  if (recoveryPhrase) {
-    card.append(node('span', 'Recovery-фраза · запишите её', 'field-label'));
-    const phraseBox = node('div', undefined, 'phrase-box');
-    phraseBox.append(node('code', recoveryPhrase));
-    card.append(phraseBox);
-    const copy = node('button', 'Скопировать фразу', 'btn outline');
-    copy.type = 'button';
-    copy.onclick = async () => {
-      try { await navigator.clipboard.writeText(recoveryPhrase); notice('Recovery-фраза скопирована'); }
-      catch { notice('Не удалось скопировать. Выделите фразу вручную.'); }
-    };
-    card.append(copy);
-  }
-  const download = node('button', 'Скачать recovery-пакет', 'btn outline');
+  const renewForm = node('form');
+  const recovery = input(renewForm, 'Пароль или прежняя фраза восстановления',
+    'recovery', 'password', MIN_RECOVERY_PASSWORD_LENGTH);
+  submit(renewForm, 'Обновить и продолжить');
+  const download = node('button', 'Скачать резервную копию', 'btn-text');
   download.type = 'button';
   download.onclick = downloadBackup;
-  const form = node('form');
-  const checkLabel = node('label', undefined, 'check');
-  const checkbox = node('input'); checkbox.type = 'checkbox'; checkbox.required = true;
-  checkLabel.append(checkbox, node('span', 'Я сохранил пакет и recovery-фразу отдельно'));
-  form.append(checkLabel);
-  const finish = submit(form, 'Завершить регистрацию');
-  card.append(download, form);
-  const renew = node('details', undefined, 'expain');
-  renew.append(node('summary', 'Если регистрация прервалась или прошло больше 4 минут'));
-  renew.append(node('p', 'Обновите пакет и скачайте его заново. Ключи устройства и recovery-ключ сохранятся. Это доступно только до регистрации аккаунта.', 'expain-body'));
-  const renewForm = node('form');
-  const recovery = input(renewForm, 'Recovery-фраза', 'recovery', 'password', 24);
-  submit(renewForm, 'Обновить пакет');
-  renew.append(renewForm);
-  card.append(renew);
+  const renew = expander('Если срок регистрации истёк',
+    [node('p', 'Введите пароль восстановления. Shade сохранит ключи этого устройства.', 'expain-body'), renewForm]);
+  onboard({
+    cardTitle: 'Продолжите регистрацию',
+    cardSubtitle: 'Ключи уже сохранены в этом браузере.',
+    children: [form, note, renew, download],
+  });
   form.onsubmit = event => {
     event.preventDefault();
     action(async () => {
-      finish.replaceChildren(spinner(18), node('span', 'Подключаемся к серверу…'));
-      try { await client.register(); await openApp(); }
-      finally { finish.textContent = 'Завершить регистрацию'; }
+      if (!form.isConnected) return;
+      try { await finishRegistration(note); }
+      finally { note.hidden = true; }
     });
   };
   renewForm.onsubmit = event => {
     event.preventDefault();
-    action(async () => { await client.renewPending(recovery.value); recovery.value = ''; await backupStep(recoveryPhrase); });
+    action(async () => {
+      if (!renewForm.isConnected) return;
+      showProgress(note, 'Обновляем данные регистрации…');
+      try {
+        await client.renewPending(recovery.value);
+        recovery.value = '';
+        await finishRegistration(note);
+      } finally { note.hidden = true; }
+    });
   };
 }
+
 function unlockStep(candidates, status) {
   const form = node('form');
   let select = null;
@@ -492,10 +619,12 @@ function unlockStep(candidates, status) {
   }
   const chosen = () => candidates.find(v => v.id === (select ? select.value : candidates[0].id));
   const phraseField = input(form, 'Фраза устройства', 'passphrase', 'password', 0, { autocomplete: 'current-password' });
+  let unlocking = false;
+  const pinPad = attachPinPad(phraseField, () => form.requestSubmit());
   const note = node('p', undefined, 'gen-progress');
   note.hidden = true;
   form.append(note);
-  submit(form, 'Разблокировать');
+  const unlock = submit(form, 'Разблокировать');
   // Точка входа в восстановление: ключи этого браузера могут быть утрачены
   // (PRF-vault без passkey, забытая фраза). Кнопка рабочая всегда, без dead-end.
   const prfError = node('p', undefined, 'card-error');
@@ -507,7 +636,7 @@ function unlockStep(candidates, status) {
   const recoveryHint = node('p', 'Потеряли ключи этого браузера? Восстановление создаст новые ключи устройства; старая переписка останется недоступной.', 'muted');
   const box = onboard({
     cardTitle: 'Разблокировать Shade',
-    cardSubtitle: 'Фраза расшифровывает ключи и историю только в этом браузере. Сервер её не получает.',
+    cardSubtitle: 'Разблокируйте ключи и историю, сохранённые в этом браузере.',
     children: [form, prfError, recovery, recoveryHint, changeAccountButton()],
   });
   const card = box.querySelector('.onboard-card');
@@ -517,17 +646,30 @@ function unlockStep(candidates, status) {
     const byPhrase = vault.binding?.method !== 'prf';
     phraseField.closest('label').hidden = !byPhrase;
     phraseField.required = byPhrase;
-    hint.textContent = byPhrase ? `Локальные ключи @${vault.account}` : 'Ключи @' + vault.account + ' защищены биометрией этого устройства.';
+    pinPad.setLength(vault.pinLength);
+    unlock.hidden = Boolean(vault.pinLength);
+    box.classList.toggle('pin-lock', Boolean(vault.pinLength));
+    phraseField.closest('label').querySelector('.field-label').textContent =
+      vault.pinLength ? 'PIN этого браузера' : 'Фраза устройства';
+    hint.textContent = byPhrase ? `Локальные ключи @${vault.account}` : 'Ключи @' + vault.account + ' защищены системной защитой.';
     prfError.hidden = true;
-    recovery.className = 'btn outline';
+    recovery.className = vault.pinLength ? 'btn-text' : 'btn outline';
+    recovery.textContent = vault.pinLength ? 'Забыли PIN?' : 'Восстановить с recovery-пакетом';
     card.insertBefore(hint, form);
   };
   if (select) select.addEventListener('change', refresh);
   refresh();
   form.onsubmit = event => {
     event.preventDefault();
+    if (unlocking) return;
+    unlocking = true;
+    const vault = chosen();
+    if (select) select.disabled = true;
+    if (vault.pinLength) {
+      pinPad.setBusy(true);
+      showProgress(note, 'Разблокируем Shade…');
+    }
     action(async () => {
-      const vault = chosen();
       let passphrase;
       if (vault.binding?.method === 'prf') {
         showProgress(note, 'Подтверждаем защиту устройства…');
@@ -546,10 +688,26 @@ function unlockStep(candidates, status) {
       } else passphrase = phraseField.value;
       // loadForPairing also resumes an interrupted second-device pairing: a
       // vault without committed state is a pairing in progress, not a loss.
-      const result = await client.loadForPairing(vault, passphrase);
+      let result;
+      try { result = await client.loadForPairing(vault, passphrase); }
+      catch (error) {
+        if (vault.pinLength && error.name === 'OperationError') {
+          pinPad.showError('Неверный PIN. Попробуйте ещё раз.');
+          return;
+        }
+        throw error;
+      }
       phraseField.value = '';
       if (result.pending) { pairingOfferStage(); return; }
-      if (status.account) await openApp(); else await backupStep();
+      if (status.account) await openApp(); else resumeRegistrationStep();
+    }).finally(() => {
+      unlocking = false;
+      if (select) select.disabled = false;
+      if (vault.pinLength) {
+        pinPad.setBusy(false);
+        if (phraseField.hasAttribute('aria-invalid')) phraseField.focus({ preventScroll: true });
+      }
+      note.hidden = true;
     });
   };
 }
@@ -693,6 +851,7 @@ function pairingOnboarding(account) {
 // и recovery-фраза не попадают в проекцию: пакет живёт в замыкании ниже,
 // фраза передаётся только как payload действия и нигде не сохраняется.
 let recoveryPackage = null, recoveryState = null, recoveryBusy = false;
+let cloudRecoverySaved = false;
 function projectRecovery(patch) {
   recoveryState = { ...(recoveryState || {}), ...patch };
   if (window.shadeReceive) window.shadeReceive(JSON.stringify({ mode: 'recovery', recovery: recoveryState }));
@@ -752,18 +911,30 @@ function pickRecoveryFile() {
 function recoveryScreen() {
   recoveryPackage = null; recoveryBusy = false;
   recoveryState = { step: 'form', busy: false, stepId: null, fileName: null,
+    cloudLoading: true,
     packageAccount: null, prfAvailable: false, error: null };
   hostFlutter();
-  window.shadeAction = async (kind, raw = '{}') => {
+  const recoveryAction = async (kind, raw = '{}') => {
     try {
       const data = JSON.parse(raw);
       switch (kind) {
-        case 'ready':
+        case 'ready': {
           flutterReady(); projectRecovery({});
+          const current = () => window.shadeAction === recoveryAction && recoveryState;
+          api('/api/v2/recovery-backup')
+            .then(({ package: pkg }) => {
+              if (current() && pkg && !recoveryPackage && !recoveryBusy) {
+                recoveryPackage = pkg;
+                projectRecovery({ fileName: 'Резервная копия Shade', packageAccount: pkg.genesis.account });
+              }
+            })
+            .catch(() => {}) // Local file import also works without a Google session.
+            .finally(() => { if (current()) projectRecovery({ cloudLoading: false }); });
           platformAuthenticatorAvailable()
             .then(available => { if (recoveryState) projectRecovery({ prfAvailable: available }); })
             .catch(() => {});
           break;
+        }
         case 'recovery.pick': {
           if (recoveryBusy) break;
           const file = await pickRecoveryFile();
@@ -789,7 +960,8 @@ function recoveryScreen() {
           if (recoveryBusy) break; // защита от повторного запуска
           check(recoveryPackage, 'Сначала выберите файл recovery-пакета.');
           const phrase = typeof data.recoveryPhrase === 'string' ? data.recoveryPhrase.trim().replace(/\s+/g, ' ') : '';
-          check(phrase.length >= 24, 'Введите recovery-фразу из пакета: 8 слов, не менее 24 символов.');
+          check(phrase.length >= MIN_RECOVERY_PASSWORD_LENGTH,
+            `Введите пароль восстановления (минимум ${MIN_RECOVERY_PASSWORD_LENGTH} символов).`);
           const protection = data.protection === 'prf' ? 'prf' : 'phrase';
           let passphrase, binding;
           if (protection === 'prf') {
@@ -832,6 +1004,7 @@ function recoveryScreen() {
       return JSON.stringify({ ok: true });
     }
   };
+  window.shadeAction = recoveryAction;
 }
 // This module still owns auth and AlphaClient. Flutter receives a read-only
 // presentation projection; it never receives vaults, keys, backups or tokens.
@@ -915,6 +1088,8 @@ function render() {
       frame: client.state.profile?.avatarFrame || 'none',
       digest: client.state.profile?.avatarDigest || '',
       revision: client.state.profile?.avatarRevision || 0,
+      canSaveRecovery: Boolean(client.state.backup && !client.state.own.genesis.legacy),
+      cloudRecoverySaved,
     },
     typing: client.typingUntil || {},
     presence: client.presence || {},
@@ -978,6 +1153,12 @@ function hostFlutter() {
 }
 function flutterReady() { flutterLoading?.remove(); flutterLoading = null; }
 async function openApp() {
+  api('/api/session').then(status => {
+    if (status.account === client.session?.account && status.cloudRecoverySaved) {
+      cloudRecoverySaved = true;
+      render();
+    }
+  }).catch(() => {});
   ui = { selected: null, positions: {}, readUntil: {} };
   uiStorage = `shade-ui:${client.vault.id}`;
   try {
@@ -1127,6 +1308,13 @@ async function openApp() {
           break;
         }
         case 'backup': downloadBackup(); break;
+        case 'backup.cloud':
+          check(client.state.backup, 'На этом устройстве нет резервной копии.');
+          await client.operation('recovery.backup', client.state.backup);
+          cloudRecoverySaved = true;
+          render();
+          notice('Зашифрованная копия сохранена на сервере Shade');
+          break;
         case 'install': installGuide(); break;
         case 'logout': await client.disablePush().catch(() => {}); client.stop(); await api('/api/logout', {}); location.reload(); break;
         default: throw Error('Неизвестное действие интерфейса');
@@ -1196,7 +1384,7 @@ async function boot() {
   }
   if (installRequired) { appleInstallStep(); return; }
   if (status.account) { linkStep(status.account); return; }
-  nicknameStep();
+  registrationStep({ protection: await platformAuthenticatorAvailable() ? 'system' : 'pin' });
 }
 boot().catch(error => errorStep(errors[error.message] || error.message));
 if ('serviceWorker' in navigator && window.isSecureContext) {

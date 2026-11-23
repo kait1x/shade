@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -19,7 +18,7 @@ import '../../chats/presentation/widgets/message_bubble.dart';
 import '../../chats/presentation/widgets/message_input.dart';
 import '../data/alpha_v2_backend.dart';
 import 'pairing_new_device_screen.dart';
-import 'recovery_screen.dart' show saveNativeRecoveryFile;
+import 'recovery_screen.dart' show NativeRecoveryScreen, saveNativeRecoveryFile;
 
 /// Экран Alpha v2: явная enrollment legacy-устройства, сверка genesis digest
 /// контакта и E2EE-чат с Web-устройствами через изолированный alpha-процесс.
@@ -46,7 +45,8 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
   _Stage _stage = _Stage.loading;
   String? _error;
   bool _busy = false;
-  bool _showRecoveryPhrase = false;
+  bool _canResumeSavedRegistration = false;
+  bool _showRecoveryPassword = false;
   final _origin = TextEditingController(text: AlphaV2Screen.defaultOrigin);
   final _nickname = TextEditingController();
   final _passphrase = TextEditingController();
@@ -163,9 +163,13 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
       if (_stage == _Stage.register && error.status == 409)
         return 'Никнейм занят. Выберите другой.';
     }
+    if (error is PendingSavedRecoveryPhrase) {
+      _canResumeSavedRegistration = true;
+      return 'Найдена незавершённая регистрация. Её можно продолжить с ранее сохранённой фразой.';
+    }
     if (error is StateError &&
         error.message.toString().contains('Recovery-фраза')) {
-      return 'Введите ту же фразу, которую выбрали при первой попытке регистрации.';
+      return 'Введите тот же пароль, который выбрали при первой попытке регистрации.';
     }
     if (error is StateError &&
         error.message.toString().contains('Аккаунт уже зарегистрирован')) {
@@ -237,50 +241,39 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
     });
   }
 
-  void _generateRecoveryPhrase() {
-    if (_passphrase.text.isNotEmpty) return;
-    final random = Random.secure();
-    const alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
-    final groups = List.generate(
-        6,
-        (_) =>
-            List.generate(5, (_) => alphabet[random.nextInt(alphabet.length)])
-                .join());
-    _passphrase.text = groups.join('-');
-    setState(() {
-      _showRecoveryPhrase = true;
-      _error = null;
-    });
-  }
-
-  Future<void> _copyRecoveryPhrase() async {
-    if (_passphrase.text.isEmpty) return;
-    await Clipboard.setData(ClipboardData(text: _passphrase.text));
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Фраза восстановления скопирована')));
-    }
-  }
-
-  Future<void> _register() async {
+  Future<void> _register({bool useSavedPassword = false}) async {
+    if (_busy) return;
     final account = _nickname.text.trim().toLowerCase();
     if (!RegExp(r'^[a-z0-9_]{3,32}$').hasMatch(account)) {
       setState(() =>
           _error = 'Никнейм: 3–32 латинские буквы, цифры или подчёркивания.');
       return;
     }
-    if (_passphrase.text.length < 24) {
-      setState(() => _error = 'Recovery-фраза: минимум 24 символа.');
+    final password = useSavedPassword ? '' : _passphrase.text;
+    if (!useSavedPassword && password.length < minRecoveryPasswordLength) {
+      setState(() => _error =
+          'Пароль восстановления: минимум $minRecoveryPasswordLength символов.');
+      return;
+    }
+    if (!useSavedPassword &&
+        password != password.trim().replaceAll(RegExp(r'\s+'), ' ')) {
+      setState(() => _error = 'Уберите пробелы с краёв и двойные пробелы.');
       return;
     }
     await _run(() async {
-      final recovery = await _backend.register(account, _passphrase.text);
+      final recovery = await _backend.register(account, password);
       if (!mounted) return;
+      TextInput.finishAutofillContext(shouldSave: !useSavedPassword);
       _passphrase.clear();
+      if (widget.startWithGoogle && Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+        return;
+      }
       setState(() {
         _recovery = recovery;
-        _stage = _Stage.recovery;
+        _stage = widget.startWithGoogle ? _Stage.home : _Stage.recovery;
       });
+      if (widget.startWithGoogle) unawaited(_loadContacts());
     });
   }
 
@@ -610,17 +603,20 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
   Widget _field(TextEditingController controller, String label,
       {bool obscure = false,
       String? hint,
-      Widget? suffix,
-      ValueChanged<String>? onChanged}) {
+      String? autofillHint,
+      Widget? suffixIcon}) {
     return TextField(
         controller: controller,
         obscureText: obscure,
-        onChanged: onChanged,
+        enabled: !_busy,
+        autofillHints: autofillHint == null ? null : [autofillHint],
+        autocorrect: autofillHint != AutofillHints.newPassword,
+        enableSuggestions: autofillHint != AutofillHints.newPassword,
         style: const TextStyle(color: ShadeColors.textPrimary, fontSize: 14),
         decoration: InputDecoration(
             labelText: label,
             hintText: hint,
-            suffixIcon: suffix,
+            suffixIcon: suffixIcon,
             labelStyle: const TextStyle(color: ShadeColors.textSecondary),
             hintStyle: const TextStyle(color: ShadeColors.textMuted),
             enabledBorder: OutlineInputBorder(
@@ -705,6 +701,19 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
           unawaited(_loadContacts());
         }
       }),
+      TextButton(
+        onPressed: () async {
+          final repo = _backend.pairingRepository;
+          if (repo == null) return;
+          final recovered = await Navigator.of(context).push<bool>(
+            MaterialPageRoute(
+                builder: (_) => NativeRecoveryScreen(
+                    repository: repo, loadCloudBackup: true)),
+          );
+          if (mounted && recovered == true) Navigator.of(context).pop();
+        },
+        child: const Text('Нет доступа к старому устройству?'),
+      ),
     ]);
   }
 
@@ -722,7 +731,7 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
         ),
       ]),
       const SizedBox(height: 10),
-      const Text('Придумайте никнейм и сохраните фразу восстановления.',
+      const Text('Придумайте никнейм. По нему вас найдут друзья.',
           style: TextStyle(color: ShadeColors.textSecondary, height: 1.5)),
       const SizedBox(height: 24),
       Container(
@@ -732,45 +741,52 @@ class _AlphaV2ScreenState extends ConsumerState<AlphaV2Screen> {
           border: Border.all(color: ShadeColors.greyBorder),
           borderRadius: BorderRadius.circular(24),
         ),
-        child:
-            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          _field(_nickname, 'Никнейм', hint: 'например, mira_22'),
-          const SizedBox(height: 6),
-          const Text('3–32 символа: латиница, цифры и _',
-              style: TextStyle(color: ShadeColors.textSecondary, fontSize: 12)),
-          const SizedBox(height: 16),
-          _field(_passphrase, 'Фраза для восстановления',
-              obscure: !_showRecoveryPhrase,
-              onChanged: (_) => setState(() {}),
-              suffix: IconButton(
+        child: AutofillGroup(
+          onDisposeAction: AutofillContextAction.cancel,
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            _field(_nickname, 'Никнейм',
+                hint: 'например, mira_22',
+                autofillHint: AutofillHints.username),
+            const SizedBox(height: 6),
+            const Text('3–32 символа: латиница, цифры и _',
+                style:
+                    TextStyle(color: ShadeColors.textSecondary, fontSize: 12)),
+            const SizedBox(height: 16),
+            _field(
+              _passphrase,
+              'Пароль восстановления',
+              obscure: !_showRecoveryPassword,
+              autofillHint: AutofillHints.newPassword,
+              suffixIcon: IconButton(
                 tooltip:
-                    _showRecoveryPhrase ? 'Скрыть фразу' : 'Показать фразу',
-                onPressed: () =>
-                    setState(() => _showRecoveryPhrase = !_showRecoveryPhrase),
-                icon: Icon(_showRecoveryPhrase
+                    _showRecoveryPassword ? 'Скрыть пароль' : 'Показать пароль',
+                icon: Icon(_showRecoveryPassword
                     ? Icons.visibility_off_outlined
                     : Icons.visibility_outlined),
-              )),
-          const SizedBox(height: 4),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: _passphrase.text.isEmpty
-                ? TextButton.icon(
-                    onPressed: _busy ? null : _generateRecoveryPhrase,
-                    icon: const Icon(Icons.auto_awesome_outlined, size: 17),
-                    label: const Text('Сгенерировать фразу'))
-                : TextButton.icon(
-                    onPressed: _busy ? null : _copyRecoveryPhrase,
-                    icon: const Icon(Icons.copy_outlined, size: 17),
-                    label: const Text('Скопировать фразу')),
-          ),
-          const Text(
-              'Сохраните фразу в менеджере паролей. Если потеряете телефон, она и файл с последнего шага помогут вернуть доступ.',
-              style: TextStyle(
-                  color: ShadeColors.textSecondary, fontSize: 12, height: 1.5)),
-          const SizedBox(height: 18),
-          _primaryButton('Зарегистрироваться', _register),
-        ]),
+                onPressed: _busy
+                    ? null
+                    : () => setState(
+                        () => _showRecoveryPassword = !_showRecoveryPassword),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+                'От $minRecoveryPasswordLength символов. Используйте пароль только для Shade. Он понадобится, если вы потеряете все подключённые устройства.',
+                style: TextStyle(
+                    color: ShadeColors.textSecondary,
+                    fontSize: 12,
+                    height: 1.5)),
+            const SizedBox(height: 16),
+            _primaryButton('Создать аккаунт', () => _register()),
+            if (_canResumeSavedRegistration)
+              TextButton(
+                onPressed:
+                    _busy ? null : () => _register(useSavedPassword: true),
+                child: const Text('Продолжить предыдущую регистрацию'),
+              ),
+          ]),
+        ),
       ),
     ]);
   }

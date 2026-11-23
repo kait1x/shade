@@ -88,7 +88,7 @@ export async function api(route, body, options = {}) {
   if (pageController.signal.aborted) throw Error('Страница закрывается');
   const controller = new AbortController(), abort = () => controller.abort();
   pageController.signal.addEventListener('abort', abort, {once:true});
-  const timeout = setTimeout(abort, 20000);
+  const timeout = setTimeout(abort, options.timeoutMs ?? 20000);
   try {
     const hasBody = body !== undefined;
     const response = await fetch(route, { credentials: 'same-origin', cache: 'no-store',
@@ -157,9 +157,10 @@ export class AlphaClient extends EventTarget {
   // Создание нового устройства: vault, genesis аккаунта и recovery-backup
   // (шифруется recovery-фразой). Identity сохраняется локально до каких-либо
   // HTTP-запросов — регистрация на сервере отдельный шаг register().
-  async prepare(account, passphrase, recoveryPhrase, binding) {
+  async prepare(account, passphrase, recoveryPhrase, binding, { pinLength } = {}) {
     check(!(await c.listVaults()).some(v => v.account === account), 'На этом устройстве уже есть ключи аккаунта. Разблокируйте их.');
-    const vault = await c.createVault(account, passphrase);
+    check(pinLength === undefined || !binding, 'Choose a single device protection method');
+    const vault = await c.createVault(account, passphrase, { pinLength });
     // Binding metadata (device_binding.mjs) rides on the vault record; the
     // ciphertext, AAD and unlock path stay byte-compatible with passphrase vaults.
     if (binding) vault.binding = binding;
@@ -188,7 +189,7 @@ export class AlphaClient extends EventTarget {
       const manifest = await c.approveDevices(this.state.own.genesis, [], [c.descriptor(this.vault)], this.session);
       const pending = structuredClone(this.state); pending.own.history = [manifest]; await this.save(pending);
       await api('/api/v2/register', { genesis: this.state.own.genesis, manifest,
-        proofs: [await c.pairingProof(this.vault, this.session)] });
+        proofs: [await c.pairingProof(this.vault, this.session)], recoveryBackup: this.state.backup });
       const next = structuredClone(this.state); next.own.history = [manifest]; next.registered = true;
       await this.save(next);
     });
@@ -227,7 +228,8 @@ export class AlphaClient extends EventTarget {
   }
   // Любая операция с сервером сопровождается доказательством владения ключом.
   async operation(op, body = null) {
-    return api('/api/v2/operation', { op, body, auth: await this.proof(op, body) });
+    return api('/api/v2/operation', { op, body, auth: await this.proof(op, body) },
+      { timeoutMs: 75000 });
   }
   // Проверка директории устройств: если для контакта уже закреплён отпечаток
   // (pin), любое изменение genesis/root блокирует работу — защита от подмены

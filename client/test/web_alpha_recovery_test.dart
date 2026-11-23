@@ -68,7 +68,7 @@ void main() {
         find.textContaining('Старая переписка недоступна: она шифровалась под утраченные ключи'),
         findsOneWidget);
     expect(find.text('Выбрать файл пакета (JSON)'), findsOneWidget);
-    expect(field('Recovery-фраза'), findsOneWidget);
+    expect(field('Пароль восстановления'), findsOneWidget);
     expect(field('Фраза устройства · от 16 символов'), findsOneWidget);
     expect(field('Повторите фразу устройства'), findsOneWidget);
     expect(find.text('Восстановить аккаунт'), findsOneWidget);
@@ -111,13 +111,13 @@ void main() {
         fileName: 'shade-recovery-alice.json', packageAccount: 'alice'));
     await tester.pumpWidget(ShadeAlphaApp(controller: c));
     await tester.pumpAndSettle();
-    // Recovery-фраза слишком короткая.
-    await tester.enterText(field('Recovery-фраза'), 'короткая фраза');
+    // Пароль короче минимальной длины.
+    await tester.enterText(field('Пароль восстановления'), 'CobaltMaple');
     await tapText(tester, 'Восстановить аккаунт');
-    expect(find.textContaining('Введите recovery-фразу из пакета'), findsOneWidget);
+    expect(find.textContaining('Введите пароль восстановления'), findsOneWidget);
     expect(runs, isEmpty);
     // Фраза устройства короче 16 символов.
-    await tester.enterText(field('Recovery-фраза'), phrase);
+    await tester.enterText(field('Пароль восстановления'), phrase);
     await tester.enterText(field('Фраза устройства · от 16 символов'), 'short');
     await tapText(tester, 'Восстановить аккаунт');
     expect(find.text('Фраза устройства должна быть не короче 16 символов.'),
@@ -164,7 +164,7 @@ void main() {
     expect(field('Фраза устройства · от 16 символов'), findsNothing);
     expect(find.textContaining('При утрате passkey снова понадобится recovery-пакет'),
         findsOneWidget);
-    await tester.enterText(field('Recovery-фраза'), phrase);
+    await tester.enterText(field('Пароль восстановления'), phrase);
     await tapText(tester, 'Восстановить аккаунт');
     expect(runs, [
       {'recoveryPhrase': phrase, 'protection': 'prf'}
@@ -196,7 +196,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Биометрия (PRF)'), findsNothing);
     expect(field('Фраза устройства · от 16 символов'), findsOneWidget);
-    await tester.enterText(field('Recovery-фраза'), phrase);
+    await tester.enterText(field('Пароль восстановления'), phrase);
     await tester.enterText(
         field('Фраза устройства · от 16 символов'), devicePhrase);
     await tester.enterText(
@@ -326,13 +326,13 @@ void main() {
         fileName: 'shade-recovery-alice.json', packageAccount: 'alice'));
     await tester.pumpWidget(ShadeAlphaApp(controller: c));
     await tester.pumpAndSettle();
-    await tester.enterText(field('Recovery-фраза'), phrase);
+    await tester.enterText(field('Пароль восстановления'), phrase);
     await tester.enterText(
         field('Фраза устройства · от 16 символов'), devicePhrase);
     await tester.enterText(
         field('Повторите фразу устройства'), devicePhrase);
     final recoveryController =
-        tester.widget<TextField>(field('Recovery-фраза')).controller!;
+        tester.widget<TextField>(field('Пароль восстановления')).controller!;
     final deviceController = tester
         .widget<TextField>(field('Фраза устройства · от 16 символов'))
         .controller!;

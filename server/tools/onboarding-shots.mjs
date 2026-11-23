@@ -54,54 +54,24 @@ async function passGoogle(page) {
     legacy.waitFor({timeout:20000}).then(() => 'old')]).catch(() => null);
   await (which === 'old' ? legacy : link).click();
 }
-// The nickname step renders after the full OAuth round-trip; wait for either
-// the new ('Ваш никнейм') or the legacy ('Имя пользователя') label. Returns
-// the located field plus whether the new two-step flow is active.
-async function nicknameField(page) {
-  const fresh = page.getByLabel('Ваш никнейм');
-  const legacy = page.getByLabel('Имя пользователя');
-  const which = await Promise.any([fresh.waitFor({timeout:30000}).then(() => 'new'),
-    legacy.waitFor({timeout:30000}).then(() => 'old')]).catch(() => null);
-  return { field: which === 'old' ? legacy : fresh, isNew: which === 'new' };
-}
 async function register(page, account, sub) {
   f.setLoginSub(sub);
   await page.goto(f.origin); await shot(page, 'welcome');
   await passGoogle(page);
-  const { field: nickname, isNew } = await nicknameField(page);
-  await shot(page, 'nickname');
-  await nickname.fill(account);
-  if (isNew) await page.getByRole('button',{name:'Продолжить',exact:true}).click();
-  // The identity step renders after the async authenticator probe: wait for
-  // either variant before deciding which path this engine takes.
-  const phraseButton = page.getByRole('button',{name:'Создать ключи на этом устройстве'});
-  const prfButton = page.getByRole('button',{name:'Создать ключи и включить защиту'});
-  const first = await Promise.any([phraseButton.waitFor({timeout:30000}), prfButton.waitFor({timeout:30000})]).catch(() => null);
-  if (first === prfButton) {
-    await shot(page, 'identity-prf'); // PRF path state before the fallback decision
-    await prfButton.click();
-    if (!await phraseButton.waitFor({timeout:10000}).catch(() => null)) {
-      await page.getByRole('button',{name:'Использовать фразу устройства'}).click();
-    }
+  await page.getByLabel('Ваш никнейм').fill(account);
+  const recovery = page.getByLabel('Пароль восстановления ·');
+  await recovery.waitFor({ timeout: 30000 });
+  const local = page.getByLabel('Пароль этого браузера ·');
+  if (!await local.isVisible()) {
+    await shot(page, 'identity-prf');
+    const usePin = page.getByRole('button', { name: 'Использовать PIN', exact: true });
+    if (await usePin.isVisible()) await usePin.click();
+    await page.getByRole('button', { name: 'Использовать пароль браузера' }).click();
   }
-  await phraseButton.waitFor({timeout:30000});
-  await page.getByLabel('Фраза устройства ·').fill(phrase);
-  await page.getByLabel('Повторите фразу устройства').fill(phrase);
-  // The legacy single-form UI still requires the invented recovery phrase;
-  // the new flow generates it on the recovery step instead.
-  const legacyRecovery = page.getByLabel('Отдельная recovery-фраза');
-  if (await legacyRecovery.count()) await legacyRecovery.fill('onboarding screenshot independent recovery phrase');
+  await local.fill(phrase);
+  await recovery.fill('synthetic onboarding recovery password');
   await shot(page, 'identity');
-  await page.getByRole('button',{name:'Создать ключи на этом устройстве'}).click();
-  await page.getByRole('heading',{name:'Сохраните recovery-пакет'}).waitFor({timeout:180000}).catch(async e => {
-    console.log('DIAG recovery wait:', await page.locator('#notice').textContent().catch('n/a'), await page.url());
-    throw e;
-  });
-  await shot(page, 'recovery');
-  const downloaded = page.waitForEvent('download');
-  await page.getByRole('button',{name:'Скачать recovery-пакет'}).click(); await downloaded;
-  await page.getByRole('checkbox').check();
-  await page.getByRole('button',{name:'Завершить регистрацию'}).click();
+  await page.getByRole('button', { name: 'Создать аккаунт', exact: true }).click();
   await page.getByText('Подключено · E2EE',{exact:true}).waitFor({timeout:120000});
   await page.waitForTimeout(2500); // Flutter projection paints the chat list
   await shot(page, 'chat');

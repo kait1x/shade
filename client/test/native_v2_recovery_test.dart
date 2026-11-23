@@ -110,18 +110,20 @@ void main() {
         {Future<Map<String, dynamic>> Function(
                 Map<String, dynamic> pkg, String phrase,
                 {void Function(String)? onStep})? handler,
-        Future<PickedFile?> Function()? picker}) async {
+        Future<PickedFile?> Function()? picker,
+        Map<String, dynamic>? cloudPackage}) async {
       SharedPreferences.setMockInitialValues({});
       FlutterSecureStorage.setMockInitialValues({});
       final crypto = CryptoService();
       // Fake-репозиторий не обращается к store: не opened БД достаточно.
       // Реальный sqflite I/O внутри FakeAsync-зоны testWidgets не завершается.
       final store = V2Store(DatabaseService());
-      final transport = _FakeTransport(crypto);
+      final transport = _FakeTransport(crypto)..cloudPackage = cloudPackage;
       transport.sessionCookie = 'shade-alpha=recovered-cookie';
       addTearDown(transport.dispose);
       final repo = _FakeRepository(
-          transport: transport, crypto: crypto, store: store);
+          transport: transport, crypto: crypto, store: store,
+          account: cloudPackage == null ? '' : 'rec_widget');
       repo.handler = handler ??
           (pkg, phrase, {onStep}) async => {
                 'account': 'rec_widget',
@@ -130,10 +132,24 @@ void main() {
               };
       await tester.pumpWidget(MaterialApp(
           home: NativeRecoveryScreen(
-              repository: repo, pickPackage: picker)));
+              repository: repo, pickPackage: picker,
+              loadCloudBackup: cloudPackage != null)));
       await tester.pumpAndSettle();
       return (repo, transport);
     }
+
+    testWidgets('копия с сервера подставляется без выбора файла', (tester) async {
+      phone(tester);
+      final package = syntheticPackage();
+      final (repo, _) = await pumpScreen(tester, cloudPackage: package);
+      expect(find.textContaining('Резервная копия Shade'), findsOneWidget);
+      expect(find.textContaining('отключит ранее подключённые устройства'), findsOneWidget);
+      const password = 'CobaltMaples';
+      await tester.enterText(field('Пароль восстановления'), password);
+      await tapText(tester, 'Восстановить аккаунт');
+      expect(repo.calls.single.$1, package);
+      expect(repo.calls.single.$2, password);
+    });
 
     testWidgets('рендер: плашка, файл, фраза, честная защита без PRF-gate',
         (tester) async {
@@ -145,7 +161,7 @@ void main() {
               'Старая переписка недоступна: она шифровалась под утраченные ключи'),
           findsOneWidget);
       expect(find.text('Выбрать файл пакета (JSON)'), findsOneWidget);
-      expect(field('Recovery-фраза'), findsOneWidget);
+      expect(field('Пароль восстановления'), findsOneWidget);
       expect(find.text('Восстановить аккаунт'), findsOneWidget);
       // Нативная защита — SQLCipher/Keystore: фразовый gate устройства НЕ
       // показывается (решение lead: без декоративной защиты), PRF — позже.
@@ -217,16 +233,16 @@ void main() {
       expect(repo.calls, isEmpty);
     });
 
-    testWidgets('валидация фразы: <24 символов — ошибка без вызова',
+    testWidgets('валидация пароля: <12 символов — ошибка без вызова',
         (tester) async {
       phone(tester);
       PickedFile? next;
       final (repo, _) = await pumpScreen(tester, picker: () async => next);
       next = packageFile(syntheticPackage());
       await tapText(tester, 'Выбрать файл пакета (JSON)');
-      await tester.enterText(field('Recovery-фраза'), 'короткая фраза');
+      await tester.enterText(field('Пароль восстановления'), 'CobaltMaple');
       await tapText(tester, 'Восстановить аккаунт');
-      expect(find.textContaining('Введите recovery-фразу из пакета'), findsOneWidget);
+      expect(find.textContaining('Введите пароль восстановления'), findsOneWidget);
       expect(repo.calls, isEmpty);
     });
 
@@ -248,9 +264,9 @@ void main() {
       next = packageFile(syntheticPackage());
       await tapText(tester, 'Выбрать файл пакета (JSON)');
       const phrase = 'correct horse battery staple correct horse battery';
-      await tester.enterText(field('Recovery-фраза'), phrase);
+      await tester.enterText(field('Пароль восстановления'), phrase);
       final phraseController =
-          tester.widget<TextField>(field('Recovery-фраза')).controller!;
+          tester.widget<TextField>(field('Пароль восстановления')).controller!;
       // Submit под busy: одиночные pump (спиннер анимируется бесконечно,
       // pumpAndSettle не завершится, пока поток идёт).
       final submitFinder = find.text('Восстановить аккаунт');
@@ -301,7 +317,7 @@ void main() {
       await tester.pumpAndSettle();
       // Повторный вход: пакет уже выбран ранее не сохраняется — выбираем снова.
       await tapText(tester, 'Выбрать файл пакета (JSON)');
-      await tester.enterText(field('Recovery-фраза'), phrase);
+      await tester.enterText(field('Пароль восстановления'), phrase);
       await tapText(tester, 'Восстановить аккаунт');
       await tapText(tester, 'Перейти в чаты');
       expect(popped, true);
@@ -319,7 +335,7 @@ void main() {
       next = packageFile(syntheticPackage());
       await tapText(tester, 'Выбрать файл пакета (JSON)');
       await tester.enterText(
-          field('Recovery-фраза'), 'correct horse battery staple correct horse');
+          field('Пароль восстановления'), 'correct horse battery staple correct horse');
 
       final cases = <Object, String>{
         AlphaTransportException(429, 'rate_limited'):
@@ -1043,14 +1059,20 @@ class _ScriptedRecoveryTransport extends AlphaTransport {
 /// Fake-транспорт для widget-тестов: сеть не используется.
 class _FakeTransport extends AlphaTransport {
   _FakeTransport(CryptoService crypto) : super('https://recovery.fake', crypto);
+
+  Map<String, dynamic>? cloudPackage;
+
+  @override
+  Future<Map<String, dynamic>?> cloudRecoveryPackage() async => cloudPackage;
 }
 
 /// Fake-репозиторий для widget-тестов: обработчик recoverWithBackup управляется
 /// тестом (криптография и сеть проверяются в оркестрационных тестах выше).
 class _FakeRepository extends V2ChatRepository {
   _FakeRepository(
-      {required super.transport, required super.crypto, required super.store})
-      : super(account: '', root: '', privateKey: '');
+      {required super.transport, required super.crypto, required super.store,
+      super.account = ''})
+      : super(root: '', privateKey: '');
 
   final calls = <(Map<String, dynamic>, String)>[];
   Future<Map<String, dynamic>> Function(Map<String, dynamic> pkg, String phrase,

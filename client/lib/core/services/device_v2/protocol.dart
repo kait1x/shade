@@ -17,6 +17,7 @@ import 'package:pointycastle/asn1.dart' as asn1;
 
 import '../crypto_service.dart';
 
+const int minRecoveryPasswordLength = 12;
 const int maxDevices = 8;
 const int maxLeaseMs = 24 * 60 * 60 * 1000;
 const int maxMessageAgeMs = 7 * 24 * 60 * 60 * 1000;

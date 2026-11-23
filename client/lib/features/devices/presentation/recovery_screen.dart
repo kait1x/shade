@@ -30,12 +30,16 @@ import 'pairing_common.dart';
 /// vault-экспорт для web и PRF-проводка — отдельные задачи после беты.
 class NativeRecoveryScreen extends StatefulWidget {
   final V2ChatRepository repository;
+  final bool loadCloudBackup;
 
   /// Инъекция выбора файла для тестов; по умолчанию — системный file picker.
   final Future<PickedFile?> Function()? pickPackage;
 
   const NativeRecoveryScreen(
-      {super.key, required this.repository, this.pickPackage});
+      {super.key,
+      required this.repository,
+      this.pickPackage,
+      this.loadCloudBackup = false});
 
   @override
   State<NativeRecoveryScreen> createState() => _NativeRecoveryScreenState();
@@ -135,11 +139,51 @@ class _NativeRecoveryScreenState extends State<NativeRecoveryScreen> {
   final _recoveryPhrase = TextEditingController();
   bool _showRecoveryPhrase = false;
 
+  @override
+  void initState() {
+    super.initState();
+    if (widget.loadCloudBackup) _loadCloudBackup();
+  }
+
+  Future<void> _loadCloudBackup() async {
+    setState(() => _picking = true);
+    try {
+      final pkg = await widget.repository.transport.cloudRecoveryPackage();
+      if (!mounted) return;
+      if (pkg == null) {
+        setState(
+            () => _error = 'На сервере нет копии. Выберите сохранённый файл.');
+        return;
+      }
+      const name = 'Резервная копия Shade';
+      final parsed = _parsePackage(name, utf8.encode(jsonEncode(pkg)));
+      check(parsed['genesis']['account'] == widget.repository.account,
+          'bad_package_shape');
+      _setPackage(parsed, name);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _error =
+            'Не удалось загрузить копию. Повторите или выберите файл.');
+      }
+    } finally {
+      if (mounted) setState(() => _picking = false);
+    }
+  }
+
+  void _setPackage(Map<String, dynamic> pkg, String name) {
+    setState(() {
+      _pkg = pkg;
+      _fileName = name;
+      _packageAccount = pkg['genesis']['account'] as String;
+      _error = null;
+    });
+  }
+
   // Честная плашка: старая история шифровалась под утраченные ключи и не
   // восстанавливается; возвращаются личность и доступ к новым сообщениям.
   static const _bannerForm =
       'Старая переписка недоступна: она шифровалась под утраченные ключи. '
-      'Восстановление вернёт личность и доступ к новым сообщениям.';
+      'Восстановление отключит ранее подключённые устройства и вернёт доступ к новым сообщениям.';
   static const _bannerDone =
       'Старая переписка недоступна: она шифровалась под утраченные ключи. '
       'Восстановлена личность и доступ к новым сообщениям.';
@@ -223,13 +267,7 @@ class _NativeRecoveryScreenState extends State<NativeRecoveryScreen> {
               : throw ProtocolException('bad_package_shape'));
       final pkg = _parsePackage(file.name, bytes);
       if (!mounted) return;
-      setState(() {
-        _pkg = pkg;
-        _fileName = file.name;
-        _packageAccount =
-            (pkg['genesis'] as Map<String, dynamic>)['account'] as String;
-        _error = null;
-      });
+      _setPackage(pkg, file.name);
     } catch (error) {
       if (mounted) setState(() => _error = recoveryErrorText(error));
     } finally {
@@ -260,9 +298,9 @@ class _NativeRecoveryScreenState extends State<NativeRecoveryScreen> {
       return;
     }
     final phrase = _recoveryPhrase.text.trim().replaceAll(RegExp(r'\s+'), ' ');
-    if (phrase.length < 24) {
+    if (phrase.length < minRecoveryPasswordLength) {
       setState(() => _error =
-          'Введите recovery-фразу из пакета: 8 слов, не менее 24 символов.');
+          'Введите пароль восстановления (минимум $minRecoveryPasswordLength символов).');
       return;
     }
     setState(() {
@@ -381,6 +419,13 @@ class _NativeRecoveryScreenState extends State<NativeRecoveryScreen> {
                   letterSpacing: 0.2,
                   color: ShadeColors.textSecondary)),
           const SizedBox(height: 10),
+          if (widget.loadCloudBackup && _picking && _pkg == null)
+            const LinearProgressIndicator(),
+          if (widget.loadCloudBackup && !_picking && _pkg == null)
+            TextButton(
+              onPressed: _busy ? null : _loadCloudBackup,
+              child: const Text('Загрузить копию с сервера'),
+            ),
           OutlinedButton.icon(
             onPressed: _busy || _picking ? null : _pick,
             style: OutlinedButton.styleFrom(
@@ -420,8 +465,8 @@ class _NativeRecoveryScreenState extends State<NativeRecoveryScreen> {
             textInputAction: TextInputAction.done,
             style:
                 const TextStyle(color: ShadeColors.textPrimary, fontSize: 14),
-            decoration: pairingInputDecoration('Recovery-фраза',
-                hint: '8 слов, записанных при регистрации'),
+            decoration: pairingInputDecoration('Пароль восстановления',
+                hint: 'Пароль или прежняя фраза'),
             onChanged: (_) {
               if (_error != null) setState(() => _error = null);
             },
@@ -438,7 +483,7 @@ class _NativeRecoveryScreenState extends State<NativeRecoveryScreen> {
                     size: 18,
                     color: ShadeColors.textMuted),
                 label: Text(
-                    _showRecoveryPhrase ? 'Скрыть фразу' : 'Показать фразу',
+                    _showRecoveryPhrase ? 'Скрыть пароль' : 'Показать пароль',
                     style: const TextStyle(
                         fontSize: 12.5, color: ShadeColors.textMuted)),
               )),

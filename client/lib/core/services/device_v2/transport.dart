@@ -137,12 +137,26 @@ class AlphaTransport {
   }
 
   Future<void> registerAccount(Map<String, dynamic> genesis,
-      Map<String, dynamic> manifest, Map<String, dynamic> proof) async {
+      Map<String, dynamic> manifest, Map<String, dynamic> proof,
+      {Map<String, dynamic>? recoveryBackup}) async {
     await _send('POST', '/api/v2/register', body: {
       'genesis': genesis,
       'manifest': manifest,
-      'proofs': [proof]
+      'proofs': [proof],
+      if (recoveryBackup != null) 'recoveryBackup': recoveryBackup,
     });
+  }
+
+  Future<Map<String, dynamic>?> cloudRecoveryPackage() async {
+    try {
+      final result =
+          await _send('GET', '/api/v2/recovery-backup') as Map<String, dynamic>;
+      return result['package'] as Map<String, dynamic>?;
+    } on AlphaTransportException catch (error) {
+      // Existing installations may use a server from before cloud recovery.
+      if (error.status == 404) return null;
+      rethrow;
+    }
   }
 
   Future<Map<String, dynamic>> session() async =>

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:shade/core/services/device_v2/protocol.dart'
+    show minRecoveryPasswordLength;
 import 'package:shade/core/theme/shade_theme.dart';
 import 'package:shade/core/widgets/shade_logo.dart';
 import 'alpha_controller.dart';
@@ -26,7 +28,7 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
   // восстанавливается; возвращаются личность и доступ к новым сообщениям.
   static const _bannerForm =
       'Старая переписка недоступна: она шифровалась под утраченные ключи. '
-      'Восстановление вернёт личность и доступ к новым сообщениям.';
+      'Восстановление отключит ранее подключённые устройства и вернёт доступ к новым сообщениям.';
   static const _bannerDone =
       'Старая переписка недоступна: она шифровалась под утраченные ключи. '
       'Восстановлена личность и доступ к новым сообщениям.';
@@ -86,8 +88,8 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
     String? problem;
     if (r['fileName'] == null) {
       problem = 'Выберите файл recovery-пакета.';
-    } else if (_recoveryPhrase.text.trim().length < 24) {
-      problem = 'Введите recovery-фразу из пакета: 8 слов, не менее 24 символов.';
+    } else if (_recoveryPhrase.text.trim().length < minRecoveryPasswordLength) {
+      problem = 'Введите пароль восстановления (минимум $minRecoveryPasswordLength символов).';
     } else if (protection == 'phrase' && _devicePhrase.text.length < 16) {
       problem = 'Фраза устройства должна быть не короче 16 символов.';
     } else if (protection == 'phrase' &&
@@ -226,8 +228,10 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
             borderRadius: BorderRadius.circular(18),
             border: Border.all(color: ShadeColors.greyBorder, width: 0.5)),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          _sectionLabel('Recovery-пакет'),
+          _sectionLabel('Резервная копия'),
           const SizedBox(height: 10),
+          if (widget.controller.recovery?['cloudLoading'] == true)
+            const LinearProgressIndicator(),
           OutlinedButton.icon(
             onPressed: busy ? null : () => _act('recovery.pick'),
             style: OutlinedButton.styleFrom(
@@ -265,12 +269,12 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
             autocorrect: false,
             keyboardType: TextInputType.visiblePassword,
             textInputAction: TextInputAction.next,
-            decoration: _decoration('Recovery-фраза',
-                hint: '8 слов, записанных при регистрации',
+            decoration: _decoration('Пароль восстановления',
+                hint: 'Пароль или прежняя фраза',
                 suffix: IconButton(
                   onPressed: () =>
                       setState(() => _showRecoveryPhrase = !_showRecoveryPhrase),
-                  tooltip: _showRecoveryPhrase ? 'Скрыть фразу' : 'Показать фразу',
+                  tooltip: _showRecoveryPhrase ? 'Скрыть пароль' : 'Показать пароль',
                   icon: Icon(
                       _showRecoveryPhrase
                           ? Icons.visibility_off_outlined

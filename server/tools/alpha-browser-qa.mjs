@@ -76,30 +76,24 @@ async function browser(name) {
   page.on('websocket', ws => { frames.push(ws.url()); });
   return { context, page };
 }
+async function completeSignup(page, password) {
+  const recovery = page.getByLabel('Пароль восстановления ·');
+  await recovery.waitFor({ timeout: 30000 });
+  const local = page.getByLabel('Пароль этого браузера ·');
+  if (!await local.isVisible()) {
+    const usePin = page.getByRole('button', { name: 'Использовать PIN', exact: true });
+    if (await usePin.isVisible()) await usePin.click();
+    await page.getByRole('button', { name: 'Использовать пароль браузера' }).click();
+  }
+  await local.fill(phrase);
+  await recovery.fill(password);
+  await page.getByRole('button', { name: 'Создать аккаунт', exact: true }).click();
+  await page.getByText('Подключено · E2EE', { exact: true }).waitFor({ timeout: 120000 });
+}
 async function register(page, account, sub) {
   f.setLoginSub(sub); await page.goto(f.origin); await page.getByRole('link',{name:'Продолжить с Google'}).click();
   await page.getByLabel('Ваш никнейм').fill(account);
-  await page.getByRole('button',{name:'Продолжить',exact:true}).click();
-  // The identity step renders after the async authenticator probe: wait for
-  // EITHER variant. Headless engines have no platform authenticator, so the
-  // PRF path ends at its explicit phrase fallback (a real user's escape too).
-  const phraseButton = page.getByRole('button',{name:'Создать ключи на этом устройстве'});
-  const prfButton = page.getByRole('button',{name:'Создать ключи и включить защиту'});
-  const first = await Promise.any([phraseButton.waitFor({timeout:30000}), prfButton.waitFor({timeout:30000})]).catch(() => null);
-  if (first === prfButton) {
-    await prfButton.click();
-    if (!await phraseButton.waitFor({timeout:10000}).catch(() => null)) {
-      await page.getByRole('button',{name:'Использовать фразу устройства'}).click();
-    }
-  }
-  await phraseButton.waitFor({timeout:30000});
-  await page.getByLabel('Фраза устройства ·').fill(phrase);
-  await page.getByLabel('Повторите фразу устройства').fill(phrase);
-  await page.getByRole('button', {name:'Создать ключи на этом устройстве'}).click();
-  await page.getByRole('heading',{name:'Сохраните recovery-пакет'}).waitFor({timeout:120000});
-  const downloaded = page.waitForEvent('download'); await page.getByRole('button',{name:'Скачать recovery-пакет'}).click(); await downloaded;
-  await page.getByRole('checkbox').check(); await page.getByRole('button',{name:'Завершить регистрацию'}).click();
-  await page.getByText('Подключено · E2EE',{exact:true}).waitFor({timeout:120000});
+  await completeSignup(page, 'synthetic browser independent recovery password');
 }
 async function fingerprint(page) {
   await page.getByRole('button',{name:/^Профиль/}).click();
@@ -975,41 +969,21 @@ try {
   const recSrc = await browser('recovery-src');
   qaPages.push(['recovery-src', recSrc.page]);
   f.setLoginSub('synthetic-browser-recovery');
+  const recoveryPhraseText = 'synthetic replacement device recovery password';
   await recSrc.page.goto(f.origin);
   await recSrc.page.getByRole('link',{name:'Продолжить с Google'}).click();
   await recSrc.page.getByLabel('Ваш никнейм').fill('browser_rec');
-  await recSrc.page.getByRole('button',{name:'Продолжить',exact:true}).click();
-  {
-    // Identity-шаг: headless без platform authenticator → фразовый путь.
-    const phraseButton = recSrc.page.getByRole('button',{name:'Создать ключи на этом устройстве'});
-    const prfButton = recSrc.page.getByRole('button',{name:'Создать ключи и включить защиту'});
-    const first = await Promise.any([phraseButton.waitFor({timeout:30000}), prfButton.waitFor({timeout:30000})]).catch(() => null);
-    if (first === prfButton) {
-      await prfButton.click();
-      if (!await phraseButton.waitFor({timeout:10000}).catch(() => null)) {
-        await recSrc.page.getByRole('button',{name:'Использовать фразу устройства'}).click();
-      }
-    }
-    await phraseButton.waitFor({timeout:30000});
-    await recSrc.page.getByLabel('Фраза устройства ·').fill(phrase);
-    await recSrc.page.getByLabel('Повторите фразу устройства').fill(phrase);
-    await recSrc.page.getByRole('button',{name:'Создать ключи на этом устройстве'}).click();
-  }
-  await recSrc.page.getByRole('heading',{name:'Сохраните recovery-пакет'}).waitFor({timeout:120000});
-  // Пакет и фраза сохраняются ВНЕ браузера — как это делает реальный пользователь.
-  const recoveryPhraseText = (await recSrc.page.locator('.phrase-box code').textContent()).trim();
-  assert.ok(recoveryPhraseText.length >= 24);
+  await completeSignup(recSrc.page, recoveryPhraseText);
+  assert.equal(await recSrc.page.getByText(recoveryPhraseText, { exact: true }).count(), 0);
+  await recSrc.page.getByRole('button', {name:/^Профиль/}).click();
   const pkgPath = path.join(run, 'shade-recovery-browser_rec.json');
   const recDownload = recSrc.page.waitForEvent('download');
-  await recSrc.page.getByRole('button',{name:'Скачать recovery-пакет'}).click();
+  await recSrc.page.getByText('Recovery-пакет', { exact: true }).click();
   await (await recDownload).saveAs(pkgPath);
   const pkgBuffer = await fs.readFile(pkgPath);
   const pkgParsed = JSON.parse(pkgBuffer.toString('utf8'));
   assert.equal(pkgParsed.genesis.account, 'browser_rec');
   assert.ok(pkgParsed.backup.genesisDigest);
-  await recSrc.page.getByRole('checkbox').check();
-  await recSrc.page.getByRole('button',{name:'Завершить регистрацию'}).click();
-  await recSrc.page.getByText('Подключено · E2EE',{exact:true}).waitFor({timeout:120000});
   const oldRecDeviceId = await recSrc.page.evaluate(async () =>
     (await (await import('/device_crypto.mjs')).listVaults())[0].id);
   // Новый контекст: тот же Google-аккаунт, но ключей браузера нет — linkStep.
@@ -1027,8 +1001,9 @@ try {
   await recNew.page.getByText('Старая переписка недоступна: она шифровалась под утраченные ключи',{exact:false}).first().waitFor();
   // File input пакета: скрытый DOM input создаётся в жесте пользователя;
   // setFiles == setInputFiles на этом input (контракт recovery.pick).
+  await recNew.page.getByText('Резервная копия Shade', {exact: false}).first().waitFor();
   const recChooserPromise = recNew.page.waitForEvent('filechooser', {timeout:30000});
-  await recNew.page.getByRole('button',{name:'Выбрать файл пакета (JSON)'}).click();
+  await recNew.page.getByRole('button',{name:'Выбрать другой файл'}).click();
   const recChooser = await recChooserPromise;
   await recChooser.setFiles({name:'shade-recovery-browser_rec.json', mimeType:'application/json', buffer:pkgBuffer});
   await recNew.page.getByText('shade-recovery-browser_rec.json',{exact:false}).waitFor({timeout:30000});
@@ -1036,7 +1011,7 @@ try {
   // Flutter TextField на webkit: fill() пишет в semantics-placeholder, а не в
   // editing input движка. Честная симуляция пользователя: клик + settle (фокус
   // движка устанавливается асинхронно) + ввод с клавиатуры. Assertions не меняются.
-  await recNew.page.getByLabel('Recovery-фраза',{exact:true}).click();
+  await recNew.page.getByLabel('Пароль восстановления',{exact:true}).click();
   await recNew.page.waitForTimeout(600);
   await recNew.page.keyboard.type(recoveryPhraseText);
   await recNew.page.getByLabel('Фраза устройства ·').click();

@@ -282,6 +282,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     // (nickname-only) sessions carry no profile — email stays null for them.
     res.json({ authenticated: true, googleConfigured: provider.configured, account, vapidPublicKey,
       email: typeof s.profile?.email === 'string' ? s.profile.email : null,
+      cloudRecoverySaved: Boolean(account && registry.hasRecoveryBackup(account)),
       directory: account ? registry.directory(account) : null });
   });
   app.get('/auth/google', rateLimit({ windowMs: 60000, limit: 15 }), wrap(async (_req, res) => {
@@ -480,9 +481,15 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     for (const socket of io.sockets.sockets.values()) if (socket.data.sid === req.alphaSid) socket.disconnect(true);
     res.json({ ok: true });
   });
+  app.get('/api/v2/recovery-backup', requireSession, denyRecovery, wrap(async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const account = req.alphaSession.profile ? sessionAccount(req.alphaSession) : null;
+    if (!account) return res.status(403).json({ error: 'google_login_required' });
+    res.json({ package: registry.getRecoveryBackup(account) });
+  }));
   app.post('/api/v2/register', requireSession, denyRecovery, wrap(async (req, res) => {
-    const { genesis, manifest, proofs } = req.body;
-    const result = await registry.register({ genesis, manifest, proofs, googleIdToken: req.alphaSid });
+    const { genesis, manifest, proofs, recoveryBackup } = req.body;
+    const result = await registry.register({ genesis, manifest, proofs, recoveryBackup, googleIdToken: req.alphaSid });
     res.json(result);
   }));
   // Legacy enrollment: the account must be prepared by the operator CLI (or an
@@ -731,6 +738,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
         if (senderDir) for (const d of senderDir.devices) io.to(room(delivery.from, d.id)).emit('retracted');
       }
     } else if (op === 'retractions') result = await registry.retractions(body, auth);
+    else if (op === 'recovery.backup') result = await registry.saveRecoveryBackup(body, auth);
     else if (op === 'legacy.inbox' || op === 'legacy.ack') {
       // One-way v1 ciphertext bridge for migrated accounts. Payloads stay E2EE
       // ({k,d} encrypted to the legacy RSA). ONLY the primary device holds the

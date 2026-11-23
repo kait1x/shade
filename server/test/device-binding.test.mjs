@@ -56,6 +56,23 @@ test('pre-binding vault record set is still accepted and unlockable', async () =
   assert.equal(session.account, 'legacy_user');
 });
 
+test('offline PIN mode supports both lengths and authenticates the mode in the encrypted vault', async () => {
+  await assert.rejects(createVault('pin_user', '0123'), /strong passphrase/);
+  await assert.rejects(createVault('pin_user', '12345', { pinLength: 5 }), /Invalid device PIN/);
+  await assert.rejects(createVault('pin_user', '01ab', { pinLength: 4 }), /Invalid device PIN/);
+  for (const pin of ['0123', '012345']) {
+    const vault = await createVault('pin_user', pin, { pinLength: pin.length });
+    assert.equal(vault.pinLength, pin.length);
+    assert.equal(Object.hasOwn(vault, 'pin'), false);
+    await saveVault(vault);
+    const saved = await loadVault(vault.id);
+    assert.equal((await unlockVault(saved, pin)).id, vault.id);
+    await assert.rejects(unlockVault(saved, '9' + pin.slice(1)), { name: 'OperationError' });
+    const { pinLength, ...removedMode } = saved;
+    await assert.rejects(unlockVault(removedMode, pin), { name: 'OperationError' });
+  }
+});
+
 test('auto recovery phrase is word-based, long enough and independent of the device binding', async () => {
   const passphrase = prfStylePassphrase();
   const vault = await createVault('recovery_user', passphrase);

@@ -57,6 +57,49 @@ h2 { font-size:22px; margin:0 0 16px; }
 .field-box input:focus-visible { outline:none; }
 .field-error { color:var(--error); font-size:12px; line-height:1.5; margin:10px 0 0; }
 
+/* The real password field supplies keyboard and paste support behind the dots. */
+.pin-entry { justify-items:center; margin:18px 0 10px; }
+.pin-entry .field-box {
+  justify-content:center; width:min(100%,245px); min-height:48px;
+  border-color:transparent; background:transparent;
+}
+.pin-entry .field-box:focus-within { border-color:var(--border); box-shadow:none; }
+.pin-entry .field-box input {
+  position:absolute; inset:0; height:100%; opacity:0; cursor:text; z-index:1;
+}
+.pin-dots { display:flex; align-items:center; justify-content:center; gap:14px; }
+.pin-dot {
+  border:1.5px solid var(--text-3); border-radius:50%;
+  width:12px; height:12px;
+}
+.pin-dot.filled { border-color:var(--text); background:var(--text); }
+.pin-feedback {
+  margin:0 0 12px; color:var(--error); text-align:center; font-size:13px;
+}
+.pin-keypad {
+  --key-size:clamp(46px,15vw,54px);
+  display:grid; grid-template-columns:repeat(3,var(--key-size)); justify-content:center;
+  gap:8px 19px; margin:0 auto 14px;
+}
+.pin-key {
+  width:var(--key-size); height:var(--key-size); padding:0; border-radius:50%;
+  border:1px solid var(--border); background:var(--surface-elevated); color:var(--text);
+  font-size:24px; font-weight:500; line-height:1; cursor:pointer; touch-action:manipulation;
+}
+.pin-key:focus-visible { outline:2px solid var(--text); outline-offset:3px; }
+.pin-key:active { color:#000; background:var(--text); }
+.pin-key:disabled { opacity:.38; cursor:default; }
+.pin-key.pin-erase { border-color:transparent; background:transparent; font-size:21px; }
+.pin-key.pin-erase:active { color:var(--text); background:var(--surface-elevated); }
+.pin-lock .onboard-card { text-align:center; border:0; background:none; padding-inline:0; }
+.pin-lock .pin-entry { margin-top:20px; }
+.pin-lock .pin-keypad { --key-size:clamp(52px,17vw,66px); gap:9px 23px; margin-bottom:20px; }
+.pin-lock .pin-key { font-size:28px; }
+.pin-lock .pin-erase { font-size:23px; }
+.pin-lock .onboard-card .muted { display:none; }
+.pin-lock .gen-progress { justify-content:center; }
+.pin-dots[hidden],.pin-feedback[hidden],.pin-keypad[hidden],.pin-lock .btn[hidden] { display:none; }
+
 /* ---- Buttons (Android FilledButton: 52px, radius 14, w700 14px) ---- */
 .btn { width:100%; min-height:52px; border:1px solid var(--border); border-radius:14px; background:var(--surface); color:var(--text); padding:0 16px; font-size:14px; font-weight:700; display:flex; align-items:center; justify-content:center; gap:10px; cursor:pointer; text-align:center; text-decoration:none; }
 .btn.primary { background:var(--text); color:#000; border-color:var(--text); }
@@ -109,6 +152,8 @@ code { font:13px/1.7 ui-monospace,monospace; }
 @media(prefers-reduced-motion:no-preference) {
   button,.field-box,.btn { transition:border-color .15s ease-out,background .15s ease-out,box-shadow .15s ease-out; }
   .btn:active { transform:scale(.97); }
+  .pin-key:active { transform:scale(.94); }
+  .pin-dot { transition:background-color .12s ease-out,border-color .12s ease-out; }
   .onboard.enter { animation:shade-step .22s cubic-bezier(.215,.61,.355,1); }
   @keyframes shade-step { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
 }

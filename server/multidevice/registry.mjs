@@ -3,7 +3,7 @@
 // No production data is read or changed. A real adapter must reuse encrypted,
 // atomic server storage and introduce separate device-scoped transport routes.
 import { createPublicKey, randomBytes } from 'node:crypto';
-import { check, hash, manifestText, deviceId,
+import { check, hash, manifestText, deviceId, fingerprint, genesisText,
   pairingText, pairingTextV2, requestText, verify, verifyMessage, messageText, verifyGenesis, verifyHistory } from '../../client/web/protocol/device-v2.mjs';
 
 export const operationDigest = (operation, body = null) => hash(JSON.stringify([operation, body]));
@@ -14,6 +14,24 @@ export function legacyRoot(pem) {
   // validators separately enforce RSA-4096 before any enrollment or message.
   check(key.asymmetricKeyType === 'rsa', 'Unsupported legacy root type');
   return key.export({ type: 'spki', format: 'der' }).toString('base64');
+}
+
+async function validateRecoveryBackup(backup, genesis) {
+  const fields = ['version', 'account', 'rootFingerprint', 'publicKey', 'salt', 'iv', 'ciphertext', 'genesisDigest'];
+  check(genesis && backup && typeof backup === 'object' && !Array.isArray(backup) &&
+    Object.keys(backup).length === fields.length && fields.every(key => Object.hasOwn(backup, key)),
+    'Invalid recovery backup');
+  check(backup.version === 2 && backup.account === genesis.account &&
+    backup.publicKey === genesis.recoveryKey &&
+    backup.rootFingerprint === await fingerprint(genesis.firstDevice.signingKey) &&
+    backup.genesisDigest === await hash(genesisText(genesis)), 'Recovery backup identity mismatch');
+  const validBase64 = (value, max) => typeof value === 'string' && value.length > 0 && value.length <= max &&
+    Buffer.from(value, 'base64').toString('base64') === value;
+  check(validBase64(backup.salt, 24) && Buffer.from(backup.salt, 'base64').length === 16 &&
+    validBase64(backup.iv, 16) && Buffer.from(backup.iv, 'base64').length === 12 &&
+    validBase64(backup.ciphertext, 8000) && Buffer.from(backup.ciphertext, 'base64').length > 16,
+    'Invalid encrypted recovery backup');
+  return Object.fromEntries(fields.map(key => [key, backup[key]]));
 }
 
 export async function createDeviceRegistry({ users, persist, snapshot, clock = Date.now, verifyGoogle, pairingV1 = true }) {
@@ -42,6 +60,7 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
         check(record.genesis && record.genesis.legacy === record.legacy, 'Missing or inconsistent account genesis');
         check(record.history.at(-1).issuedAt <= clock() + 30000, 'Snapshot directory is from the future');
         await verifyHistory(record.history, record.root, null, record.history.at(-1).issuedAt, record.genesis);
+        if (record.recoveryBackup !== undefined) await validateRecoveryBackup(record.recoveryBackup, record.genesis);
       } else check(!record.genesis, 'Genesis without directory');
       let previous = '', revision = 0;
       const retired = new Set();
@@ -123,7 +142,7 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     },
     // The first device can be any platform. Google verifies account ownership;
     // genesis + the complete roster are signed by that device, not the relay.
-    register: ({ genesis, manifest, googleIdToken, proofs = [] }) => serial(() => transaction(async next => {
+    register: ({ genesis, manifest, googleIdToken, proofs = [], recoveryBackup }) => serial(() => transaction(async next => {
       check(typeof verifyGoogle === 'function', 'Google verifier not configured');
       check(manifest.account === genesis.account, 'Registration account mismatch');
       check(!recordOf(next, genesis.account) && !genesis.legacy, 'Account already exists or invalid genesis');
@@ -134,9 +153,27 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
       const record = { root: genesis.firstDevice.signingKey, legacy: false, googleSub: profile.googleSub,
         genesis: structuredClone(genesis), history: [], retired: [] };
       await verifyGenesis(genesis, record.root);
+      if (recoveryBackup !== undefined) record.recoveryBackup = await validateRecoveryBackup(recoveryBackup, genesis);
       Object.defineProperty(next.accounts, genesis.account, { value: record, enumerable: true, writable: true, configurable: true });
       return update(next, manifest, proofs);
     })),
+    hasRecoveryBackup: account => Boolean(recordOf(state, account)?.recoveryBackup),
+    getRecoveryBackup: account => {
+      const record = recordOf(state, account);
+      return record?.recoveryBackup
+        ? structuredClone({ backup: record.recoveryBackup, genesis: record.genesis }) : null;
+    },
+    saveRecoveryBackup: (backup, auth) => serial(async () => {
+      await authenticate(auth, await operationDigest('recovery.backup', backup));
+      const record = recordOf(state, auth.account);
+      check(record.googleSub, 'Google-linked account required');
+      const validated = await validateRecoveryBackup(backup, record.genesis);
+      if (record.recoveryBackup) return { saved: true };
+      return transaction(next => {
+        recordOf(next, auth.account).recoveryBackup = validated;
+        return { saved: true };
+      });
+    }),
     install: (manifest, proofs = [], genesis = null) => serial(() => transaction(async next => {
       const record = recordOf(next, manifest.account); check(record, 'Unknown account');
       if (!record.genesis) {
@@ -163,12 +200,12 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
       const digest = await hash(messageText(message));
       await authenticate(auth, await operationDigest('send', digest));
       check(auth.account === message.from && auth.id === message.deviceId, 'Wrong sending device');
+      const receiptKey = `${message.from}:${message.deviceId}:${message.id}`;
+      const previous = state.receipts[receiptKey];
+      // A lost response can be retried after renewal without rewriting the
+      // durable receipt. The proof and immutable ciphertext digest still match.
+      if (previous) { check(previous === digest, 'Message ID conflict'); return { accepted: true, duplicate: true }; }
       return transaction(async next => {
-        const receiptKey = `${message.from}:${message.deviceId}:${message.id}`;
-        const previous = next.receipts[receiptKey];
-        // A lost HTTP response can be retried after directory renewal. Proof
-        // still requires a currently authorized device; ciphertext is immutable.
-        if (previous) { check(previous === digest, 'Message ID conflict'); return { accepted: true, duplicate: true }; }
         const sender = current(next, message.from), recipient = current(next, message.to);
         check(sender && recipient, 'Both accounts must opt into v2');
         check(sender.expiresAt > clock() && recipient.expiresAt > clock(), 'Expired directory lease');
@@ -264,16 +301,19 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
       check(Array.isArray(refs) && refs.length <= 200 && refs.every(ref => typeof ref === 'string' &&
         /^[a-z0-9_]{3,32}:(primary|[a-f0-9]{64}):[a-f0-9]{64}$/.test(ref)));
       await authenticate(auth, await operationDigest('ack', refs));
+      const key = `${auth.account}:${auth.id}`;
+      const requested = new Set(refs);
+      const before = state.queues[key] || [];
+      const pending = before.filter(m => requested.has(messageRef(m)));
+      if (!pending.length) return { acknowledged: 0 };
       return transaction(next => {
-        const key = `${auth.account}:${auth.id}`;
-        const before = next.queues[key] || [];
-        for (const m of before) if (refs.includes(messageRef(m))) {
+        for (const m of pending) {
           const delivered = next.delivery[messageRef(m)]?.devices
             .find(d => d.account === auth.account && d.id === auth.id);
           if (delivered) delivered.acknowledgedAt ||= clock();
         }
-        next.queues[key] = before.filter(m => !refs.includes(messageRef(m)));
-        return { acknowledged: before.length - next.queues[key].length };
+        next.queues[key] = next.queues[key].filter(m => !requested.has(messageRef(m)));
+        return { acknowledged: pending.length };
       });
     }),
     status: (refs, auth) => serial(async () => {
@@ -288,6 +328,8 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
       check(Array.isArray(refs) && refs.length <= 200 && refs.every(ref => typeof ref === 'string' &&
         /^[a-z0-9_]{3,32}:(primary|[a-f0-9]{64}):[a-f0-9]{64}$/.test(ref)), 'Invalid read refs');
       await authenticate(auth, await operationDigest('read', refs));
+      if (!refs.some(ref => state.delivery[ref]?.devices?.some(d =>
+        d.account === auth.account && d.id === auth.id && !d.readAt))) return { read: 0 };
       return transaction(next => {
         let read = 0;
         for (const ref of refs) {
