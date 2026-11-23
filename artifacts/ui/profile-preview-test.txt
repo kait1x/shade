@@ -1,8 +1,0 @@
-00:00 +0: loading C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/profile_preview_test.dart
-00:00 +0: (setUpAll)
-00:00 +0: profile showcase renders actual self, contact and key sheet (variant: TargetPlatform.android)
-00:01 +1: capture self profile and confirm a contact only for the current key (variant: TargetPlatform.android)
-00:01 +2: profile and key sheet fit narrow screens with large text (variant: TargetPlatform.android)
-00:01 +3: a key changed while its sheet is open cannot be confirmed accidentally (variant: TargetPlatform.android)
-00:01 +4: (tearDownAll)
-00:01 +4: All tests passed!

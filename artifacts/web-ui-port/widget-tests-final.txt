@@ -1,9 +1,0 @@
-00:00 +0: loading C:/Users/Kait1x/Documents/Codex/2026-11-14/new-chat/outputs/shade/client/test/web_alpha_ui_test.dart
-00:00 +0: Delivery is derived from real per-device ACK, never server acceptance
-00:00 +1: Reload restores the actual scroll offset in a tall lazy history
-00:00 +2: Alpha chat, list and profile fit 320.0 with large text
-00:01 +3: Alpha chat, list and profile fit 390.0 with large text
-00:01 +4: Alpha chat, list and profile fit 430.0 with large text
-00:01 +5: Alpha chat, list and profile fit 768.0 with large text
-00:01 +6: Alpha chat, list and profile fit 1440.0 with large text
-00:02 +7: All tests passed!

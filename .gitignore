@@ -86,6 +86,7 @@ client/config/production.json
 
 # Local QA artifacts, third-party tools and stray backups stay on disk, never committed
 /artifacts/
+/outputs/
 /tools/
 *.bak
 
