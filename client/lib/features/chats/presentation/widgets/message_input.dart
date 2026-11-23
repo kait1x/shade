@@ -11,6 +11,7 @@ class MessageInput extends StatefulWidget {
   final int maxLines;
   final FutureOr<void> Function(List<int>)? onImageSelected;
   final VoidCallback? onVoiceRecord;
+  final VoidCallback? onShareLocation;
   final VoidCallback? onTyping;
   final VoidCallback? onStopTyping;
   const MessageInput(
@@ -19,6 +20,7 @@ class MessageInput extends StatefulWidget {
       this.maxLines = 5,
       this.onImageSelected,
       this.onVoiceRecord,
+      this.onShareLocation,
       this.onTyping,
       this.onStopTyping});
   @override
@@ -135,6 +137,15 @@ class _MessageInputState extends State<MessageInput> {
                           subtitle: const Text('Выбрать с устройства'),
                           trailing: const Icon(Icons.chevron_right_rounded),
                           onTap: () => Navigator.pop(ctx, ImageSource.gallery)),
+                      if (widget.onShareLocation != null)
+                        ListTile(
+                          leading: const Icon(Icons.location_on_outlined),
+                          title: const Text('Геопозиция'),
+                          onTap: () {
+                            Navigator.pop(ctx);
+                            widget.onShareLocation?.call();
+                          },
+                        ),
                     ]))));
     if (source != null && mounted) await _getImage(source);
   }

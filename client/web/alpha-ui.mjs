@@ -170,6 +170,10 @@ function recordVoice(account) {
   check(navigator.mediaDevices?.getUserMedia && typeof MediaRecorder === 'function',
     'В этом браузере запись голоса недоступна.');
   const status = node('p', 'До 30 секунд. Сначала можно прослушать запись.');
+  const meter = node('div', undefined, 'voice-meter');
+  const elapsed = node('span', '0:00');
+  meter.append(node('span', undefined, 'voice-dot'), node('span', 'Запись'), elapsed);
+  meter.hidden = true;
   status.setAttribute('role', 'status');
   const preview = node('audio');
   preview.controls = true;
@@ -178,12 +182,14 @@ function recordVoice(account) {
   const stop = node('button', 'Остановить запись', 'btn primary');
   const send = node('button', 'Отправить голосовое', 'btn primary');
   stop.hidden = send.hidden = true;
-  let recorder, stream, timer, clip, previewUrl;
+  let recorder, stream, timer, ticker, clip, previewUrl;
   const stopTracks = () => {
     clearTimeout(timer);
+    clearInterval(ticker);
+    meter.hidden = true;
     stream?.getTracks().forEach(track => track.stop());
   };
-  const panel = openVoicePanel('Голосовое сообщение', [status, preview, record, stop, send], () => {
+  const panel = openVoicePanel('Голосовое сообщение', [status, meter, preview, record, stop, send], () => {
     if (recorder?.state === 'recording') recorder.stop();
     stopTracks();
     if (previewUrl) URL.revokeObjectURL(previewUrl);
@@ -226,7 +232,14 @@ function recordVoice(account) {
       };
       recorder.start();
       timer = setTimeout(() => { if (recorder.state === 'recording') recorder.stop(); }, 30000);
-      status.textContent = 'Идёт запись…';
+      status.textContent = '';
+      meter.hidden = false;
+      const started = performance.now();
+      const updateElapsed = () => {
+        elapsed.textContent = '0:' + String(Math.min(30, Math.floor((performance.now() - started) / 1000))).padStart(2, '0');
+      };
+      updateElapsed();
+      ticker = setInterval(updateElapsed, 250);
       record.hidden = true;
       stop.hidden = false;
     } catch (error) {
@@ -242,6 +255,44 @@ function recordVoice(account) {
     send.disabled = true;
     try {
       await client.sendMedia(account, b64(await clip.arrayBuffer()), clip.type);
+      if (panel.open) panel.close();
+    } catch (error) {
+      status.textContent = errors[error.message] || error.message;
+      send.disabled = false;
+    }
+  };
+}
+
+function shareLocation(account) {
+  check(navigator.geolocation, 'Этот браузер не может определить геопозицию.');
+  const status = node('p', 'Координаты появятся перед отправкой.');
+  status.setAttribute('role', 'status');
+  const locate = node('button', 'Определить геопозицию', 'btn primary');
+  const send = node('button', 'Отправить геопозицию', 'btn primary');
+  send.hidden = true;
+  let coordinates;
+  const panel = openVoicePanel('Геопозиция', [status, locate, send], () => {});
+  locate.onclick = () => {
+    locate.disabled = true;
+    status.textContent = 'Определяем геопозицию…';
+    navigator.geolocation.getCurrentPosition(({ coords }) => {
+      if (!panel.open) return;
+      coordinates = [coords.latitude.toFixed(5), coords.longitude.toFixed(5)].join(', ');
+      status.textContent = coordinates;
+      locate.hidden = true;
+      send.hidden = false;
+    }, error => {
+      if (!panel.open) return;
+      status.textContent = error.code === 1
+        ? 'Разрешите доступ к геопозиции в настройках браузера.'
+        : 'Не удалось определить геопозицию. Попробуйте снова.';
+      locate.disabled = false;
+    }, { timeout: 15000, maximumAge: 0 });
+  };
+  send.onclick = async () => {
+    send.disabled = true;
+    try {
+      await client.send(account, '📍 Геопозиция\n' + coordinates);
       if (panel.open) panel.close();
     } catch (error) {
       status.textContent = errors[error.message] || error.message;
@@ -1420,6 +1471,18 @@ async function openApp() {
         case 'send': await client.send(data.account, data.text, data.reply || null); break;
         case 'sendMedia': await client.sendMedia(data.account, data.image, data.mime || 'image/jpeg'); break;
         case 'voice.record': recordVoice(data.account); break;
+        case 'location.share': shareLocation(data.account); break;
+        case 'location.open': {
+          const text = client.state.messages.find(message => message.ref === data.ref)?.text;
+          const match = /^📍 Геопозиция\n(-?\d{1,2}\.\d{5}), (-?\d{1,3}\.\d{5})$/.exec(text);
+          check(match && Math.abs(Number(match[1])) <= 90 && Math.abs(Number(match[2])) <= 180, 'Координаты недоступны.');
+          const link = node('a', 'Открыть в OpenStreetMap', 'btn');
+          link.href = 'https://www.openstreetmap.org/?mlat=' + match[1] + '&mlon=' + match[2] + '#map=16/' + match[1] + '/' + match[2];
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          openVoicePanel('Геопозиция', [node('p', match[1] + ', ' + match[2]), link], () => {});
+          break;
+        }
         case 'voice.play': playVoice(data.ref); break;
         case 'deleteLocal': await client.deleteLocal(data.ref); break;
         case 'retract': await client.retract(data.ref); break;

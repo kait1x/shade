@@ -877,6 +877,14 @@ class _ConversationState extends State<_Conversation>
                                                   isImage:
                                                       media != null && !voice,
                                                   imageData: mediaBytes,
+                                                  onOpenLocation: m['text']
+                                                              is String &&
+                                                          (m['text'] as String).startsWith(
+                                                              '📍 Геопозиция\n')
+                                                      ? () => c.act(
+                                                          'location.open',
+                                                          {'ref': m['ref']})
+                                                      : null,
                                                   onPlayVoice: voice
                                                       ? () => c.act(
                                                           'voice.play',
@@ -885,20 +893,14 @@ class _ConversationState extends State<_Conversation>
                                                   status:
                                                       AlphaController.status(m),
                                                   deliveryLabel:
-                                                      AlphaController.delivery(
-                                                          m),
-                                                  groupedWithPrevious: grouped(
-                                                      items.length - 2 - i),
-                                                  groupedWithNext:
-                                                      grouped(items.length - i),
-                                                  onLongPress: () =>
-                                                      _showMessageMenu(m),
-                                                  replyText:
-                                                      reply?['text'] as String?,
+                                                      AlphaController.delivery(m),
+                                                  groupedWithPrevious: grouped(items.length - 2 - i),
+                                                  groupedWithNext: grouped(items.length - i),
+                                                  onLongPress: () => _showMessageMenu(m),
+                                                  replyText: reply?['text'] as String?,
                                                   replySender: reply == null
                                                       ? null
-                                                      : reply['from'] ==
-                                                              c.account
+                                                      : reply['from'] == c.account
                                                           ? 'Вы'
                                                           : peer)),
                                         ]);
@@ -992,6 +994,10 @@ class _ConversationState extends State<_Conversation>
                         ? 3
                         : 5,
                     onTyping: () => c.act('typing', {'account': peer}),
+                    onShareLocation: () {
+                      FocusManager.instance.primaryFocus?.unfocus();
+                      c.act('location.share', {'account': peer});
+                    },
                     onVoiceRecord: () {
                       FocusManager.instance.primaryFocus?.unfocus();
                       c.act('voice.record', {'account': peer});

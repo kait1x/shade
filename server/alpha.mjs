@@ -208,7 +208,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   app.use((req, res, next) => {
     res.set({ 'Content-Security-Policy': "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; worker-src 'self' blob:",
       'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
-      'Permissions-Policy': 'camera=(), microphone=(self), geolocation=()', 'Cache-Control': 'no-store' });
+      'Permissions-Policy': 'camera=(), microphone=(self), geolocation=(self)', 'Cache-Control': 'no-store' });
     if (origin.protocol === 'https:') res.setHeader('Strict-Transport-Security', 'max-age=31536000');
     next();
   });
