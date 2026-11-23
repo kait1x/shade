@@ -11,7 +11,7 @@ export const MAX_DEVICES = 8;
 export const MAX_LEASE_MS = 24 * 60 * 60 * 1000;
 export const ACCOUNT = /^[a-z0-9_]{3,32}$/;
 export const DEVICE = /^(primary|[a-f0-9]{64})$/;
-const B64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const NON_BASE64 = /[^A-Za-z0-9+/]/;
 // Инвариант протокола: неверные данные на границе доверия — исключение,
 // а не «мягкая» деградация.
 export function check(value, reason = 'Invalid protocol data') {
@@ -20,11 +20,22 @@ export function check(value, reason = 'Invalid protocol data') {
 // Base64-кодирование и декодирование: unb64 проверяет формат и размер,
 // отклоняя пустые и слишком длинные значения.
 export function b64(bytes) {
-  return btoa(Array.from(new Uint8Array(bytes), b => String.fromCharCode(b)).join(''));
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const chunks = [];
+  for (let offset = 0; offset < data.length; offset += 8192) {
+    chunks.push(String.fromCharCode(...data.subarray(offset, offset + 8192)));
+  }
+  return btoa(chunks.join(''));
 }
 export function unb64(value, max = 1024 * 1024) {
-  check(typeof value === 'string' && value.length > 0 && value.length <= max && B64.test(value));
-  return Uint8Array.from(atob(value), c => c.charCodeAt(0));
+  check(typeof value === 'string' && value.length > 0 && value.length <= max && value.length % 4 === 0);
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  // A quantified group over a multi-megabyte local record can overflow the
+  // regex engine stack. Scan for invalid characters without backtracking.
+  check(!NON_BASE64.test(padding ? value.slice(0, -padding) : value));
+  const decoded = atob(value), bytes = new Uint8Array(decoded.length);
+  for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i);
+  return bytes;
 }
 // Текст → байты UTF-8 для хэширования.
 export const textBytes = value => utf8.encode(value);
