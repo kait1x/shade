@@ -32,6 +32,12 @@ class V2ChatRepository {
   /// v1-ciphertext. Не заменяет якорь и не используется для новых сообщений.
   String? legacyPrivateKey;
   bool _syncing = false;
+  final _queueRetryAt = <String, DateTime>{};
+
+  bool get hasOutboxBackoff {
+    final now = DateTime.now();
+    return _queueRetryAt.values.any((retryAt) => retryAt.isAfter(now));
+  }
 
   /// Pairing второго устройства: криптография контракта pairing.mjs.
   final DeviceV2Pairing _pairing;
@@ -130,16 +136,16 @@ class V2ChatRepository {
     final device = session;
     final result = await transport.operation('recovery.backup', backup,
         account: account, id: device.id, privateKey: device.signingPrivateKey);
-    check(result is Map && result['saved'] == true, 'Recovery backup unavailable');
+    check(result is Map && result['saved'] == true,
+        'Recovery backup unavailable');
   }
 
   /// Enroll the first device and retain the exact identity across interruptions.
-  Future<Map<String, dynamic>> registerNewAccount(
-      String recoveryPassphrase, {bool cloudRecovery = false}) async {
+  Future<Map<String, dynamic>> registerNewAccount(String recoveryPassphrase,
+      {bool cloudRecovery = false}) async {
     check(
         RegExp(r'^[a-z0-9_]{3,32}$').hasMatch(account), 'Некорректный никнейм');
-    check(
-        recoveryPassphrase.length >= minRecoveryPasswordLength,
+    check(recoveryPassphrase.length >= minRecoveryPasswordLength,
         'Пароль восстановления: минимум $minRecoveryPasswordLength символов');
     final login = await transport.session();
     check(login['authenticated'] == true, 'Сессия Google истекла');
@@ -1424,8 +1430,12 @@ class V2ChatRepository {
 
   Future<void> flushOutbox() async {
     final entries = await store.outboxAll();
+    AlphaTransportException? fullQueue;
     for (final entry in entries) {
       final message = entry['message'] as Map<String, dynamic>;
+      final peer = message['to'] as String;
+      if (_queueRetryAt[peer]?.isAfter(DateTime.now()) ?? false) continue;
+      _queueRetryAt.remove(peer);
       try {
         // Конверт запечатан текущей сессией: proof подписи — её ключом.
         final result = await transport.send(message,
@@ -1445,9 +1455,14 @@ class V2ChatRepository {
         }
       } on AlphaTransportException catch (error) {
         await store.markOutboxAttempt(entry['id'] as String, error.code);
+        if (error.code == 'device_queue_full') {
+          _queueRetryAt[peer] = DateTime.now().add(const Duration(seconds: 30));
+          fullQueue = error;
+        }
         if (error.status == 429 || error.status == 401) rethrow;
       }
     }
+    if (fullQueue != null) throw fullQueue;
   }
 
   /// Подписанный fetch: проверка каталогов/подписи, атомарное сохранение

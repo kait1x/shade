@@ -111,7 +111,7 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
                 : 'Личная переписка';
 
     return Scaffold(
-      backgroundColor: Colors.black,
+      backgroundColor: context.shadeColor(ShadeColors.black),
       resizeToAvoidBottomInset: true,
       appBar: AppBar(
         toolbarHeight:
@@ -154,8 +154,9 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
                             fontSize: 12,
                             color: state.peerTyping ||
                                     (!isSelf && state.peerOnline == true)
-                                ? ShadeColors.greenAccent
-                                : ShadeColors.textSecondary))),
+                                ? context.shadeColor(ShadeColors.greenAccent)
+                                : context
+                                    .shadeColor(ShadeColors.textSecondary)))),
               ])),
         ]),
         actions: [
@@ -208,28 +209,30 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
     final reply = state.replyTo!;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      color: ShadeColors.surfaceElevated,
+      color: context.shadeColor(ShadeColors.surfaceElevated),
       child: Row(children: [
-        Container(width: 3, height: 40, color: ShadeColors.cyan),
+        Container(
+            width: 3, height: 40, color: context.shadeColor(ShadeColors.cyan)),
         const SizedBox(width: 12),
         Expanded(
             child:
                 Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text(reply.mine ? 'Вы' : '@$peer',
-              style: const TextStyle(
-                  color: ShadeColors.cyan,
+              style: TextStyle(
+                  color: context.shadeColor(ShadeColors.cyan),
                   fontSize: 13,
                   fontWeight: FontWeight.w600)),
           Text(reply.isImage ? 'Фото' : reply.text,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                  color: ShadeColors.textSecondary, fontSize: 13)),
+              style: TextStyle(
+                  color: context.shadeColor(ShadeColors.textSecondary),
+                  fontSize: 13)),
         ])),
         IconButton(
             tooltip: 'Отменить ответ',
-            icon: const Icon(Icons.close_rounded,
-                size: 18, color: ShadeColors.textMuted),
+            icon: Icon(Icons.close_rounded,
+                size: 18, color: context.shadeColor(ShadeColors.textMuted)),
             onPressed: notifier.clearReply),
       ]),
     );
@@ -239,13 +242,14 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
       V2ConversationNotifier notifier, String account) {
     final msgs = state.messages;
     if (state.loading && msgs.isEmpty) {
-      return const Center(
+      return Center(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
         SizedBox.square(
             dimension: 24, child: ShadeLoadingIndicator(strokeWidth: 2)),
         SizedBox(height: 16),
         Text('Открываем переписку',
-            style: TextStyle(color: ShadeColors.textSecondary)),
+            style: TextStyle(
+                color: context.shadeColor(ShadeColors.textSecondary))),
       ]));
     }
     if (state.error != null && msgs.isEmpty) {
@@ -294,12 +298,13 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
             if (hasTyping && index == 0) return const _TypingBubble();
             final reversed = msgs.length - 1 - (index - offset);
             if (reversed < 0) {
-              return const Padding(
+              return Padding(
                   padding: EdgeInsets.symmetric(vertical: 20, horizontal: 32),
                   child: Text('Начало переписки',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                          fontSize: 11, color: ShadeColors.textMuted)));
+                          fontSize: 11,
+                          color: context.shadeColor(ShadeColors.textMuted))));
             }
             final msg = msgs[reversed];
             final previous = reversed > 0 ? msgs[reversed - 1] : null;
@@ -360,7 +365,7 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
                 tooltip: _unseen > 0
                     ? 'Новых сообщений: $_unseen. К последним'
                     : 'К последним сообщениям',
-                backgroundColor: const Color(0xFF29292D),
+                backgroundColor: context.shadeColor(ShadeColors.greyBorder),
                 onPressed: _toLatest,
                 child: _unseen > 0
                     ? Text('$_unseen',
@@ -385,15 +390,16 @@ class _V2ChatScreenState extends ConsumerState<V2ChatScreen> {
               child: Column(mainAxisSize: MainAxisSize.min, children: [
         if (!retracted)
           ListTile(
-              leading: const Icon(Icons.reply_rounded, color: ShadeColors.cyan),
+              leading: Icon(Icons.reply_rounded,
+                  color: context.shadeColor(ShadeColors.cyan)),
               title: const Text('Ответить'),
               onTap: () {
                 Navigator.pop(ctx);
                 notifier.setReply(msg);
               }),
         ListTile(
-            leading: const Icon(Icons.delete_outline_rounded,
-                color: ShadeColors.textSecondary),
+            leading: Icon(Icons.delete_outline_rounded,
+                color: context.shadeColor(ShadeColors.textSecondary)),
             title: const Text('Удалить у себя'),
             onTap: () async {
               Navigator.pop(ctx);
@@ -444,9 +450,10 @@ class _TypingBubble extends StatelessWidget {
                 padding:
                     const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
                 decoration: BoxDecoration(
-                    color: ShadeColors.surfaceElevated,
+                    color: context.shadeColor(ShadeColors.surfaceElevated),
                     borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: ShadeColors.greyBorder)),
+                    border: Border.all(
+                        color: context.shadeColor(ShadeColors.greyBorder))),
                 child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: List.generate(
@@ -457,7 +464,8 @@ class _TypingBubble extends StatelessWidget {
                             margin: const EdgeInsets.symmetric(horizontal: 2.5),
                             decoration: BoxDecoration(
                                 shape: BoxShape.circle,
-                                color: ShadeColors.textSecondary
+                                color: context
+                                    .shadeColor(ShadeColors.textSecondary)
                                     .withValues(alpha: 0.4 + i * 0.2))))))));
   }
 }

@@ -108,15 +108,18 @@ class _MessageInputState extends State<MessageInput> {
                           style: TextStyle(
                               fontSize: 21, fontWeight: FontWeight.w700)),
                       const SizedBox(height: 8),
-                      const Text('Сделайте снимок или выберите готовый.',
+                      Text('Сделайте снимок или выберите готовый.',
                           style: TextStyle(
-                              fontSize: 13, color: ShadeColors.textSecondary)),
+                              fontSize: 13,
+                              color: context
+                                  .shadeColor(ShadeColors.textSecondary))),
                       const SizedBox(height: 18),
                       ListTile(
                           shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(16)),
-                          leading: const Icon(Icons.camera_alt_outlined,
-                              color: ShadeColors.violetLight),
+                          leading: Icon(Icons.camera_alt_outlined,
+                              color:
+                                  context.shadeColor(ShadeColors.violetLight)),
                           title: const Text('Камера'),
                           subtitle: const Text('Снять новое фото'),
                           trailing: const Icon(Icons.chevron_right_rounded),
@@ -124,8 +127,8 @@ class _MessageInputState extends State<MessageInput> {
                       ListTile(
                           shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(16)),
-                          leading: const Icon(Icons.photo_library_outlined,
-                              color: ShadeColors.cyan),
+                          leading: Icon(Icons.photo_library_outlined,
+                              color: context.shadeColor(ShadeColors.cyan)),
                           title: const Text('Галерея'),
                           subtitle: const Text('Выбрать с устройства'),
                           trailing: const Icon(Icons.chevron_right_rounded),
@@ -176,8 +179,8 @@ class _MessageInputState extends State<MessageInput> {
   @override
   Widget build(BuildContext context) {
     return DecoratedBox(
-        decoration: const BoxDecoration(
-            color: Colors.black,
+        decoration: BoxDecoration(
+            color: context.shadeColor(ShadeColors.black),
             border: Border(top: BorderSide(color: Color(0xFF29292D)))),
         child: SafeArea(
             top: false,
@@ -191,18 +194,23 @@ class _MessageInputState extends State<MessageInput> {
                         child: IconButton(
                             tooltip: 'Прикрепить фото',
                             onPressed: _picking || _sending ? null : _pickImage,
-                            icon: const Icon(Icons.add_rounded,
-                                color: ShadeColors.textSecondary, size: 26))),
+                            icon: Icon(Icons.add_rounded,
+                                color: context
+                                    .shadeColor(ShadeColors.textSecondary),
+                                size: 26))),
                   Expanded(
                       child: AnimatedContainer(
                           duration: ShadeMotion.duration(context, 160),
                           decoration: BoxDecoration(
-                              color: const Color(0xFF111113),
+                              color:
+                                  context.shadeColor(ShadeColors.surfaceCard),
                               borderRadius: BorderRadius.circular(22),
                               border: Border.all(
                                   color: _focusNode.hasFocus
-                                      ? const Color(0xFF626267)
-                                      : const Color(0xFF29292D))),
+                                      ? context
+                                          .shadeColor(const Color(0xFF626267))
+                                      : context
+                                          .shadeColor(ShadeColors.greyBorder))),
                           child: TextField(
                               key: const Key('message-field'),
                               controller: _controller,
@@ -212,8 +220,9 @@ class _MessageInputState extends State<MessageInput> {
                               minLines: 1,
                               textCapitalization: TextCapitalization.sentences,
                               textInputAction: TextInputAction.newline,
-                              style: const TextStyle(
-                                  color: ShadeColors.textPrimary,
+                              style: TextStyle(
+                                  color: context
+                                      .shadeColor(ShadeColors.textPrimary),
                                   fontSize: 16,
                                   height: 1.45),
                               decoration: const InputDecoration(
@@ -234,8 +243,9 @@ class _MessageInputState extends State<MessageInput> {
                           height: 48,
                           decoration: BoxDecoration(
                               color: _hasText
-                                  ? const Color(0xFFF5F5F7)
-                                  : const Color(0xFF1C1C1F),
+                                  ? context.shadeColor(ShadeColors.textPrimary)
+                                  : context
+                                      .shadeColor(ShadeColors.surfaceElevated),
                               borderRadius: BorderRadius.circular(17)),
                           child: IconButton(
                               key: const Key('send-message'),
@@ -252,8 +262,10 @@ class _MessageInputState extends State<MessageInput> {
                                   : Icon(Icons.arrow_upward_rounded,
                                       size: 24,
                                       color: _hasText
-                                          ? Colors.black
-                                          : ShadeColors.textMuted)))),
+                                          ? context
+                                              .shadeColor(ShadeColors.black)
+                                          : context.shadeColor(
+                                              ShadeColors.textMuted))))),
                 ]))));
   }
 }

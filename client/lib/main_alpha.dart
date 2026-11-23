@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker_platform_interface/image_picker_platform_interface.dart';
+import 'core/theme/shade_theme.dart';
 import 'features/web/presentation/alpha_controller.dart';
 import 'features/web/presentation/alpha_app.dart';
 import 'features/web/services/web_image_picker.dart';
@@ -14,6 +15,8 @@ import 'features/web/services/web_image_picker.dart';
 external JSPromise<JSString> _action(JSString action, JSString payload);
 @JS('shadeReceive')
 external set _receive(JSFunction callback);
+@JS('shadeApplyAppearance')
+external void _applyAppearance(JSBoolean light);
 
 @JS('fetch')
 external JSPromise<_FontResponse> _fetch(JSString url);
@@ -25,6 +28,10 @@ extension type _FontResponse(JSObject _) implements JSObject {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await loadShadeAppearance();
+  _applyAppearance(shadeLightTheme.value.toJS);
+  shadeLightTheme
+      .addListener(() => _applyAppearance(shadeLightTheme.value.toJS));
   // Bytes-backed web picker: the stock plugin re-reads the picked file through
   // a blob-URL XHR that dies on Android Chrome PWA before any upload (P1 photo
   // bug). This override keeps native platforms on the stock plugin.

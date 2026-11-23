@@ -21,6 +21,7 @@ void main() async {
 
   // Скриншоты/запись экрана разрешены на всех экранах, как в v1.
   await SecurityService.disableSecureMode();
+  await loadShadeAppearance();
 
   runApp(const ProviderScope(child: ShadeV2App()));
 }
@@ -31,11 +32,17 @@ class ShadeV2App extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     ref.watch(androidPushProvider);
-    return MaterialApp.router(
-      title: 'Shade',
-      debugShowCheckedModeBanner: false,
-      routerConfig: ref.watch(v2RouterProvider),
-      theme: buildShadeTheme(),
+    final router = ref.watch(v2RouterProvider);
+    return ValueListenableBuilder<bool>(
+      valueListenable: shadeLightTheme,
+      builder: (_, light, __) => MaterialApp.router(
+        title: 'Shade',
+        debugShowCheckedModeBanner: false,
+        routerConfig: router,
+        theme: buildShadeLightTheme(),
+        darkTheme: buildShadeTheme(),
+        themeMode: light ? ThemeMode.light : ThemeMode.dark,
+      ),
     );
   }
 }

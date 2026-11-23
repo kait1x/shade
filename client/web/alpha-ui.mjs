@@ -6,6 +6,11 @@ import { createDeviceBinding, unlockDeviceBinding, platformAuthenticatorAvailabl
   bindingErrorText } from './device_binding.mjs';
 
 const root = document.querySelector('#root'), dialog = document.querySelector('#dialog');
+window.shadeApplyAppearance = light => {
+  document.documentElement.dataset.shadeAppearance = light ? 'light' : 'dark';
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', light ? '#ffffff' : '#000000');
+};
+try { window.shadeApplyAppearance(localStorage.getItem('flutter.shade.appearance.light') === 'true'); } catch {}
 const client = new AlphaClient();
 // QA introspection: the page context can always reach whatever its own scripts
 // hold; this only names the instance. CryptoKey material stays non-extractable.
@@ -48,6 +53,7 @@ const errors = { google_login_required: 'Сессия Google истекла. В�
   rate_limited: 'Слишком много запросов. Подождите немного и повторите.',
   stale_registration: 'Обновите заявку с помощью пароля Shade. Ключи устройства сохранятся.',
   registration_password_invalid: 'Не удалось открыть черновую копию. Проверьте пароль или задайте новый.',
+  device_queue_full: 'Очередь доставки заполнена. Повторим отправку автоматически.',
   operation_rejected: 'Операция отклонена. Проверьте сеть, срок каталога и доступ устройства. Сообщение не отмечено доставленным.',
   account_requires_linking: 'Аккаунт уже существует. Нужна привязка доверенным устройством; новые ключи не назначены.',
   // D1: честные HOLD-тексты когортной миграции. Сообщение остаётся в outbox

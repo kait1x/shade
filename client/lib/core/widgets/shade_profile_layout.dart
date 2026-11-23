@@ -25,7 +25,7 @@ class ShadeProfileHeader extends StatelessWidget {
       pinned: true,
       leading: leading,
       stretch: true,
-      backgroundColor: ShadeColors.black,
+      backgroundColor: context.shadeColor(ShadeColors.black),
       surfaceTintColor: Colors.transparent,
       expandedHeight:
           270 + (textScaler.scale(27) - 27) + (textScaler.scale(14) - 14),
@@ -69,8 +69,9 @@ class ShadeProfileHeader extends StatelessWidget {
                   Text(handle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                          color: ShadeColors.textSecondary, fontSize: 14)),
+                      style: TextStyle(
+                          color: context.shadeColor(ShadeColors.textSecondary),
+                          fontSize: 14)),
                 ]),
               ),
             ),
@@ -100,9 +101,11 @@ class ShadeAvatarEdit extends StatelessWidget {
               bottom: 0,
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: const Color(0xff111113),
+                  color: context.shadeColor(ShadeColors.surfaceCard),
                   shape: BoxShape.circle,
-                  border: Border.all(color: const Color(0xff29292d), width: 2),
+                  border: Border.all(
+                      color: context.shadeColor(ShadeColors.greyBorder),
+                      width: 2),
                 ),
                 child: const Padding(
                   padding: EdgeInsets.all(6),
@@ -129,18 +132,22 @@ class ShadeProfileAction extends StatelessWidget {
     final active = onTap != null;
     final highlighted = active && primary;
     final foreground = !active
-        ? ShadeColors.textMuted
+        ? context.shadeColor(ShadeColors.textMuted)
         : highlighted
-            ? Colors.black
-            : ShadeColors.textPrimary;
+            ? context.shadeColor(ShadeColors.black)
+            : context.shadeColor(ShadeColors.textPrimary);
     final shape = RoundedRectangleBorder(
       borderRadius: BorderRadius.circular(18),
       side: BorderSide(
-          color: highlighted ? Colors.transparent : ShadeColors.greyBorder),
+          color: highlighted
+              ? Colors.transparent
+              : context.shadeColor(ShadeColors.greyBorder)),
     );
     return ShadeTapScale(
       child: Material(
-        color: highlighted ? ShadeColors.textPrimary : ShadeColors.surfaceCard,
+        color: highlighted
+            ? context.shadeColor(ShadeColors.textPrimary)
+            : context.shadeColor(ShadeColors.surfaceCard),
         shape: shape,
         clipBehavior: Clip.antiAlias,
         child: InkWell(
@@ -179,10 +186,10 @@ class ShadeProfileSection extends StatelessWidget {
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8),
         child: Text(label,
-            style: const TextStyle(
+            style: TextStyle(
                 fontSize: 13,
                 fontWeight: FontWeight.w700,
-                color: ShadeColors.textSecondary)),
+                color: context.shadeColor(ShadeColors.textSecondary))),
       );
 }
 
@@ -193,17 +200,19 @@ class ShadeProfileCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Material(
-        color: ShadeColors.surfaceCard,
+        color: context.shadeColor(ShadeColors.surfaceCard),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: ShadeColors.greyBorder),
+          side: BorderSide(color: context.shadeColor(ShadeColors.greyBorder)),
         ),
         clipBehavior: Clip.antiAlias,
         child: Column(children: [
           for (var i = 0; i < children.length; i++) ...[
             if (i > 0)
-              const Divider(
-                  height: 1, indent: 56, color: ShadeColors.greyBorder),
+              Divider(
+                  height: 1,
+                  indent: 56,
+                  color: context.shadeColor(ShadeColors.greyBorder)),
             children[i],
           ],
         ]),

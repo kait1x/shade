@@ -42,8 +42,10 @@ class V2ConnectScreen extends ConsumerWidget {
           failed
               ? 'Проверьте подключение и попробуйте снова.'
               : 'Войдите через Google. Если вы здесь впервые, выберите никнейм после входа.',
-          style: const TextStyle(
-              color: ShadeColors.textSecondary, fontSize: 12, height: 1.5),
+          style: TextStyle(
+              color: context.shadeColor(ShadeColors.textSecondary),
+              fontSize: 12,
+              height: 1.5),
         ),
         SizedBox(height: compact ? 10 : 16),
         ShadeGoogleButton(
@@ -69,16 +71,18 @@ class V2ConnectScreen extends ConsumerWidget {
       footer: [
         Container(
           decoration: BoxDecoration(
-            color: ShadeColors.surfaceCard,
-            border: Border.all(color: ShadeColors.greyBorder),
+            color: context.shadeColor(ShadeColors.surfaceCard),
+            border:
+                Border.all(color: context.shadeColor(ShadeColors.greyBorder)),
             borderRadius: BorderRadius.circular(16),
           ),
-          child: const ExpansionTile(
+          child: ExpansionTile(
             leading: Icon(Icons.shield_outlined,
-                size: 20, color: ShadeColors.textSecondary),
+                size: 20, color: context.shadeColor(ShadeColors.textSecondary)),
             title: Text('Как используется Google-аккаунт',
-                style:
-                    TextStyle(fontSize: 12, color: ShadeColors.textSecondary)),
+                style: TextStyle(
+                    fontSize: 12,
+                    color: context.shadeColor(ShadeColors.textSecondary))),
             dense: true,
             shape: Border(),
             collapsedShape: Border(),
@@ -88,7 +92,7 @@ class V2ConnectScreen extends ConsumerWidget {
                   'Google подтверждает аккаунт. Ключи шифрования переписки создаются на устройстве.',
                   style: TextStyle(
                       fontSize: 12,
-                      color: ShadeColors.textSecondary,
+                      color: context.shadeColor(ShadeColors.textSecondary),
                       height: 1.6)),
             ],
           ),

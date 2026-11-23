@@ -12,7 +12,9 @@ class ShadeLogo extends StatelessWidget {
       child: SizedBox(
           width: size,
           height: size,
-          child: const CustomPaint(painter: ShadeGhostPainter())));
+          child: CustomPaint(
+              painter: ShadeGhostPainter(
+                  dark: Theme.of(context).brightness == Brightness.light))));
 }
 
 /// The mascot in its original 100-unit coordinate space.
@@ -25,7 +27,8 @@ class ShadeLogo extends StatelessWidget {
 /// is derived from the alpha channel only.
 class ShadeGhostPainter extends CustomPainter {
   final bool silhouette;
-  const ShadeGhostPainter({this.silhouette = false});
+  final bool dark;
+  const ShadeGhostPainter({this.silhouette = false, this.dark = false});
 
   static const _fit = .82;
 
@@ -48,20 +51,21 @@ class ShadeGhostPainter extends CustomPainter {
       ..cubicTo(18, 70, 18, 58, 18, 48)
       ..close();
     if (silhouette) {
-      canvas.drawPath(
-          body, Paint()..color = const Color(0xFFFFFFFF));
+      canvas.drawPath(body, Paint()..color = const Color(0xFFFFFFFF));
     } else {
       canvas.drawPath(
           body,
           Paint()
-            ..shader = const LinearGradient(
+            ..shader = LinearGradient(
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
-                    colors: [Color(0xFFFFFFFF), Color(0xFFE3E3E3)])
+                    colors: dark
+                        ? const [Color(0xFF18202A), Color(0xFF363D46)]
+                        : const [Color(0xFFFFFFFF), Color(0xFFE3E3E3)])
                 .createShader(const Rect.fromLTWH(15, 13, 74, 80)));
     }
     final ink = Paint()
-      ..color = const Color(0xFF181818)
+      ..color = dark ? Colors.white : const Color(0xFF181818)
       ..blendMode = silhouette ? BlendMode.clear : BlendMode.srcOver;
     canvas.drawOval(const Rect.fromLTWH(32, 38, 11, 18), ink);
     canvas.drawOval(const Rect.fromLTWH(57, 36, 11, 18), ink);
@@ -70,7 +74,7 @@ class ShadeGhostPainter extends CustomPainter {
           ..moveTo(44, 64)
           ..quadraticBezierTo(51, 70, 58, 62),
         Paint()
-          ..color = const Color(0xFF181818)
+          ..color = ink.color
           ..blendMode = ink.blendMode
           ..style = PaintingStyle.stroke
           ..strokeCap = StrokeCap.round
@@ -80,5 +84,5 @@ class ShadeGhostPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant ShadeGhostPainter oldDelegate) =>
-      oldDelegate.silhouette != silhouette;
+      oldDelegate.silhouette != silhouette || oldDelegate.dark != dark;
 }

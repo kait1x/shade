@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Monochrome brand palette. Legacy accent names remain for API compatibility.
 class ShadeColors {
@@ -20,6 +22,127 @@ class ShadeColors {
   static const Color textMuted = Color(0xFF8E8E93);
 
   static const Color greenAccent = Color(0xFFBDBDBD);
+}
+
+extension ShadeThemeColors on BuildContext {
+  Color shadeColor(Color dark) =>
+      Theme.of(this).brightness == Brightness.light ? _lightTone(dark) : dark;
+}
+
+Color _lightTone(Color dark) => switch (dark) {
+      ShadeColors.black => Colors.white,
+      ShadeColors.surfaceDark => const Color(0xFFF7F7F8),
+      ShadeColors.surfaceCard => const Color(0xFFF3F4F5),
+      ShadeColors.surfaceElevated => const Color(0xFFE8EAEC),
+      ShadeColors.greyBorder => const Color(0xFFD5D8DD),
+      ShadeColors.textPrimary => const Color(0xFF17191D),
+      ShadeColors.textSecondary => const Color(0xFF4C535D),
+      ShadeColors.textMuted => const Color(0xFF5D626B),
+      ShadeColors.violet => const Color(0xFF252A31),
+      ShadeColors.violetLight => const Color(0xFF303640),
+      ShadeColors.violetDark => const Color(0xFF2C323B),
+      ShadeColors.cyan => const Color(0xFF394451),
+      ShadeColors.cyanLight => const Color(0xFF475363),
+      ShadeColors.greenAccent => const Color(0xFF35664D),
+      const Color(0xFF99999F) => const Color(0xFF5D626B),
+      const Color(0xFF626267) => const Color(0xFF8A94A1),
+      const Color(0xFF171719) => const Color(0xFFF0F2F4),
+      _ => dark,
+    };
+
+final shadeLightTheme = ValueNotifier<bool>(false);
+const _appearanceKey = 'shade.appearance.light';
+
+Future<void> loadShadeAppearance() async {
+  final preferences = await SharedPreferences.getInstance();
+  shadeLightTheme.value = preferences.getBool(_appearanceKey) ?? false;
+}
+
+class ShadeAppearanceTile extends StatelessWidget {
+  const ShadeAppearanceTile({super.key});
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<bool>(
+        valueListenable: shadeLightTheme,
+        builder: (context, light, _) => SwitchListTile(
+          secondary: const Icon(Icons.light_mode_outlined),
+          title: const Text('Светлая тема'),
+          value: light,
+          onChanged: (value) async {
+            shadeLightTheme.value = value;
+            final preferences = await SharedPreferences.getInstance();
+            await preferences.setBool(_appearanceKey, value);
+          },
+        ),
+      );
+}
+
+ThemeData buildShadeLightTheme() {
+  final dark = buildShadeTheme();
+  final scheme = ColorScheme.light(
+    primary: _lightTone(ShadeColors.textPrimary),
+    onPrimary: Colors.white,
+    primaryContainer: _lightTone(ShadeColors.surfaceElevated),
+    onPrimaryContainer: _lightTone(ShadeColors.textPrimary),
+    secondary: _lightTone(ShadeColors.cyan),
+    surface: Colors.white,
+    surfaceContainerHighest: _lightTone(ShadeColors.surfaceElevated),
+    onSurface: _lightTone(ShadeColors.textPrimary),
+    onSurfaceVariant: _lightTone(ShadeColors.textSecondary),
+    outline: _lightTone(ShadeColors.greyBorder),
+    outlineVariant: _lightTone(ShadeColors.greyBorder),
+    error: const Color(0xFFBA2424),
+  );
+  final base = ThemeData(
+    colorScheme: scheme,
+    useMaterial3: true,
+    fontFamily: 'Roboto',
+    scaffoldBackgroundColor: scheme.surface,
+  );
+  final card = _lightTone(ShadeColors.surfaceCard);
+  final shape = RoundedRectangleBorder(
+    borderRadius: BorderRadius.circular(16),
+    side: BorderSide(color: scheme.outline),
+  );
+  OutlineInputBorder border(Color color) => OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: color),
+      );
+  return base.copyWith(
+    appBarTheme: dark.appBarTheme.copyWith(
+      backgroundColor: scheme.surface,
+      foregroundColor: scheme.onSurface,
+      systemOverlayStyle: SystemUiOverlayStyle.dark,
+      titleTextStyle: dark.appBarTheme.titleTextStyle?.copyWith(
+        color: scheme.onSurface,
+      ),
+      iconTheme: IconThemeData(color: scheme.onSurface),
+    ),
+    cardTheme: dark.cardTheme.copyWith(color: card, shape: shape),
+    dialogTheme: dark.dialogTheme.copyWith(
+      backgroundColor: scheme.surface,
+      shape: shape,
+    ),
+    dividerTheme: dark.dividerTheme.copyWith(color: scheme.outline),
+    inputDecorationTheme: dark.inputDecorationTheme.copyWith(
+      fillColor: card,
+      hintStyle: TextStyle(color: scheme.onSurfaceVariant),
+      border: border(scheme.outline),
+      enabledBorder: border(scheme.outline),
+      focusedBorder: border(scheme.primary),
+    ),
+    bottomSheetTheme: dark.bottomSheetTheme.copyWith(
+      backgroundColor: scheme.surface,
+      dragHandleColor: scheme.outline,
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        backgroundColor: scheme.primary,
+        foregroundColor: scheme.onPrimary,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      ),
+    ),
+  );
 }
 
 ThemeData buildShadeTheme() {

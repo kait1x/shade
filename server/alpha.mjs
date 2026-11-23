@@ -670,6 +670,9 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       try {
         result = await registry.send(body, auth);
       } catch (e) {
+        if (e?.message === 'Device queue full') {
+          return res.status(409).json({ error: 'device_queue_full' });
+        }
         // Honest limitation, not silent isolation: the peer is still on v1.
         // The client keeps the ciphertext in its signed outbox and shows an
         // explicit notice; delivery resumes after the peer migrates.

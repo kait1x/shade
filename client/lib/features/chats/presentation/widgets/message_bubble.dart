@@ -98,7 +98,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                       decoration: BoxDecoration(
                         color: isMine
                             ? const Color(0xFFE9E9ED)
-                            : const Color(0xFF171719),
+                            : context.shadeColor(const Color(0xFF171719)),
                         borderRadius: BorderRadius.only(
                             topLeft: Radius.circular(
                                 !isMine && groupedWithPrevious ? 8 : 19),
@@ -108,7 +108,9 @@ class _MessageBubbleState extends State<MessageBubble> {
                             bottomRight: Radius.circular(isMine ? tail : 19)),
                         border: isMine
                             ? null
-                            : Border.all(color: const Color(0xFF29292D)),
+                            : Border.all(
+                                color:
+                                    context.shadeColor(ShadeColors.greyBorder)),
                       ),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
@@ -120,15 +122,17 @@ class _MessageBubbleState extends State<MessageBubble> {
                               margin: const EdgeInsets.only(bottom: 8),
                               padding: const EdgeInsets.all(8),
                               decoration: BoxDecoration(
-                                color:
-                                    (isMine ? Colors.black : ShadeColors.violet)
-                                        .withValues(alpha: 0.1),
+                                color: (isMine
+                                        ? Colors.black
+                                        : context
+                                            .shadeColor(ShadeColors.violet))
+                                    .withValues(alpha: 0.1),
                                 borderRadius: BorderRadius.circular(8),
                                 border: Border(
                                   left: BorderSide(
                                     color: isMine
                                         ? Colors.black.withValues(alpha: 0.5)
-                                        : ShadeColors.cyan,
+                                        : context.shadeColor(ShadeColors.cyan),
                                     width: 2,
                                   ),
                                 ),
@@ -141,7 +145,8 @@ class _MessageBubbleState extends State<MessageBubble> {
                                     style: TextStyle(
                                       color: isMine
                                           ? Colors.black.withValues(alpha: 0.7)
-                                          : ShadeColors.cyan,
+                                          : context
+                                              .shadeColor(ShadeColors.cyan),
                                       fontSize: 12,
                                       fontWeight: FontWeight.w600,
                                     ),
@@ -153,7 +158,8 @@ class _MessageBubbleState extends State<MessageBubble> {
                                     style: TextStyle(
                                       color: (isMine
                                               ? Colors.black
-                                              : ShadeColors.textSecondary)
+                                              : context.shadeColor(
+                                                  ShadeColors.textSecondary))
                                           .withValues(alpha: 0.7),
                                       fontSize: 13,
                                     ),
@@ -214,8 +220,9 @@ class _MessageBubbleState extends State<MessageBubble> {
                                   : 'Не удалось расшифровать сообщение',
                               style: TextStyle(
                                 color: isMine
-                                    ? ShadeColors.black
-                                    : ShadeColors.textPrimary,
+                                    ? Colors.black
+                                    : context
+                                        .shadeColor(ShadeColors.textPrimary),
                                 fontSize: 16,
                                 height: 1.38,
                               ),
@@ -233,7 +240,8 @@ class _MessageBubbleState extends State<MessageBubble> {
                                       fontSize: 11,
                                       color: isMine
                                           ? Colors.black54
-                                          : ShadeColors.textSecondary,
+                                          : context.shadeColor(
+                                              ShadeColors.textSecondary),
                                     ),
                                   ),
                                   if (isMine) ...[
@@ -381,9 +389,9 @@ class _FullScreenImage extends StatelessWidget {
 
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
+          SnackBar(
             content: Text('Фото сохранено'),
-            backgroundColor: ShadeColors.greenAccent,
+            backgroundColor: context.shadeColor(ShadeColors.greenAccent),
           ),
         );
       }

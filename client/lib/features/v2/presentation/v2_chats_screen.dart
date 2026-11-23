@@ -78,7 +78,7 @@ class _V2ChatsScreenState extends ConsumerState<V2ChatsScreen> {
     final bottomInset = MediaQuery.paddingOf(context).bottom;
 
     return Scaffold(
-      backgroundColor: HomeStyle.background,
+      backgroundColor: context.shadeColor(ShadeColors.black),
       body: SafeArea(
         bottom: false,
         child: Center(
@@ -149,14 +149,15 @@ class _V2ChatsScreenState extends ConsumerState<V2ChatsScreen> {
   Widget _content(V2ChatListState state, V2ChatListNotifier notifier,
       String account, String? syncError) {
     if (state.loading && state.chats.isEmpty) {
-      return const SliverToBoxAdapter(
+      return SliverToBoxAdapter(
           child: Padding(
         padding: EdgeInsets.all(24),
         child: Column(children: [
           SizedBox.square(dimension: 22, child: ShadeLoadingIndicator()),
           SizedBox(height: 12),
           Text('Открываем чаты',
-              style: TextStyle(color: ShadeColors.textSecondary)),
+              style: TextStyle(
+                  color: context.shadeColor(ShadeColors.textSecondary))),
         ]),
       ));
     }
@@ -258,11 +259,12 @@ class _V2ChatsScreenState extends ConsumerState<V2ChatsScreen> {
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
+                        Text(
                             'Введите ник друга. Если вы уже обменялись кодами безопасности, здесь можно сразу сверить ключ.',
                             style: TextStyle(
                                 fontSize: 13,
-                                color: ShadeColors.textSecondary,
+                                color: context
+                                    .shadeColor(ShadeColors.textSecondary),
                                 height: 1.5)),
                         const SizedBox(height: 16),
                         TextField(

@@ -230,6 +230,33 @@ for (const replacePendingRecovery of [false, true]) {
   });
 }
 
+test('a full device queue backs off that peer and keeps other sends working', async t => {
+  globalThis.window = new EventTarget();
+  t.after(() => { delete globalThis.window; });
+  const { AlphaClient } = await import('../../client/web/alpha-client.mjs');
+  const client = new AlphaClient();
+  const one = { from: 'alice', to: 'bob', deviceId: 'primary', id: 'one' };
+  const two = { ...one, id: 'two' };
+  const three = { ...one, id: 'three', to: 'carol' };
+  client.state = { outbox: [one, two, three], messages: [] };
+  client.save = async next => { client.state = next; };
+  const attempted = [];
+  let full = true;
+  client.operation = async (_, message) => {
+    attempted.push(message.id);
+    if (full && message.to === 'bob') throw Error('device_queue_full');
+  };
+  await assert.rejects(client.flush(), /device_queue_full/);
+  await client.flush();
+  assert.deepEqual(attempted, ['one', 'three']);
+  assert.deepEqual(client.state.outbox, [one, two]);
+  full = false;
+  client.queueRetryAt.set('bob', 0);
+  await client.flush();
+  assert.deepEqual(attempted, ['one', 'three', 'one', 'two']);
+  assert.deepEqual(client.state.outbox, []);
+});
+
 test('web status refresh retains confirmed reads after reopening the vault', async t => {
   globalThis.window = new EventTarget();
   t.after(() => { delete globalThis.window; });

@@ -23,6 +23,7 @@ class ShadeTabDock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final shape = BorderRadius.circular(26);
+    final light = Theme.of(context).brightness == Brightness.light;
     final duration = ShadeMotion.duration(context, 220);
     return SafeArea(
       top: false,
@@ -37,7 +38,7 @@ class ShadeTabDock extends StatelessWidget {
             // The controls sit above black safe space. The tint and rim
             // supply depth without an offscreen blur pass while scrolling.
             child: DecoratedBox(
-              decoration: ShadeGlass.graphite(shape),
+              decoration: ShadeGlass.graphite(shape, light: light),
               child: Padding(
                 padding: const EdgeInsets.all(4),
                 child: Stack(children: [
@@ -57,10 +58,14 @@ class ShadeTabDock extends StatelessWidget {
                           padding: const EdgeInsets.symmetric(horizontal: 2),
                           child: DecoratedBox(
                             decoration: BoxDecoration(
-                              color: const Color(0x23FFFFFF),
+                              color: light
+                                  ? const Color(0xFFE0E5EA)
+                                  : const Color(0x23FFFFFF),
                               borderRadius: BorderRadius.circular(22),
-                              border:
-                                  Border.all(color: const Color(0x18FFFFFF)),
+                              border: Border.all(
+                                  color: light
+                                      ? const Color(0xFFD2D8DE)
+                                      : const Color(0x18FFFFFF)),
                             ),
                           ),
                         ),
@@ -86,8 +91,9 @@ class ShadeTabDock extends StatelessWidget {
   Widget _tile(BuildContext context, int index) {
     final (icon, label) = _destinations[index];
     final selected = selectedIndex == index;
-    final color =
-        selected ? ShadeColors.textPrimary : ShadeColors.textSecondary;
+    final color = selected
+        ? context.shadeColor(ShadeColors.textPrimary)
+        : context.shadeColor(ShadeColors.textSecondary);
     final radius = BorderRadius.circular(20);
     final duration = ShadeMotion.duration(context, 180);
     return Padding(

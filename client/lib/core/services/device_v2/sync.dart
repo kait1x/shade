@@ -204,6 +204,7 @@ String _errorText(Object error) {
       'login_required' => 'Сессия истекла — подключите устройство заново',
       'peer_upgrade_required' => 'Собеседник ещё не перешёл на v2',
       'rate_limited' => 'Слишком много запросов — повторим позже',
+      'device_queue_full' => 'Очередь доставки заполнена — повторим позже',
       'operation_rejected' => 'Сервер отклонил операцию',
       _ => 'Сервер недоступен (${error.code})',
     };
@@ -315,10 +316,12 @@ class _V2SyncService implements V2SyncService {
     }
 
     await step(() => _repository.renewLease());
-    await step(() => _repository.flushOutbox());
+    final inboxFirst = _repository.hasOutboxBackoff;
+    if (!inboxFirst) await step(() => _repository.flushOutbox());
     await step(() async {
       await _repository.syncInbox();
     });
+    if (inboxFirst) await step(() => _repository.flushOutbox());
     await step(() async {
       await _repository.syncLegacyInbox();
     });

@@ -121,6 +121,7 @@ export class AlphaClient extends EventTarget {
     // Состояние появляется позже — через prepare()/load(), конструктор только
     // готовит обработчики жизненного цикла страницы и сети.
     super(); this.tail = Promise.resolve(); this.connected = false; this.stopped = false;
+    this.queueRetryAt = new Map();
     this.foreground = () => { if (!document.hidden) this.sync().catch(() => {}); };
     this.online = () => { this.socket?.connect(); this.sync().catch(() => {}); };
     this.offline = () => { this.socket?.disconnect(); this.connected = false; this.changed(); };
@@ -895,6 +896,8 @@ export class AlphaClient extends EventTarget {
   async flush() {
     let rejection;
     for (const message of [...this.state.outbox]) {
+      if ((this.queueRetryAt.get(message.to) ?? 0) > Date.now()) continue;
+      this.queueRetryAt.delete(message.to);
       try {
         await this.operation('send', message);
         const next = structuredClone(this.state);
@@ -915,6 +918,11 @@ export class AlphaClient extends EventTarget {
         }
         await this.save(next);
       } catch (error) {
+        if (error.message === 'device_queue_full') {
+          this.queueRetryAt.set(message.to, Date.now() + 30000);
+          rejection = error;
+          continue;
+        }
         if (error.status === 400 || error.status === 409) {
           const next = structuredClone(this.state);
           const record = next.messages.find(m => m.ref === ref(message))
@@ -936,9 +944,13 @@ export class AlphaClient extends EventTarget {
       if (this.stopped || !this.session || !this.state.registered || !navigator.onLine) return;
       try {
         await this.refreshOwn();
-        // Incoming fetch must continue even when an old outbox entry is blocked.
+        // Free incoming queue space before retrying throttled peers, while
+        // keeping normal sends and receipts in the same synchronization cycle.
+        const inboxFirst = [...this.queueRetryAt.values()].some(at => at > Date.now());
         let sendError;
-        try { await this.flush(); } catch (error) { sendError = error; }
+        if (!inboxFirst) {
+          try { await this.flush(); } catch (error) { sendError = error; }
+        }
         const bundles = await this.operation('fetch');
         let next = bundles.length ? structuredClone(this.state) : this.state;
         this.unverified = [];
@@ -1020,6 +1032,9 @@ export class AlphaClient extends EventTarget {
           await this.operation('ack', batch);
           const committed = structuredClone(this.state);
           committed.pendingAck = committed.pendingAck.filter(ref => !batch.includes(ref)); await this.save(committed);
+        }
+        if (inboxFirst) {
+          try { await this.flush(); } catch (error) { sendError = error; }
         }
         await this.refreshDelivery();
         if (sendError) throw sendError;

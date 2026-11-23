@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 
 import 'package:shade/core/theme/shade_theme.dart';
-import 'package:shade/features/home/presentation/widgets/home_style.dart';
 import 'shade_glass.dart';
 import 'shade_logo.dart';
 import 'shade_motion.dart';
@@ -24,7 +23,7 @@ class ShadeChatsAppBar extends StatelessWidget {
   Widget build(BuildContext context) => SliverAppBar(
         pinned: true,
         primary: false,
-        backgroundColor: HomeStyle.background,
+        backgroundColor: context.shadeColor(ShadeColors.black),
         surfaceTintColor: Colors.transparent,
         toolbarHeight: 52,
         titleSpacing: 18,
@@ -78,7 +77,7 @@ class ShadeChatsHeader extends StatelessWidget {
         ? const SizedBox(width: double.infinity)
         : Padding(
             padding: const EdgeInsets.only(top: 12),
-            child: _searchField(duration),
+            child: _searchField(context, duration),
           );
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 8, 18, 6),
@@ -107,7 +106,7 @@ class ShadeChatsHeader extends StatelessWidget {
     );
   }
 
-  Widget _searchField(Duration duration) {
+  Widget _searchField(BuildContext context, Duration duration) {
     final radius = BorderRadius.circular(17);
     return ListenableBuilder(
       listenable: focusNode,
@@ -116,6 +115,7 @@ class ShadeChatsHeader extends StatelessWidget {
         curve: Curves.easeOutCubic,
         decoration: ShadeGlass.graphite(
           radius,
+          light: Theme.of(context).brightness == Brightness.light,
           border: focusNode.hasFocus ? ShadeGlass.focusedRim : ShadeGlass.rim,
         ),
         child: child,
@@ -126,7 +126,8 @@ class ShadeChatsHeader extends StatelessWidget {
         focusNode: focusNode,
         onChanged: onQueryChanged,
         textInputAction: TextInputAction.search,
-        style: const TextStyle(fontSize: 14, color: ShadeColors.textPrimary),
+        style: TextStyle(
+            fontSize: 14, color: context.shadeColor(ShadeColors.textPrimary)),
         decoration: InputDecoration(
           hintText: 'Поиск в переписках',
           hintStyle: const TextStyle(color: Color(0xFF99999F)),
@@ -186,10 +187,14 @@ class ShadeChatsHeader extends StatelessWidget {
                   curve: Curves.easeOutCubic,
                   decoration: selected
                       ? BoxDecoration(
-                          color: HomeStyle.ink,
+                          color: context.shadeColor(ShadeColors.textPrimary),
                           borderRadius: radius,
-                          border: Border.all(color: HomeStyle.ink))
-                      : ShadeGlass.graphite(radius),
+                          border: Border.all(
+                              color:
+                                  context.shadeColor(ShadeColors.textPrimary)))
+                      : ShadeGlass.graphite(radius,
+                          light:
+                              Theme.of(context).brightness == Brightness.light),
                   padding:
                       const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
                   child: AnimatedDefaultTextStyle(
@@ -198,8 +203,9 @@ class ShadeChatsHeader extends StatelessWidget {
                     style: TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w700,
-                        color:
-                            selected ? Colors.black : ShadeColors.textPrimary),
+                        color: selected
+                            ? context.shadeColor(ShadeColors.black)
+                            : context.shadeColor(ShadeColors.textPrimary)),
                     child: Text(label),
                   ),
                 ),
@@ -252,8 +258,8 @@ class ShadeComposeButton extends StatelessWidget {
             focusElevation: 1,
             hoverElevation: 1,
             highlightElevation: 1,
-            backgroundColor: HomeStyle.ink,
-            foregroundColor: Colors.black,
+            backgroundColor: context.shadeColor(ShadeColors.textPrimary),
+            foregroundColor: context.shadeColor(ShadeColors.black),
             shape: const StadiumBorder(),
             onPressed: onPressed,
             child: ClipRect(
@@ -314,9 +320,11 @@ class ShadeChatRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final unread = unreadCount > 0;
-    final statusIcon = _statusIcon(status);
+    final statusIcon = _statusIcon(context, status);
     return Material(
-      color: selected ? ShadeColors.surfaceCard : Colors.transparent,
+      color: selected
+          ? context.shadeColor(ShadeColors.surfaceCard)
+          : Colors.transparent,
       child: InkWell(
         onTap: onOpen,
         child: ConstrainedBox(
@@ -337,7 +345,8 @@ class ShadeChatRow extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                                 fontSize: 16,
-                                color: ShadeColors.textPrimary,
+                                color:
+                                    context.shadeColor(ShadeColors.textPrimary),
                                 fontWeight: unread
                                     ? FontWeight.w700
                                     : FontWeight.w600))),
@@ -349,8 +358,8 @@ class ShadeChatRow extends StatelessWidget {
                         style: TextStyle(
                           fontSize: 12,
                           color: unread
-                              ? ShadeColors.textPrimary
-                              : ShadeColors.textMuted,
+                              ? context.shadeColor(ShadeColors.textPrimary)
+                              : context.shadeColor(ShadeColors.textMuted),
                           fontFeatures: const [FontFeature.tabularFigures()],
                         ),
                       ),
@@ -363,10 +372,11 @@ class ShadeChatRow extends StatelessWidget {
                       const SizedBox(width: 5)
                     ],
                     if (!confirmed) ...[
-                      const Tooltip(
+                      Tooltip(
                         message: 'Код безопасности пока не сверен',
                         child: Icon(Icons.gpp_maybe_outlined,
-                            size: 14, color: ShadeColors.textMuted),
+                            size: 14,
+                            color: context.shadeColor(ShadeColors.textMuted)),
                       ),
                       const SizedBox(width: 5),
                     ],
@@ -377,14 +387,17 @@ class ShadeChatRow extends StatelessWidget {
                             style: TextStyle(
                                 fontSize: 13,
                                 color: unread
-                                    ? ShadeColors.textPrimary
-                                    : ShadeColors.textSecondary))),
+                                    ? context
+                                        .shadeColor(ShadeColors.textPrimary)
+                                    : context.shadeColor(
+                                        ShadeColors.textSecondary)))),
                     if (unread)
                       Padding(
                         padding: const EdgeInsets.only(left: 8),
                         child: Badge(
-                          backgroundColor: ShadeColors.textPrimary,
-                          textColor: Colors.black,
+                          backgroundColor:
+                              context.shadeColor(ShadeColors.textPrimary),
+                          textColor: context.shadeColor(ShadeColors.black),
                           label: Text(unreadCount > 99 ? '99+' : '$unreadCount',
                               semanticsLabel: '$unreadCount непрочитанных'),
                         ),
@@ -399,7 +412,7 @@ class ShadeChatRow extends StatelessWidget {
     );
   }
 
-  static Widget? _statusIcon(String? status) {
+  static Widget? _statusIcon(BuildContext context, String? status) {
     final (icon, label) = switch (status) {
       'queued' => (Icons.schedule_rounded, 'В очереди'),
       'blocked' => (Icons.error_outline_rounded, 'Отправка заблокирована'),
@@ -415,8 +428,8 @@ class ShadeChatRow extends StatelessWidget {
         child: Icon(icon,
             size: 14,
             color: status == 'read'
-                ? ShadeColors.textPrimary
-                : ShadeColors.textMuted));
+                ? context.shadeColor(ShadeColors.textPrimary)
+                : context.shadeColor(ShadeColors.textMuted)));
   }
 
   static String _formatTime(BuildContext context, int ms) {

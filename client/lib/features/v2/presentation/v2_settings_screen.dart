@@ -27,6 +27,8 @@ class V2SettingsScreen extends ConsumerWidget {
               Card(
                 clipBehavior: Clip.antiAlias,
                 child: Column(children: [
+                  const ShadeAppearanceTile(),
+                  const Divider(height: 1, indent: 56),
                   ListTile(
                     leading: const Icon(Icons.devices_outlined),
                     title: const Text('Устройства'),
@@ -50,8 +52,7 @@ class V2SettingsScreen extends ConsumerWidget {
                     ),
                   ],
                   if (push != null) ...[
-                    const Divider(
-                        height: 1, indent: 56, color: ShadeColors.greyBorder),
+                    const Divider(height: 1, indent: 56),
                     SwitchListTile(
                       secondary: const Icon(Icons.notifications_outlined),
                       title: const Text('Уведомления о сообщениях'),

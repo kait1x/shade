@@ -22,19 +22,25 @@ class ShadeAlphaApp extends StatelessWidget {
   const ShadeAlphaApp({super.key, required this.controller});
   final AlphaController controller;
   @override
-  Widget build(BuildContext context) => MaterialApp(
-      title: 'Shade',
-      debugShowCheckedModeBanner: false,
-      theme: buildShadeTheme().copyWith(
-          textTheme: buildShadeTheme()
-              .textTheme
-              .apply(fontFamilyFallback: const ['ShadeEmoji'])),
-      home: ListenableBuilder(
-          listenable: controller,
-          // Режим восстановления: отдельный экран до появления device-сессии.
-          builder: (_, __) => controller.recovery != null
-              ? RecoveryScreen(controller: controller)
-              : _Shell(controller: controller)));
+  Widget build(BuildContext context) => ValueListenableBuilder<bool>(
+      valueListenable: shadeLightTheme,
+      builder: (_, light, __) {
+        final theme = light ? buildShadeLightTheme() : buildShadeTheme();
+        return MaterialApp(
+          title: 'Shade',
+          debugShowCheckedModeBanner: false,
+          theme: theme.copyWith(
+            textTheme:
+                theme.textTheme.apply(fontFamilyFallback: const ['ShadeEmoji']),
+          ),
+          home: ListenableBuilder(
+              listenable: controller,
+              // Режим восстановления: отдельный экран до появления device-сессии.
+              builder: (_, __) => controller.recovery != null
+                  ? RecoveryScreen(controller: controller)
+                  : _Shell(controller: controller)),
+        );
+      });
 }
 
 class _Shell extends StatefulWidget {
@@ -496,7 +502,7 @@ class _ConversationState extends State<_Conversation>
       context: context,
       sheetAnimationStyle: ShadeMotion.sheet(context),
       showDragHandle: true,
-      backgroundColor: ShadeColors.surfaceCard,
+      backgroundColor: context.shadeColor(ShadeColors.surfaceCard),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -506,9 +512,11 @@ class _ConversationState extends State<_Conversation>
         mainAxisSize: MainAxisSize.min,
         children: [
           ListTile(
-            leading: const Icon(Icons.reply_rounded, color: ShadeColors.cyan),
-            title: const Text('Ответить',
-                style: TextStyle(color: ShadeColors.textPrimary)),
+            leading: Icon(Icons.reply_rounded,
+                color: context.shadeColor(ShadeColors.cyan)),
+            title: Text('Ответить',
+                style: TextStyle(
+                    color: context.shadeColor(ShadeColors.textPrimary))),
             onTap: () {
               Navigator.pop(ctx);
               setState(() => replyTo = {
@@ -519,10 +527,11 @@ class _ConversationState extends State<_Conversation>
             },
           ),
           ListTile(
-            leading: const Icon(Icons.delete_outline_rounded,
-                color: ShadeColors.textSecondary),
-            title: const Text('Удалить у себя',
-                style: TextStyle(color: ShadeColors.textPrimary)),
+            leading: Icon(Icons.delete_outline_rounded,
+                color: context.shadeColor(ShadeColors.textSecondary)),
+            title: Text('Удалить у себя',
+                style: TextStyle(
+                    color: context.shadeColor(ShadeColors.textPrimary))),
             onTap: () {
               Navigator.pop(ctx);
               _deleteMessage(m['ref'] as String);
@@ -533,8 +542,8 @@ class _ConversationState extends State<_Conversation>
               m['status'] != 'queued' &&
               m['status'] != 'blocked')
             ListTile(
-                leading:
-                    const Icon(Icons.delete_forever_rounded, color: Color(0xFFEF4444)),
+                leading: const Icon(Icons.delete_forever_rounded,
+                    color: Color(0xFFEF4444)),
                 title: const Text('Удалить у всех',
                     style: TextStyle(color: Color(0xFFEF4444))),
                 onTap: () {
@@ -552,8 +561,7 @@ class _ConversationState extends State<_Conversation>
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content: Text(
-                'Не удалось отозвать. Проверьте сеть и повторите.')));
+            content: Text('Не удалось отозвать. Проверьте сеть и повторите.')));
       }
     }
   }
@@ -564,8 +572,7 @@ class _ConversationState extends State<_Conversation>
     } catch (_) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content:
-                Text('Не удалось удалить. Проверьте сеть и повторите.')));
+            content: Text('Не удалось удалить. Проверьте сеть и повторите.')));
       }
     }
   }
@@ -579,9 +586,7 @@ class _ConversationState extends State<_Conversation>
       WidgetsBinding.instance.addPostFrameCallback((_) {
         // Retry on the raw extent: the atBottom flag may transiently lag while
         // lazily built items keep growing maxScrollExtent.
-        if (mounted &&
-            scroll.hasClients &&
-            scroll.position.pixels > 1) {
+        if (mounted && scroll.hasClients && scroll.position.pixels > 1) {
           _jumpToBottom(attempts - 1);
         }
       });
@@ -690,10 +695,11 @@ class _ConversationState extends State<_Conversation>
     return Column(children: [
       Container(
           padding: const EdgeInsets.fromLTRB(8, 10, 12, 10),
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
               border: Border(
-                  bottom:
-                      BorderSide(color: ShadeColors.greyBorder, width: .5))),
+                  bottom: BorderSide(
+                      color: context.shadeColor(ShadeColors.greyBorder),
+                      width: .5))),
           child: Row(children: [
             IconButton(
                 tooltip: 'Назад к чатам',
@@ -718,8 +724,7 @@ class _ConversationState extends State<_Conversation>
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
                                 style: const TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w700)),
+                                    fontSize: 16, fontWeight: FontWeight.w700)),
                             const SizedBox(height: 3),
                             Text(_statusLine(c, peer),
                                 maxLines: 1,
@@ -727,9 +732,11 @@ class _ConversationState extends State<_Conversation>
                                 style: TextStyle(
                                     fontSize: 11,
                                     color: (c.typing[peer] as num? ?? 0) >
-                                            DateTime.now().millisecondsSinceEpoch
-                                        ? ShadeColors.cyan
-                                        : ShadeColors.textMuted)),
+                                            DateTime.now()
+                                                .millisecondsSinceEpoch
+                                        ? context.shadeColor(ShadeColors.cyan)
+                                        : context.shadeColor(
+                                            ShadeColors.textMuted))),
                           ])),
                     ]))),
             IconButton(
@@ -746,15 +753,18 @@ class _ConversationState extends State<_Conversation>
         Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-            color: ShadeColors.surfaceCard,
+            color: context.shadeColor(ShadeColors.surfaceCard),
             child: Row(children: [
-              const Icon(Icons.shield_outlined,
-                  size: 16, color: ShadeColors.textSecondary),
+              Icon(Icons.shield_outlined,
+                  size: 16,
+                  color: context.shadeColor(ShadeColors.textSecondary)),
               const SizedBox(width: 8),
-              const Expanded(
+              Expanded(
                   child: Text('Ключ не сверен',
                       style: TextStyle(
-                          fontSize: 12, color: ShadeColors.textSecondary))),
+                          fontSize: 12,
+                          color:
+                              context.shadeColor(ShadeColors.textSecondary)))),
               TextButton(
                   onPressed: () => c.act('verify', {'account': peer}),
                   child: const Text('Сверить',
@@ -768,131 +778,148 @@ class _ConversationState extends State<_Conversation>
                   width: double.infinity,
                   padding:
                       const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                  color: ShadeColors.surfaceCard,
+                  color: context.shadeColor(ShadeColors.surfaceCard),
                   child: Text(c.connection,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       textAlign: TextAlign.center,
-                      style: const TextStyle(
-                          fontSize: 12, color: ShadeColors.textSecondary)))
+                      style: TextStyle(
+                          fontSize: 12,
+                          color:
+                              context.shadeColor(ShadeColors.textSecondary))))
               : const SizedBox(width: double.infinity)),
       Expanded(
           child: CustomPaint(
-              painter: const _ConversationPatternPainter(),
+              painter: _ConversationPatternPainter(
+                  light: Theme.of(context).brightness == Brightness.light),
               child: Align(
-              alignment: Alignment.topCenter,
-              child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 840),
-                  child: items.isEmpty
-                      ? ShadeEmptyState(
-                          icon: Icons.lock_outline_rounded,
-                          title: c.pinned(peer)
-                              ? 'Только между вами'
-                              : 'Сверьте отпечаток ключа',
-                          description: c.pinned(peer)
-                              ? 'Сообщения шифруются на устройстве.\nНачните с простого «Привет».'
-                              : 'Сравните отпечатки через доверенный канал,\nчтобы начать безопасную переписку.')
-                      : Stack(children: [
-                          ListView.builder(
-                          controller: scroll,
-                          reverse: true,
-                          padding: const EdgeInsets.only(top: 8, bottom: 16),
-                          itemCount: items.length,
-                          keyboardDismissBehavior:
-                              ScrollViewKeyboardDismissBehavior.onDrag,
-                          itemBuilder: (context, i) {
-                            // Reversed index: 0 is the newest message; the
-                            // original (chronological) index is the mirror.
-                            final m = items[items.length - 1 - i],
-                                date = DateTime.fromMillisecondsSinceEpoch(
-                                    (m['createdAt'] as num).toInt());
-                            final reply = m['reply'] as Map?;
-                            final media = m['media'] as Map?;
-                            final mediaBytes = media == null
-                                ? null
-                                : _mediaBytes(m['ref'] as String, media);
-                            bool grouped(int originalIndex) =>
-                                originalIndex >= 0 &&
-                                originalIndex < items.length &&
-                                items[originalIndex]['from'] == m['from'] &&
-                                ((items[originalIndex]['createdAt'] as num) -
-                                            (m['createdAt'] as num))
-                                        .abs() <
-                                    180000 &&
-                                DateUtils.isSameDay(
-                                    date,
-                                    DateTime.fromMillisecondsSinceEpoch(
-                                        (items[originalIndex]['createdAt'] as num)
-                                            .toInt()));
-                            final showDate = i == items.length - 1 ||
-                                !DateUtils.isSameDay(
-                                    date,
-                                    DateTime.fromMillisecondsSinceEpoch(
-                                        (items[items.length - 2 - i]['createdAt'] as num)
-                                            .toInt()));
-                            return Column(key: ValueKey(m['ref']), children: [
-                              if (showDate) ShadeDateSeparator(date: date),
-                              ShadeMessageArrival(
-                                  animate: added.contains(m['ref']),
-                                  child: MessageBubble(
-                                      text: media != null ? '' : m['text'] as String,
-                                      timestamp: date,
-                                      isMine: m['from'] == c.account,
-                                      isEncrypted: true,
-                                      isImage: media != null,
-                                      imageData: mediaBytes,
-                                      status: AlphaController.status(m),
-                                      deliveryLabel:
-                                          AlphaController.delivery(m),
-                                      groupedWithPrevious:
-                                          grouped(items.length - 2 - i),
-                                      groupedWithNext:
-                                          grouped(items.length - i),
-                                      onLongPress: () => _showMessageMenu(m),
-                                      replyText: reply?['text'] as String?,
-                                      replySender: reply == null
-                                          ? null
-                                          : reply['from'] == c.account
-                                              ? 'Вы'
-                                              : peer)),
-                            ]);
-                          }),
-                          // Live scroll truth for the jump button: lazy list
-                          // extents grow without new notifications, so the
-                          // flag fields alone cannot be trusted here. In a
-                          // reversed list «away» means offset > 180.
-                          ListenableBuilder(
-                              listenable: scroll,
-                              builder: (context, _) => Align(
-                                  alignment: Alignment.bottomRight,
-                                  child: restored &&
-                                          scroll.hasClients &&
-                                          scroll.position.pixels > 180
-                                      ? Padding(
-                                          padding: const EdgeInsets.only(
-                                              right: 16, bottom: 12),
-                                          child: FloatingActionButton.small(
-                                              key: const Key(
-                                                  'jump-to-latest'),
-                                              heroTag: 'alpha-latest',
-                                              tooltip: unseen > 0
-                                                  ? 'Новых сообщений: $unseen. К последним'
-                                                  : 'К последним сообщениям',
-                                              backgroundColor: const Color(
-                                                  0xFF29292D),
-                                              onPressed: _toLatest,
-                                              child: unseen > 0
-                                                  ? Text('$unseen',
-                                                      style:
-                                                          const TextStyle(
-                                                              fontWeight:
-                                                                  FontWeight
-                                                                      .w700))
-                                                  : const Icon(Icons
-                                                      .arrow_downward_rounded,
-                                                      size: 21)))
-                                      : null)),
-                        ]))))),
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 840),
+                      child: items.isEmpty
+                          ? ShadeEmptyState(
+                              icon: Icons.lock_outline_rounded,
+                              title: c.pinned(peer)
+                                  ? 'Только между вами'
+                                  : 'Сверьте отпечаток ключа',
+                              description: c.pinned(peer)
+                                  ? 'Сообщения шифруются на устройстве.\nНачните с простого «Привет».'
+                                  : 'Сравните отпечатки через доверенный канал,\nчтобы начать безопасную переписку.')
+                          : Stack(children: [
+                              ListView.builder(
+                                  controller: scroll,
+                                  reverse: true,
+                                  padding:
+                                      const EdgeInsets.only(top: 8, bottom: 16),
+                                  itemCount: items.length,
+                                  keyboardDismissBehavior:
+                                      ScrollViewKeyboardDismissBehavior.onDrag,
+                                  itemBuilder: (context, i) {
+                                    // Reversed index: 0 is the newest message; the
+                                    // original (chronological) index is the mirror.
+                                    final m = items[items.length - 1 - i],
+                                        date =
+                                            DateTime.fromMillisecondsSinceEpoch(
+                                                (m['createdAt'] as num)
+                                                    .toInt());
+                                    final reply = m['reply'] as Map?;
+                                    final media = m['media'] as Map?;
+                                    final mediaBytes = media == null
+                                        ? null
+                                        : _mediaBytes(
+                                            m['ref'] as String, media);
+                                    bool grouped(int originalIndex) =>
+                                        originalIndex >= 0 &&
+                                        originalIndex < items.length &&
+                                        items[originalIndex]['from'] ==
+                                            m['from'] &&
+                                        ((items[originalIndex]['createdAt']
+                                                        as num) -
+                                                    (m['createdAt'] as num))
+                                                .abs() <
+                                            180000 &&
+                                        DateUtils.isSameDay(
+                                            date,
+                                            DateTime.fromMillisecondsSinceEpoch(
+                                                (items[originalIndex]
+                                                        ['createdAt'] as num)
+                                                    .toInt()));
+                                    final showDate = i == items.length - 1 ||
+                                        !DateUtils.isSameDay(
+                                            date,
+                                            DateTime.fromMillisecondsSinceEpoch(
+                                                (items[items.length - 2 - i]
+                                                        ['createdAt'] as num)
+                                                    .toInt()));
+                                    return Column(
+                                        key: ValueKey(m['ref']),
+                                        children: [
+                                          if (showDate)
+                                            ShadeDateSeparator(date: date),
+                                          ShadeMessageArrival(
+                                              animate: added.contains(m['ref']),
+                                              child: MessageBubble(
+                                                  text: media != null
+                                                      ? ''
+                                                      : m['text'] as String,
+                                                  timestamp: date,
+                                                  isMine:
+                                                      m['from'] == c.account,
+                                                  isEncrypted: true,
+                                                  isImage: media != null,
+                                                  imageData: mediaBytes,
+                                                  status:
+                                                      AlphaController.status(m),
+                                                  deliveryLabel:
+                                                      AlphaController.delivery(
+                                                          m),
+                                                  groupedWithPrevious: grouped(
+                                                      items.length - 2 - i),
+                                                  groupedWithNext:
+                                                      grouped(items.length - i),
+                                                  onLongPress: () =>
+                                                      _showMessageMenu(m),
+                                                  replyText:
+                                                      reply?['text'] as String?,
+                                                  replySender: reply == null
+                                                      ? null
+                                                      : reply['from'] ==
+                                                              c.account
+                                                          ? 'Вы'
+                                                          : peer)),
+                                        ]);
+                                  }),
+                              // Live scroll truth for the jump button: lazy list
+                              // extents grow without new notifications, so the
+                              // flag fields alone cannot be trusted here. In a
+                              // reversed list «away» means offset > 180.
+                              ListenableBuilder(
+                                  listenable: scroll,
+                                  builder: (context, _) => Align(
+                                      alignment: Alignment.bottomRight,
+                                      child: restored &&
+                                              scroll.hasClients &&
+                                              scroll.position.pixels > 180
+                                          ? Padding(
+                                              padding: const EdgeInsets.only(
+                                                  right: 16, bottom: 12),
+                                              child: FloatingActionButton.small(
+                                                  key: const Key(
+                                                      'jump-to-latest'),
+                                                  heroTag: 'alpha-latest',
+                                                  tooltip: unseen > 0
+                                                      ? 'Новых сообщений: $unseen. К последним'
+                                                      : 'К последним сообщениям',
+                                                  backgroundColor: context.shadeColor(
+                                                      ShadeColors.greyBorder),
+                                                  onPressed: _toLatest,
+                                                  child: unseen > 0
+                                                      ? Text('$unseen',
+                                                          style:
+                                                              const TextStyle(fontWeight: FontWeight.w700))
+                                                      : const Icon(Icons.arrow_downward_rounded, size: 21)))
+                                          : null)),
+                            ]))))),
       if (!c.pinned(peer))
         SafeArea(
             top: false,
@@ -907,28 +934,34 @@ class _ConversationState extends State<_Conversation>
         if (replyTo != null)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: ShadeColors.surfaceElevated,
+            color: context.shadeColor(ShadeColors.surfaceElevated),
             child: Row(children: [
-              Container(width: 3, height: 40, color: ShadeColors.cyan),
+              Container(
+                  width: 3,
+                  height: 40,
+                  color: context.shadeColor(ShadeColors.cyan)),
               const SizedBox(width: 12),
               Expanded(
                   child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                     Text(replyTo!['from'] == c.account ? 'Вы' : peer,
-                        style: const TextStyle(
-                            color: ShadeColors.cyan,
+                        style: TextStyle(
+                            color: context.shadeColor(ShadeColors.cyan),
                             fontSize: 13,
                             fontWeight: FontWeight.w600)),
                     Text(replyTo!['text'] as String,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            color: ShadeColors.textSecondary, fontSize: 13)),
+                        style: TextStyle(
+                            color:
+                                context.shadeColor(ShadeColors.textSecondary),
+                            fontSize: 13)),
                   ])),
               IconButton(
-                  icon: const Icon(Icons.close_rounded,
-                      size: 18, color: ShadeColors.textMuted),
+                  icon: Icon(Icons.close_rounded,
+                      size: 18,
+                      color: context.shadeColor(ShadeColors.textMuted)),
                   tooltip: 'Отменить ответ',
                   onPressed: () => setState(() => replyTo = null)),
             ]),
@@ -1050,12 +1083,13 @@ class _NewChatState extends State<_NewChat> {
                                   fontWeight: FontWeight.w700,
                                   letterSpacing: -1)),
                           const SizedBox(height: 10),
-                          const Text(
+                          Text(
                               'Введите точный никнейм друга в Shade. Имена аккаунтов состоят из латинских букв, цифр и _.',
                               style: TextStyle(
                                   fontSize: 14,
                                   height: 1.5,
-                                  color: ShadeColors.textSecondary)),
+                                  color: context
+                                      .shadeColor(ShadeColors.textSecondary))),
                           const SizedBox(height: 24),
                           Semantics(
                               label: 'Никнейм собеседника',
@@ -1076,10 +1110,11 @@ class _NewChatState extends State<_NewChat> {
                                       hintText: 'Никнейм собеседника',
                                       counterText: '',
                                       prefixText: '@ ',
-                                      prefixStyle: const TextStyle(
+                                      prefixStyle: TextStyle(
                                           fontSize: 16,
                                           fontWeight: FontWeight.w600,
-                                          color: ShadeColors.textMuted),
+                                          color: context.shadeColor(
+                                              ShadeColors.textMuted)),
                                       suffixIcon: value.isEmpty
                                           ? null
                                           : IconButton(
@@ -1092,13 +1127,14 @@ class _NewChatState extends State<_NewChat> {
                                                   Icons.close_rounded,
                                                   size: 18))))),
                           if (value.isNotEmpty && !valid)
-                            const Padding(
+                            Padding(
                                 padding: EdgeInsets.only(top: 8),
                                 child: Text(
                                     'От 3 до 32 символов: латинские буквы, цифры и _',
                                     style: TextStyle(
                                         fontSize: 12,
-                                        color: ShadeColors.textMuted))),
+                                        color: context.shadeColor(
+                                            ShadeColors.textMuted)))),
                           if (error.isNotEmpty)
                             Padding(
                                 padding: const EdgeInsets.only(top: 8),
@@ -1153,17 +1189,18 @@ class _NewChatState extends State<_NewChat> {
                                     width: 56,
                                     height: 56,
                                     decoration: BoxDecoration(
-                                        color: ShadeColors.surfaceCard,
-                                        borderRadius:
-                                            BorderRadius.circular(18),
+                                        color: context.shadeColor(
+                                            ShadeColors.surfaceCard),
+                                        borderRadius: BorderRadius.circular(18),
                                         border: Border.all(
-                                            color: ShadeColors.greyBorder)),
-                                    child: const Icon(
-                                        Icons.alternate_email_rounded,
+                                            color: context.shadeColor(
+                                                ShadeColors.greyBorder))),
+                                    child: Icon(Icons.alternate_email_rounded,
                                         size: 26,
-                                        color: ShadeColors.textSecondary)),
+                                        color: context.shadeColor(
+                                            ShadeColors.textSecondary))),
                                 const SizedBox(width: 14),
-                                const Expanded(
+                                Expanded(
                                     child: Column(
                                         crossAxisAlignment:
                                             CrossAxisAlignment.start,
@@ -1178,7 +1215,8 @@ class _NewChatState extends State<_NewChat> {
                                           style: TextStyle(
                                               fontSize: 13,
                                               height: 1.5,
-                                              color: ShadeColors.textMuted)),
+                                              color: context.shadeColor(
+                                                  ShadeColors.textMuted))),
                                     ])),
                               ]),
                         ])))),
@@ -1216,7 +1254,12 @@ class _Profile extends StatelessWidget {
   String get _fingerprintPreview {
     final hex = (controller.key?['digest'] as String? ?? '').toUpperCase();
     if (hex.length < 16) return 'Отпечаток формируется…';
-    return '${[hex.substring(0, 4), hex.substring(4, 8), hex.substring(8, 12), hex.substring(12, 16)].join(' ')}…';
+    return '${[
+      hex.substring(0, 4),
+      hex.substring(4, 8),
+      hex.substring(8, 12),
+      hex.substring(12, 16)
+    ].join(' ')}…';
   }
 
   Future<void> _editAvatar(BuildContext context) async {
@@ -1236,10 +1279,10 @@ class _Profile extends StatelessWidget {
           initialFrame: frame,
           save: ({required frame, required replaceImage, image}) =>
               controller.act('profile.save', {
-                'frame': frame.name,
-                if (replaceImage)
-                  'avatar': image == null ? null : base64Encode(image),
-              }),
+            'frame': frame.name,
+            if (replaceImage)
+              'avatar': image == null ? null : base64Encode(image),
+          }),
         ),
       ),
     );
@@ -1364,8 +1407,8 @@ class _Profile extends StatelessWidget {
     final visibleName = displayName.isNotEmpty
         ? displayName
         : name.isEmpty
-        ? 'Shade'
-        : name[0].toUpperCase() + name.substring(1);
+            ? 'Shade'
+            : name[0].toUpperCase() + name.substring(1);
     final back = IconButton(
       tooltip: 'Назад',
       onPressed: close,
@@ -1413,6 +1456,7 @@ class _Profile extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    if (settingsOnly) const Card(child: ShadeAppearanceTile()),
                     if (!settingsOnly) ...[
                       Row(
                         children: [
@@ -1491,12 +1535,12 @@ class _Profile extends StatelessWidget {
                         ],
                       ),
                       const SizedBox(height: 24),
-                      const Text(
+                      Text(
                         'ШИФРОВАНИЕ',
                         style: TextStyle(
                           fontSize: 11,
                           letterSpacing: 1.5,
-                          color: ShadeColors.textMuted,
+                          color: context.shadeColor(ShadeColors.textMuted),
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -1534,22 +1578,23 @@ class _Profile extends StatelessWidget {
                                             Container(
                                               padding:
                                                   const EdgeInsets.symmetric(
-                                                    horizontal: 8,
-                                                    vertical: 4,
-                                                  ),
+                                                horizontal: 8,
+                                                vertical: 4,
+                                              ),
                                               decoration: BoxDecoration(
-                                                color:
-                                                    ShadeColors.surfaceElevated,
+                                                color: context.shadeColor(
+                                                    ShadeColors
+                                                        .surfaceElevated),
                                                 borderRadius:
                                                     BorderRadius.circular(20),
                                               ),
-                                              child: const Text(
+                                              child: Text(
                                                 'Ваш',
                                                 style: TextStyle(
                                                   fontSize: 11,
                                                   fontWeight: FontWeight.w600,
-                                                  color:
-                                                      ShadeColors.textPrimary,
+                                                  color: context.shadeColor(
+                                                      ShadeColors.textPrimary),
                                                 ),
                                               ),
                                             ),
@@ -1558,27 +1603,30 @@ class _Profile extends StatelessWidget {
                                         const SizedBox(height: 6),
                                         Text(
                                           _fingerprintPreview,
-                                          style: const TextStyle(
+                                          style: TextStyle(
                                             fontFamily: 'monospace',
                                             fontSize: 12,
                                             letterSpacing: 1.2,
-                                            color: ShadeColors.textSecondary,
+                                            color: context.shadeColor(
+                                                ShadeColors.textSecondary),
                                           ),
                                         ),
                                         const SizedBox(height: 4),
-                                        const Text(
+                                        Text(
                                           'Нажмите, чтобы показать код',
                                           style: TextStyle(
                                             fontSize: 12,
-                                            color: ShadeColors.textMuted,
+                                            color: context.shadeColor(
+                                                ShadeColors.textMuted),
                                           ),
                                         ),
                                       ],
                                     ),
                                   ),
-                                  const Icon(
+                                  Icon(
                                     Icons.chevron_right_rounded,
-                                    color: ShadeColors.textMuted,
+                                    color: context
+                                        .shadeColor(ShadeColors.textMuted),
                                   ),
                                 ],
                               ),
@@ -1604,18 +1652,19 @@ class _Profile extends StatelessWidget {
                                   ? 'Копия сохранена на сервере'
                                   : 'Сохранить копию на сервере',
                             ),
-                            onTap: controller.profile['cloudRecoverySaved'] == true
-                                ? null
-                                : () => controller.act('backup.cloud'),
+                            onTap:
+                                controller.profile['cloudRecoverySaved'] == true
+                                    ? null
+                                    : () => controller.act('backup.cloud'),
                           ),
                         ),
                       const SizedBox(height: 24),
-                      const Text(
+                      Text(
                         'ПОДАРКИ · ВИНИЛОВАЯ СТЕНА',
                         style: TextStyle(
                           fontSize: 11,
                           letterSpacing: 1.5,
-                          color: ShadeColors.textMuted,
+                          color: context.shadeColor(ShadeColors.textMuted),
                         ),
                       ),
                       const SizedBox(height: 4),
@@ -1627,12 +1676,12 @@ class _Profile extends StatelessWidget {
                       const SizedBox(height: 24),
                     ],
                     if (showSettings) ...[
-                      const Text(
+                      Text(
                         'ПОДКЛЮЧЁННЫЕ УСТРОЙСТВА',
                         style: TextStyle(
                           fontSize: 11,
                           letterSpacing: 1.5,
-                          color: ShadeColors.textMuted,
+                          color: context.shadeColor(ShadeColors.textMuted),
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -1657,9 +1706,10 @@ class _Profile extends StatelessWidget {
                                     d['id'] as String,
                                     maxLines: 2,
                                     overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       fontSize: 11,
-                                      color: ShadeColors.textMuted,
+                                      color: context
+                                          .shadeColor(ShadeColors.textMuted),
                                     ),
                                   ),
                                   trailing: d['current'] == true
@@ -1713,13 +1763,13 @@ class _Profile extends StatelessWidget {
                             'Добавить устройство',
                             style: TextStyle(fontSize: 15),
                           ),
-                          subtitle: const Text(
+                          subtitle: Text(
                             'Код подключения → подтверждение запроса',
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
                               fontSize: 11,
-                              color: ShadeColors.textMuted,
+                              color: context.shadeColor(ShadeColors.textMuted),
                             ),
                           ),
                           trailing: const Icon(Icons.chevron_right_rounded),
@@ -1732,9 +1782,12 @@ class _Profile extends StatelessWidget {
                           leading: const Icon(Icons.notifications_outlined),
                           title: const Text('Уведомления'),
                           subtitle: Text(switch (controller.platform) {
-                            'ios' => 'Push-сигнал без текста · iOS: установленное приложение',
-                            'android' => 'Push-сигнал без текста · Android: разрешение уведомлений',
-                            _ => 'Push-сигнал без текста · разрешите уведомления в браузере',
+                            'ios' =>
+                              'Push-сигнал без текста · iOS: установленное приложение',
+                            'android' =>
+                              'Push-сигнал без текста · Android: разрешение уведомлений',
+                            _ =>
+                              'Push-сигнал без текста · разрешите уведомления в браузере',
                           }),
                           onTap: () => controller.act('push.toggle'),
                         ),
@@ -1751,13 +1804,13 @@ class _Profile extends StatelessWidget {
                         child: const Text('Выйти из аккаунта'),
                       ),
                       const SizedBox(height: 20),
-                      const Text(
+                      Text(
                         'Ключи и история остаются в этом браузере.\nНе очищайте данные сайта без recovery-пакета.',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           fontSize: 12,
                           height: 1.6,
-                          color: ShadeColors.textMuted,
+                          color: context.shadeColor(ShadeColors.textMuted),
                         ),
                       ),
                     ],
@@ -1785,24 +1838,23 @@ class _PeerProfile extends StatelessWidget {
     final updated = await showDialog<String>(
         context: context,
         builder: (dialog) => AlertDialog(
-            title: const Text('Личная заметка'),
-            content: TextField(
-                controller: field,
-                autofocus: true,
-                maxLines: 4,
-                maxLength: 2000,
-                style: const TextStyle(
-                    fontSize: 15, height: 1.5),
-                decoration: const InputDecoration(
-                    hintText: 'Заметка о собеседнике')),
-            actions: [
-              TextButton(
-                  onPressed: () => Navigator.pop(dialog),
-                  child: const Text('Отмена')),
-              TextButton(
-                  onPressed: () => Navigator.pop(dialog, field.text),
-                  child: const Text('Сохранить')),
-            ]));
+                title: const Text('Личная заметка'),
+                content: TextField(
+                    controller: field,
+                    autofocus: true,
+                    maxLines: 4,
+                    maxLength: 2000,
+                    style: const TextStyle(fontSize: 15, height: 1.5),
+                    decoration: const InputDecoration(
+                        hintText: 'Заметка о собеседнике')),
+                actions: [
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialog),
+                      child: const Text('Отмена')),
+                  TextButton(
+                      onPressed: () => Navigator.pop(dialog, field.text),
+                      child: const Text('Сохранить')),
+                ]));
     if (updated == null || !context.mounted) return;
     if (updated.trim() == current) return;
     try {
@@ -1810,11 +1862,12 @@ class _PeerProfile extends StatelessWidget {
     } catch (_) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-            content:
-                Text('Не удалось сохранить заметку. Проверьте сеть и повторите.')));
+            content: Text(
+                'Не удалось сохранить заметку. Проверьте сеть и повторите.')));
       }
     }
   }
+
   @override
   Widget build(BuildContext context) {
     final c = controller;
@@ -1826,8 +1879,11 @@ class _PeerProfile extends StatelessWidget {
     final online = presence is Map && presence['online'] == true;
     final lastSeen =
         (presence is Map ? presence['lastSeen'] as num? : null)?.toInt() ?? 0;
-    final statusLine =
-        online ? 'В сети' : lastSeen > 0 ? _lastSeenLine(lastSeen) : null;
+    final statusLine = online
+        ? 'В сети'
+        : lastSeen > 0
+            ? _lastSeenLine(lastSeen)
+            : null;
     return Column(children: [
       Row(children: [
         IconButton(
@@ -1857,22 +1913,25 @@ class _PeerProfile extends StatelessWidget {
                     const SizedBox(height: 6),
                     Text('@$peer',
                         textAlign: TextAlign.center,
-                        style: const TextStyle(color: ShadeColors.textMuted)),
+                        style: TextStyle(
+                            color: context.shadeColor(ShadeColors.textMuted))),
                     if (statusLine != null) ...[
                       const SizedBox(height: 4),
                       Text(statusLine,
                           textAlign: TextAlign.center,
-                          style: const TextStyle(
-                              fontSize: 13, color: ShadeColors.textMuted)),
+                          style: TextStyle(
+                              fontSize: 13,
+                              color:
+                                  context.shadeColor(ShadeColors.textMuted))),
                     ],
                     const SizedBox(height: 32),
-                    const Text('ПЕРЕПИСКА И БЕЗОПАСНОСТЬ',
+                    Text('ПЕРЕПИСКА И БЕЗОПАСНОСТЬ',
                         style: TextStyle(
                             fontSize: 11,
                             letterSpacing: 1.5,
-                            color: ShadeColors.textMuted)),
+                            color: context.shadeColor(ShadeColors.textMuted))),
                     const SizedBox(height: 12),
-                      Card(
+                    Card(
                         child: Column(children: [
                       // Три состояния доверия: сверен вручную, TOFU, не закреплён.
                       ListTile(
@@ -1881,8 +1940,9 @@ class _PeerProfile extends StatelessWidget {
                                   ? Icons.verified_user_outlined
                                   : Icons.shield_outlined,
                               color: pinned && !tofu
-                                  ? ShadeColors.cyan
-                                  : ShadeColors.textSecondary),
+                                  ? context.shadeColor(ShadeColors.cyan)
+                                  : context
+                                      .shadeColor(ShadeColors.textSecondary)),
                           title: Text(pinned && !tofu
                               ? 'Ключ собеседника проверен'
                               : tofu
@@ -1902,8 +1962,7 @@ class _PeerProfile extends StatelessWidget {
                           onTap: () => c.act('verify', {'account': peer})),
                       const Divider(height: 1, indent: 56),
                       ListTile(
-                          leading:
-                              const Icon(Icons.forum_outlined),
+                          leading: const Icon(Icons.forum_outlined),
                           title: Text('$messages'),
                           subtitle: const Text('Сообщений в переписке')),
                       const Divider(height: 1, indent: 56),
@@ -1929,17 +1988,16 @@ class _PeerProfile extends StatelessWidget {
                             if (context.mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(
-                                      content:
-                                          Text('Никнейм скопирован')));
+                                      content: Text('Никнейм скопирован')));
                             }
                           }),
                     ])),
                     const SizedBox(height: 24),
-                    const Text('ПОДАРКИ · ВИНИЛОВАЯ СТЕНА',
+                    Text('ПОДАРКИ · ВИНИЛОВАЯ СТЕНА',
                         style: TextStyle(
                             fontSize: 11,
                             letterSpacing: 1.5,
-                            color: ShadeColors.textMuted)),
+                            color: context.shadeColor(ShadeColors.textMuted))),
                     StickerCollection(
                         username: peer,
                         owner: false,
@@ -1950,13 +2008,13 @@ class _PeerProfile extends StatelessWidget {
                         icon: const Icon(Icons.chat_bubble_outline_rounded),
                         label: const Text('Открыть переписку')),
                     const SizedBox(height: 20),
-                    const Text(
+                    Text(
                         'Shade подтверждает ключи только вашей личной сверкой.\nGoogle и сервер не гарантируют личность собеседника.',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                             fontSize: 12,
                             height: 1.6,
-                            color: ShadeColors.textMuted)),
+                            color: context.shadeColor(ShadeColors.textMuted))),
                   ])))),
     ]);
   }
@@ -2033,20 +2091,22 @@ class _AccountAvatarState extends State<AccountAvatar> {
 // grid of tiny circles and crosses over a near-black diagonal gradient
 // (AMOLED — barely visible, never competes with the bubbles).
 class _ConversationPatternPainter extends CustomPainter {
-  const _ConversationPatternPainter();
+  const _ConversationPatternPainter({required this.light});
+  final bool light;
   @override
   void paint(Canvas canvas, Size size) {
     final bg = Paint()
       ..shader = ui.Gradient.linear(
-          Offset.zero, Offset(size.width, size.height), const [
-        Color(0xFF0C0C0C),
-        Color(0xFF101010),
-      ]);
+          Offset.zero,
+          Offset(size.width, size.height),
+          light
+              ? const [Color(0xFFFFFFFF), Color(0xFFF7F8F9)]
+              : const [Color(0xFF0C0C0C), Color(0xFF101010)]);
     canvas.drawRect(Offset.zero & size, bg);
     final mark = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.2
-      ..color = const Color(0xFF232326);
+      ..color = light ? const Color(0xFFE9EDF1) : const Color(0xFF232326);
     const stepX = 91.0, circleToCross = 39.0, crossToCircle = 52.0, half = 45.5;
     var y = 26.0;
     var circleRow = true;
@@ -2068,7 +2128,7 @@ class _ConversationPatternPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _ConversationPatternPainter oldDelegate) =>
-      false;
+      oldDelegate.light != light;
 }
 
 // Key-card identicon, ported from the Android profile_screen.dart painter:

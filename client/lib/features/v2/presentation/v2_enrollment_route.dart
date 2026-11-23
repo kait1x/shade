@@ -62,8 +62,9 @@ class _V2EnrollmentRouteState extends ConsumerState<V2EnrollmentRoute> {
       const secure = FlutterSecureStorage(
           aOptions: AndroidOptions(encryptedSharedPreferences: true));
       transport.sessionCookie = await secure.read(key: 'alpha_v2_cookie');
-      final root =
-          (profile?['public_key'] as String?) ?? await crypto.getPublicKey() ?? '';
+      final root = (profile?['public_key'] as String?) ??
+          await crypto.getPublicKey() ??
+          '';
       final privateKey = await crypto.getPrivateKey() ?? '';
       final repository = V2ChatRepository(
           transport: transport,
@@ -114,7 +115,9 @@ class _V2EnrollmentRouteState extends ConsumerState<V2EnrollmentRoute> {
                   padding: const EdgeInsets.all(24),
                   child: Text(_error!,
                       textAlign: TextAlign.center,
-                      style: const TextStyle(color: ShadeColors.textSecondary)))));
+                      style: TextStyle(
+                          color: context
+                              .shadeColor(ShadeColors.textSecondary))))));
     }
     return EnrollmentScreen(
         backend: _backend!,

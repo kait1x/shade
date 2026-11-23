@@ -210,12 +210,12 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
         child: Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-                color: ShadeColors.surfaceCard,
+                color: context.shadeColor(ShadeColors.surfaceCard),
                 borderRadius: BorderRadius.circular(16),
                 border: Border.all(
                     color: device.current
-                        ? ShadeColors.textMuted
-                        : ShadeColors.greyBorder,
+                        ? context.shadeColor(ShadeColors.textMuted)
+                        : context.shadeColor(ShadeColors.greyBorder),
                     width: device.current ? 1 : 0.5)),
             child: Row(children: [
               Icon(
@@ -223,7 +223,7 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
                       ? Icons.phone_android_rounded
                       : Icons.devices_other_rounded,
                   size: 24,
-                  color: ShadeColors.textSecondary),
+                  color: context.shadeColor(ShadeColors.textSecondary)),
               const SizedBox(width: 14),
               Expanded(
                   child: Column(
@@ -242,20 +242,23 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 8, vertical: 3),
                             decoration: BoxDecoration(
-                                color: ShadeColors.surfaceElevated,
+                                color: context
+                                    .shadeColor(ShadeColors.surfaceElevated),
                                 borderRadius: BorderRadius.circular(8)),
-                            child: const Text('Это устройство',
+                            child: Text('Это устройство',
                                 style: TextStyle(
                                     fontSize: 10.5,
                                     fontWeight: FontWeight.w600,
-                                    color: ShadeColors.textSecondary))),
+                                    color: context.shadeColor(
+                                        ShadeColors.textSecondary)))),
                       ],
                     ]),
                     const SizedBox(height: 4),
                     Text('Ключ: ${device.fingerprint.substring(0, 16)}…',
-                        style: const TextStyle(
+                        style: TextStyle(
                             fontSize: 12,
-                            color: ShadeColors.textSecondary,
+                            color:
+                                context.shadeColor(ShadeColors.textSecondary),
                             letterSpacing: 0.3)),
                   ])),
               if (!device.current)
@@ -286,7 +289,7 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
       required String subtitle,
       required VoidCallback onTap}) {
     return Material(
-        color: ShadeColors.surfaceCard,
+        color: context.shadeColor(ShadeColors.surfaceCard),
         borderRadius: BorderRadius.circular(16),
         child: InkWell(
             borderRadius: BorderRadius.circular(16),
@@ -295,10 +298,13 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(16),
-                    border:
-                        Border.all(color: ShadeColors.greyBorder, width: 0.5)),
+                    border: Border.all(
+                        color: context.shadeColor(ShadeColors.greyBorder),
+                        width: 0.5)),
                 child: Row(children: [
-                  Icon(icon, size: 22, color: ShadeColors.violetLight),
+                  Icon(icon,
+                      size: 22,
+                      color: context.shadeColor(ShadeColors.violetLight)),
                   const SizedBox(width: 14),
                   Expanded(
                       child: Column(
@@ -309,13 +315,14 @@ class _V2DevicesScreenState extends ConsumerState<V2DevicesScreen> {
                                 fontSize: 14, fontWeight: FontWeight.w600)),
                         const SizedBox(height: 3),
                         Text(subtitle,
-                            style: const TextStyle(
+                            style: TextStyle(
                                 fontSize: 12,
                                 height: 1.4,
-                                color: ShadeColors.textSecondary)),
+                                color: context
+                                    .shadeColor(ShadeColors.textSecondary))),
                       ])),
-                  const Icon(Icons.chevron_right_rounded,
-                      color: ShadeColors.textMuted),
+                  Icon(Icons.chevron_right_rounded,
+                      color: context.shadeColor(ShadeColors.textMuted)),
                 ]))));
   }
 }

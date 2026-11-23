@@ -67,16 +67,16 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
   }
 
   // PRF может стать недоступным по ходу потока — выбор честно падает на фразу.
-  String get _effectiveProtection =>
-      _protection == 'prf' && widget.controller.recovery?['prfAvailable'] != true
-          ? 'phrase'
-          : _protection;
+  String get _effectiveProtection => _protection == 'prf' &&
+          widget.controller.recovery?['prfAvailable'] != true
+      ? 'phrase'
+      : _protection;
 
   void _act(String action, [Map<String, dynamic> payload = const {}]) {
     widget.controller.act(action, payload).catchError((Object error) {
       if (mounted) {
-        setState(() =>
-            _localError = error is StateError ? error.message : '$error');
+        setState(
+            () => _localError = error is StateError ? error.message : '$error');
       }
     });
   }
@@ -89,7 +89,8 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
     if (r['fileName'] == null) {
       problem = 'Выберите файл recovery-пакета.';
     } else if (_recoveryPhrase.text.trim().length < minRecoveryPasswordLength) {
-      problem = 'Введите пароль восстановления (минимум $minRecoveryPasswordLength символов).';
+      problem =
+          'Введите пароль восстановления (минимум $minRecoveryPasswordLength символов).';
     } else if (protection == 'phrase' && _devicePhrase.text.length < 16) {
       problem = 'Фраза устройства должна быть не короче 16 символов.';
     } else if (protection == 'phrase' &&
@@ -113,40 +114,47 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
         labelText: label,
         hintText: hint,
         suffixIcon: suffix,
-        fillColor: ShadeColors.black,
+        fillColor: context.shadeColor(ShadeColors.black),
         border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(18),
-            borderSide: const BorderSide(color: ShadeColors.greyBorder)),
+            borderSide:
+                BorderSide(color: context.shadeColor(ShadeColors.greyBorder))),
         enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(18),
-            borderSide: const BorderSide(color: ShadeColors.greyBorder)),
+            borderSide:
+                BorderSide(color: context.shadeColor(ShadeColors.greyBorder))),
         focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(18),
-            borderSide: const BorderSide(color: ShadeColors.violet, width: 1.5)),
+            borderSide: BorderSide(
+                color: context.shadeColor(ShadeColors.violet), width: 1.5)),
       );
 
   Widget _sectionLabel(String text) => Text(text,
-      style: const TextStyle(
+      style: TextStyle(
           fontSize: 12,
           fontWeight: FontWeight.w600,
           letterSpacing: 0.2,
-          color: ShadeColors.textSecondary));
+          color: context.shadeColor(ShadeColors.textSecondary)));
 
   Widget _banner(String text) => Semantics(
       label: 'Важно о восстановлении',
       child: Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-            color: ShadeColors.surfaceCard,
+            color: context.shadeColor(ShadeColors.surfaceCard),
             borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: ShadeColors.greyBorder, width: 0.5)),
+            border: Border.all(
+                color: context.shadeColor(ShadeColors.greyBorder), width: 0.5)),
         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Icon(Icons.info_outline, size: 18, color: ShadeColors.textSecondary),
+          Icon(Icons.info_outline,
+              size: 18, color: context.shadeColor(ShadeColors.textSecondary)),
           const SizedBox(width: 10),
           Expanded(
               child: Text(text,
-                  style: const TextStyle(
-                      fontSize: 12.5, height: 1.5, color: ShadeColors.textSecondary))),
+                  style: TextStyle(
+                      fontSize: 12.5,
+                      height: 1.5,
+                      color: context.shadeColor(ShadeColors.textSecondary)))),
         ]),
       ));
 
@@ -156,12 +164,16 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
       child: Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-            color: ShadeColors.surfaceDark,
+            color: context.shadeColor(ShadeColors.surfaceDark),
             borderRadius: BorderRadius.circular(18),
             border: Border.all(
-                color: Theme.of(context).colorScheme.error.withValues(alpha: 0.5))),
+                color: Theme.of(context)
+                    .colorScheme
+                    .error
+                    .withValues(alpha: 0.5))),
         child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Icon(Icons.error_outline, size: 18, color: Theme.of(context).colorScheme.error),
+          Icon(Icons.error_outline,
+              size: 18, color: Theme.of(context).colorScheme.error),
           const SizedBox(width: 10),
           Expanded(
               child: Text(error,
@@ -186,16 +198,18 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
           for (var i = 0; i < steps.length; i++) ...[
             Row(children: [
               if (i < active)
-                const Icon(Icons.check_circle_outline,
-                    size: 16, color: ShadeColors.textSecondary)
+                Icon(Icons.check_circle_outline,
+                    size: 16,
+                    color: context.shadeColor(ShadeColors.textSecondary))
               else if (i == active)
                 const SizedBox(
                     width: 16,
                     height: 16,
                     child: CircularProgressIndicator(strokeWidth: 2))
               else
-                const Icon(Icons.circle_outlined,
-                    size: 16, color: ShadeColors.greyBorder),
+                Icon(Icons.circle_outlined,
+                    size: 16,
+                    color: context.shadeColor(ShadeColors.greyBorder)),
               const SizedBox(width: 10),
               Expanded(
                   child: Text(steps[i].$2,
@@ -203,8 +217,9 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
                           fontSize: 12.5,
                           height: 1.4,
                           color: i == active
-                              ? ShadeColors.textPrimary
-                              : ShadeColors.textSecondary))),
+                              ? context.shadeColor(ShadeColors.textPrimary)
+                              : context
+                                  .shadeColor(ShadeColors.textSecondary)))),
             ]),
             if (i < steps.length - 1) const SizedBox(height: 10),
           ],
@@ -224,10 +239,12 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
       Container(
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
-            color: ShadeColors.surfaceCard,
+            color: context.shadeColor(ShadeColors.surfaceCard),
             borderRadius: BorderRadius.circular(18),
-            border: Border.all(color: ShadeColors.greyBorder, width: 0.5)),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            border: Border.all(
+                color: context.shadeColor(ShadeColors.greyBorder), width: 0.5)),
+        child:
+            Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           _sectionLabel('Резервная копия'),
           const SizedBox(height: 10),
           if (widget.controller.recovery?['cloudLoading'] == true)
@@ -249,16 +266,21 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
                 label:
                     'Выбранный recovery-пакет: $fileName, аккаунт ${packageAccount ?? ''}',
                 child: Row(children: [
-                  const Icon(Icons.description_outlined,
-                      size: 16, color: ShadeColors.textSecondary),
+                  Icon(Icons.description_outlined,
+                      size: 16,
+                      color: context.shadeColor(ShadeColors.textSecondary)),
                   const SizedBox(width: 8),
                   Expanded(
                       child: Text(
                           fileName +
-                              (packageAccount != null ? ' · @$packageAccount' : ''),
+                              (packageAccount != null
+                                  ? ' · @$packageAccount'
+                                  : ''),
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                              fontSize: 12.5, color: ShadeColors.textSecondary))),
+                          style: TextStyle(
+                              fontSize: 12.5,
+                              color: context
+                                  .shadeColor(ShadeColors.textSecondary)))),
                 ])),
           ],
           const SizedBox(height: 18),
@@ -272,15 +294,16 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
             decoration: _decoration('Пароль восстановления',
                 hint: 'Пароль или прежняя фраза',
                 suffix: IconButton(
-                  onPressed: () =>
-                      setState(() => _showRecoveryPhrase = !_showRecoveryPhrase),
-                  tooltip: _showRecoveryPhrase ? 'Скрыть пароль' : 'Показать пароль',
+                  onPressed: () => setState(
+                      () => _showRecoveryPhrase = !_showRecoveryPhrase),
+                  tooltip:
+                      _showRecoveryPhrase ? 'Скрыть пароль' : 'Показать пароль',
                   icon: Icon(
                       _showRecoveryPhrase
                           ? Icons.visibility_off_outlined
                           : Icons.visibility_outlined,
                       size: 20,
-                      color: ShadeColors.textMuted),
+                      color: context.shadeColor(ShadeColors.textMuted)),
                 )),
             onChanged: (_) {
               if (_localError != null) setState(() => _localError = null);
@@ -304,27 +327,33 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
                         _localError = null;
                       }),
               style: SegmentedButton.styleFrom(
-                  textStyle:
-                      const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                  textStyle: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(18))),
             )
           else
-            const Text('Фраза устройства',
+            Text('Фраза устройства',
                 style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w600,
-                    color: ShadeColors.textPrimary)),
+                    color: context.shadeColor(ShadeColors.textPrimary))),
           if (!prfAvailable) ...[
             const SizedBox(height: 8),
-            const Text(
+            Text(
                 'Биометрическая защита (PRF) недоступна в этом браузере — используйте фразу устройства.',
-                style: TextStyle(fontSize: 12, height: 1.4, color: ShadeColors.textMuted)),
+                style: TextStyle(
+                    fontSize: 12,
+                    height: 1.4,
+                    color: context.shadeColor(ShadeColors.textMuted))),
           ] else if (protection == 'prf') ...[
             const SizedBox(height: 8),
-            const Text(
+            Text(
                 'Новый vault будет защищён биометрией этого устройства. При утрате passkey снова понадобится recovery-пакет.',
-                style: TextStyle(fontSize: 12, height: 1.4, color: ShadeColors.textMuted)),
+                style: TextStyle(
+                    fontSize: 12,
+                    height: 1.4,
+                    color: context.shadeColor(ShadeColors.textMuted))),
           ],
           if (protection == 'phrase') ...[
             const SizedBox(height: 14),
@@ -366,12 +395,13 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
                 shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(18))),
             child: busy
-                ? const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                ? Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                     SizedBox(
                         width: 18,
                         height: 18,
                         child: CircularProgressIndicator(
-                            strokeWidth: 2, color: ShadeColors.black)),
+                            strokeWidth: 2,
+                            color: context.shadeColor(ShadeColors.black))),
                     SizedBox(width: 10),
                     Text('Восстанавливаем…'),
                   ])
@@ -386,8 +416,10 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
       const SizedBox(height: 8),
       TextButton(
         onPressed: busy ? null : () => _act('recovery.back'),
-        child: const Text('Назад к разблокировке',
-            style: TextStyle(fontSize: 13, color: ShadeColors.textMuted)),
+        child: Text('Назад к разблокировке',
+            style: TextStyle(
+                fontSize: 13,
+                color: context.shadeColor(ShadeColors.textMuted))),
       ),
     ];
   }
@@ -396,25 +428,29 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
         Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
-              color: ShadeColors.surfaceCard,
+              color: context.shadeColor(ShadeColors.surfaceCard),
               borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: ShadeColors.greyBorder, width: 0.5)),
+              border: Border.all(
+                  color: context.shadeColor(ShadeColors.greyBorder),
+                  width: 0.5)),
           child: Column(children: [
-            const Icon(Icons.check_circle_outline,
-                size: 44, color: ShadeColors.textPrimary),
+            Icon(Icons.check_circle_outline,
+                size: 44, color: context.shadeColor(ShadeColors.textPrimary)),
             const SizedBox(height: 12),
-            const Text('Личность восстановлена',
+            Text('Личность восстановлена',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w700,
-                    color: ShadeColors.textPrimary)),
+                    color: context.shadeColor(ShadeColors.textPrimary))),
             const SizedBox(height: 8),
             Text(
                 'Аккаунт ${packageAccount != null ? '@$packageAccount' : ''} снова доступен на этом устройстве. Новые ключи защищены выбранным способом.',
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                    fontSize: 13, height: 1.5, color: ShadeColors.textSecondary)),
+                style: TextStyle(
+                    fontSize: 13,
+                    height: 1.5,
+                    color: context.shadeColor(ShadeColors.textSecondary))),
             const SizedBox(height: 18),
             FilledButton(
               onPressed: () => _act('recovery.finish'),
@@ -427,10 +463,13 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
           ]),
         ),
         const SizedBox(height: 12),
-        const Text(
+        Text(
             'Recovery-пакет и фраза продолжают действовать — храните их вне устройства.',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12, height: 1.5, color: ShadeColors.textMuted)),
+            style: TextStyle(
+                fontSize: 12,
+                height: 1.5,
+                color: context.shadeColor(ShadeColors.textMuted))),
       ];
 
   @override
@@ -440,7 +479,7 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
     final busy = r['busy'] == true;
     final error = (r['error'] as String?) ?? _localError;
     return Scaffold(
-      backgroundColor: ShadeColors.black,
+      backgroundColor: context.shadeColor(ShadeColors.black),
       body: SafeArea(
         child: Center(
           child: ConstrainedBox(
@@ -450,7 +489,7 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Row(children: [
+                    Row(children: [
                       ShadeLogo(size: 28),
                       SizedBox(width: 8),
                       Text('shade',
@@ -458,22 +497,25 @@ class _RecoveryScreenState extends State<RecoveryScreen> {
                               fontSize: 22,
                               fontWeight: FontWeight.w700,
                               letterSpacing: -1,
-                              color: ShadeColors.textPrimary)),
+                              color:
+                                  context.shadeColor(ShadeColors.textPrimary))),
                     ]),
                     const SizedBox(height: 24),
-                    const Text('Восстановление аккаунта',
+                    Text('Восстановление аккаунта',
                         style: TextStyle(
                             fontSize: 24,
                             fontWeight: FontWeight.w700,
                             letterSpacing: -0.5,
-                            color: ShadeColors.textPrimary)),
+                            color:
+                                context.shadeColor(ShadeColors.textPrimary))),
                     const SizedBox(height: 8),
-                    const Text(
+                    Text(
                         'Recovery-пакет вернёт вашу личность в Shade на этом устройстве. Ключи устройства создаются заново; фразы не покидают браузер.',
                         style: TextStyle(
                             fontSize: 13.5,
                             height: 1.5,
-                            color: ShadeColors.textSecondary)),
+                            color:
+                                context.shadeColor(ShadeColors.textSecondary))),
                     const SizedBox(height: 18),
                     _banner(step == 'done' ? _bannerDone : _bannerForm),
                     const SizedBox(height: 18),

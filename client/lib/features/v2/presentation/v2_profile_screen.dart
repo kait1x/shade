@@ -24,7 +24,7 @@ class V2ProfileScreen extends ConsumerWidget {
     final result = ref.watch(v2ProfileProvider);
     final profile = result.valueOrNull;
     return Scaffold(
-      backgroundColor: ShadeColors.black,
+      backgroundColor: context.shadeColor(ShadeColors.black),
       appBar: profile == null ? AppBar(title: const Text('Профиль')) : null,
       body: profile != null
           ? _ProfileBody(profile: profile)
@@ -160,10 +160,12 @@ class _ProfileBody extends ConsumerWidget {
                       const ShadeProfileSection('Безопасность'),
                       const SizedBox(height: 10),
                       Material(
-                        color: ShadeColors.surfaceCard,
+                        color: context.shadeColor(ShadeColors.surfaceCard),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(20),
-                          side: const BorderSide(color: ShadeColors.greyBorder),
+                          side: BorderSide(
+                              color:
+                                  context.shadeColor(ShadeColors.greyBorder)),
                         ),
                         clipBehavior: Clip.antiAlias,
                         child: ListTile(
@@ -175,8 +177,9 @@ class _ProfileBody extends ConsumerWidget {
                               style: TextStyle(fontWeight: FontWeight.w700)),
                           subtitle: Text(
                               preview.isEmpty ? 'Посмотреть код' : '$preview…',
-                              style: const TextStyle(
-                                  color: ShadeColors.textSecondary,
+                              style: TextStyle(
+                                  color: context
+                                      .shadeColor(ShadeColors.textSecondary),
                                   letterSpacing: .6)),
                           trailing: const Icon(Icons.chevron_right_rounded),
                           onTap: () => _showKey(context),

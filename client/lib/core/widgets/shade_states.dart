@@ -20,10 +20,13 @@ class ShadeEmptyState extends StatelessWidget {
             Container(
                 padding: const EdgeInsets.all(22),
                 decoration: BoxDecoration(
-                    color: ShadeColors.surfaceCard,
+                    color: context.shadeColor(ShadeColors.surfaceCard),
                     borderRadius: BorderRadius.circular(28),
-                    border: Border.all(color: ShadeColors.greyBorder)),
-                child: Icon(icon, size: 32, color: ShadeColors.violetLight)),
+                    border: Border.all(
+                        color: context.shadeColor(ShadeColors.greyBorder))),
+                child: Icon(icon,
+                    size: 32,
+                    color: context.shadeColor(ShadeColors.violetLight))),
             const SizedBox(height: 22),
             Text(title,
                 textAlign: TextAlign.center,
@@ -32,8 +35,8 @@ class ShadeEmptyState extends StatelessWidget {
             const SizedBox(height: 10),
             Text(description,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                    color: ShadeColors.textSecondary,
+                style: TextStyle(
+                    color: context.shadeColor(ShadeColors.textSecondary),
                     fontSize: 14,
                     height: 1.6)),
             if (action != null) ...[const SizedBox(height: 20), action!],
@@ -45,7 +48,7 @@ class ShadeConversationBackground extends StatelessWidget {
   const ShadeConversationBackground({super.key, required this.child});
   @override
   Widget build(BuildContext context) =>
-      ColoredBox(color: Colors.black, child: child);
+      ColoredBox(color: context.shadeColor(ShadeColors.black), child: child);
 }
 
 class ShadeDateSeparator extends StatelessWidget {
@@ -67,12 +70,12 @@ class ShadeDateSeparator extends StatelessWidget {
             margin: const EdgeInsets.only(top: 24, bottom: 18),
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
             decoration: BoxDecoration(
-                color: ShadeColors.surfaceDark,
+                color: context.shadeColor(ShadeColors.surfaceDark),
                 borderRadius: BorderRadius.circular(20)),
             child: Text(label,
-                style: const TextStyle(
+                style: TextStyle(
                     fontSize: 12,
-                    color: ShadeColors.textSecondary,
+                    color: context.shadeColor(ShadeColors.textSecondary),
                     fontWeight: FontWeight.w500))));
   }
 }
