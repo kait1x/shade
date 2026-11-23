@@ -18,6 +18,9 @@ import 'alpha_controller.dart';
 import 'alpha_sticker_backend.dart';
 import 'recovery_screen.dart';
 
+bool _isVoiceMedia(Object? media) =>
+    media is Map && (media['mime'] as String?)?.startsWith('audio/') == true;
+
 class ShadeAlphaApp extends StatelessWidget {
   const ShadeAlphaApp({super.key, required this.controller});
   final AlphaController controller;
@@ -335,7 +338,11 @@ class _ChatsState extends State<_Chats> {
                           final mine = latest?['from'] == c.account;
                           final isSelf = peer == c.account;
                           final text = latest?['text'] as String? ??
-                              (latest?['media'] != null ? '📷 Фото' : null);
+                              (_isVoiceMedia(latest?['media'])
+                                  ? '🎙 Голосовое'
+                                  : latest?['media'] != null
+                                      ? '📷 Фото'
+                                      : null);
                           return ShadeChatRow(
                             key: ValueKey(peer),
                             title: isSelf ? 'Избранное' : c.peerName(peer),
@@ -824,7 +831,8 @@ class _ConversationState extends State<_Conversation>
                                                     .toInt());
                                     final reply = m['reply'] as Map?;
                                     final media = m['media'] as Map?;
-                                    final mediaBytes = media == null
+                                    final voice = _isVoiceMedia(media);
+                                    final mediaBytes = media == null || voice
                                         ? null
                                         : _mediaBytes(
                                             m['ref'] as String, media);
@@ -866,8 +874,14 @@ class _ConversationState extends State<_Conversation>
                                                   isMine:
                                                       m['from'] == c.account,
                                                   isEncrypted: true,
-                                                  isImage: media != null,
+                                                  isImage:
+                                                      media != null && !voice,
                                                   imageData: mediaBytes,
+                                                  onPlayVoice: voice
+                                                      ? () => c.act(
+                                                          'voice.play',
+                                                          {'ref': m['ref']})
+                                                      : null,
                                                   status:
                                                       AlphaController.status(m),
                                                   deliveryLabel:
@@ -978,6 +992,10 @@ class _ConversationState extends State<_Conversation>
                         ? 3
                         : 5,
                     onTyping: () => c.act('typing', {'account': peer}),
+                    onVoiceRecord: () {
+                      FocusManager.instance.primaryFocus?.unfocus();
+                      c.act('voice.record', {'account': peer});
+                    },
                     onImageSelected: (bytes) async {
                       atBottom = true;
                       await c.act('sendMedia', {

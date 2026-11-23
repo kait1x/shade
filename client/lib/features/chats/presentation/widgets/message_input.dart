@@ -10,6 +10,7 @@ class MessageInput extends StatefulWidget {
   final FutureOr<void> Function(String) onSend;
   final int maxLines;
   final FutureOr<void> Function(List<int>)? onImageSelected;
+  final VoidCallback? onVoiceRecord;
   final VoidCallback? onTyping;
   final VoidCallback? onStopTyping;
   const MessageInput(
@@ -17,6 +18,7 @@ class MessageInput extends StatefulWidget {
       required this.onSend,
       this.maxLines = 5,
       this.onImageSelected,
+      this.onVoiceRecord,
       this.onTyping,
       this.onStopTyping});
   @override
@@ -198,6 +200,16 @@ class _MessageInputState extends State<MessageInput> {
                                 color: context
                                     .shadeColor(ShadeColors.textSecondary),
                                 size: 26))),
+                  if (widget.onVoiceRecord != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 3, right: 4),
+                      child: IconButton(
+                        tooltip: 'Голосовое сообщение',
+                        onPressed:
+                            _picking || _sending ? null : widget.onVoiceRecord,
+                        icon: const Icon(Icons.mic_none_rounded),
+                      ),
+                    ),
                   Expanded(
                       child: AnimatedContainer(
                           duration: ShadeMotion.duration(context, 160),

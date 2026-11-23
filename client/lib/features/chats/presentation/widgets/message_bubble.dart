@@ -18,6 +18,7 @@ class MessageBubble extends StatefulWidget {
   final String? deliveryLabel;
   final String status; // 'sent', 'delivered', 'read'
   final VoidCallback? onLongPress;
+  final VoidCallback? onPlayVoice;
   final bool groupedWithPrevious;
   final bool groupedWithNext;
   final String? replyText;
@@ -34,6 +35,7 @@ class MessageBubble extends StatefulWidget {
     this.status = 'sent',
     this.deliveryLabel,
     this.onLongPress,
+    this.onPlayVoice,
     this.groupedWithPrevious = false,
     this.groupedWithNext = false,
     this.replyText,
@@ -213,7 +215,19 @@ class _MessageBubbleState extends State<MessageBubble> {
                             const Padding(
                                 padding: EdgeInsets.all(20),
                                 child: Text('Фото недоступно')),
-                          if (!isImage) ...[
+                          if (widget.onPlayVoice != null)
+                            TextButton.icon(
+                              onPressed: widget.onPlayVoice,
+                              style: TextButton.styleFrom(
+                                foregroundColor: isMine
+                                    ? Colors.black
+                                    : context
+                                        .shadeColor(ShadeColors.textPrimary),
+                              ),
+                              icon: const Icon(Icons.play_arrow_rounded),
+                              label: const Text('Голосовое'),
+                            ),
+                          if (!isImage && widget.onPlayVoice == null) ...[
                             Text(
                               isEncrypted
                                   ? text

@@ -1,7 +1,7 @@
-import { AlphaClient, api } from './alpha-client.mjs';
+import { AlphaClient, api, voiceMime } from './alpha-client.mjs';
 import { listVaults, MIN_RECOVERY_PASSWORD_LENGTH, DEVICE_PIN_LENGTHS, validDevicePin } from './device_crypto.mjs';
 import { mergeReadMarks, readReadMarks, saveReadMarks } from './alpha-storage.mjs';
-import { hash, genesisText, check } from './protocol/device-v2.mjs';
+import { b64, unb64, hash, genesisText, check } from './protocol/device-v2.mjs';
 import { createDeviceBinding, unlockDeviceBinding, platformAuthenticatorAvailable,
   bindingErrorText } from './device_binding.mjs';
 
@@ -140,6 +140,128 @@ function showDialog(title, elements) {
   document.querySelector('#dialog-title').textContent = title;
   document.querySelector('#dialog-body').replaceChildren(...elements);
   if (!dialog.open) dialog.showModal();
+}
+
+let voicePanel;
+function openVoicePanel(title, elements, cleanup) {
+  voicePanel?.close();
+  const panel = node('dialog');
+  voicePanel = panel;
+  const heading = node('h2', title);
+  heading.id = 'shade-voice-title';
+  panel.setAttribute('aria-labelledby', heading.id);
+  const close = node('button', 'Закрыть', 'btn');
+  close.onclick = () => panel.close();
+  const hide = () => panel.close();
+  window.addEventListener('pagehide', hide, { once: true });
+  panel.addEventListener('close', () => {
+    window.removeEventListener('pagehide', hide);
+    cleanup();
+    panel.remove();
+    if (voicePanel === panel) voicePanel = null;
+  }, { once: true });
+  panel.append(heading, ...elements, close);
+  document.body.append(panel);
+  panel.showModal();
+  return panel;
+}
+
+function recordVoice(account) {
+  check(navigator.mediaDevices?.getUserMedia && typeof MediaRecorder === 'function',
+    'В этом браузере запись голоса недоступна.');
+  const status = node('p', 'До 30 секунд. Сначала можно прослушать запись.');
+  status.setAttribute('role', 'status');
+  const preview = node('audio');
+  preview.controls = true;
+  preview.hidden = true;
+  const record = node('button', 'Записать', 'btn primary');
+  const stop = node('button', 'Остановить запись', 'btn primary');
+  const send = node('button', 'Отправить голосовое', 'btn primary');
+  stop.hidden = send.hidden = true;
+  let recorder, stream, timer, clip, previewUrl;
+  const stopTracks = () => {
+    clearTimeout(timer);
+    stream?.getTracks().forEach(track => track.stop());
+  };
+  const panel = openVoicePanel('Голосовое сообщение', [status, preview, record, stop, send], () => {
+    if (recorder?.state === 'recording') recorder.stop();
+    stopTracks();
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+  });
+  record.onclick = async () => {
+    record.disabled = true;
+    status.textContent = 'Разрешите доступ к микрофону…';
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      if (!panel.open) { stopTracks(); return; }
+      const preference = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/ogg;codecs=opus']
+        .find(type => MediaRecorder.isTypeSupported(type));
+      recorder = new MediaRecorder(stream, { audioBitsPerSecond: 24000, ...(preference ? { mimeType: preference } : {}) });
+      const parts = [];
+      recorder.ondataavailable = ({ data }) => { if (data.size) parts.push(data); };
+      recorder.onerror = () => {
+        stopTracks();
+        if (!panel.open) return;
+        stop.hidden = true;
+        record.hidden = false;
+        record.disabled = false;
+        status.textContent = 'Запись прервалась. Попробуйте ещё раз.';
+      };
+      recorder.onstop = () => {
+        stopTracks();
+        if (!panel.open) return;
+        stop.hidden = true;
+        const mime = (parts[0]?.type || recorder.mimeType).split(';')[0].toLowerCase();
+        clip = new Blob(parts, { type: mime });
+        if (!voiceMime(mime) || clip.size < 128 || clip.size > 2097152) {
+          record.hidden = false;
+          record.disabled = false;
+          status.textContent = 'Запись не удалась. Попробуйте записать ещё раз.';
+          return;
+        }
+        status.textContent = 'Запись готова.';
+        previewUrl = URL.createObjectURL(clip);
+        preview.src = previewUrl;
+        preview.hidden = send.hidden = false;
+      };
+      recorder.start();
+      timer = setTimeout(() => { if (recorder.state === 'recording') recorder.stop(); }, 30000);
+      status.textContent = 'Идёт запись…';
+      record.hidden = true;
+      stop.hidden = false;
+    } catch (error) {
+      stopTracks();
+      status.textContent = error.name === 'NotAllowedError'
+        ? 'Разрешите доступ к микрофону в настройках браузера.'
+        : 'Не удалось включить микрофон.';
+      record.disabled = false;
+    }
+  };
+  stop.onclick = () => { if (recorder?.state === 'recording') recorder.stop(); };
+  send.onclick = async () => {
+    send.disabled = true;
+    try {
+      await client.sendMedia(account, b64(await clip.arrayBuffer()), clip.type);
+      if (panel.open) panel.close();
+    } catch (error) {
+      status.textContent = errors[error.message] || error.message;
+      send.disabled = false;
+    }
+  };
+}
+
+function playVoice(ref) {
+  const media = client.state.messages.find(message => message.ref === ref)?.media;
+  check(media && voiceMime(media.mime), 'Голосовое недоступно.');
+  const bytes = unb64(media.data, 2796204);
+  const audio = node('audio');
+  audio.controls = true;
+  const url = URL.createObjectURL(new Blob([bytes], { type: media.mime }));
+  audio.src = url;
+  const hint = node('p');
+  audio.addEventListener('error', () => { hint.textContent = 'Браузер не смог воспроизвести эту запись.'; });
+  openVoicePanel('Голосовое сообщение', [audio, hint], () => { audio.pause(); URL.revokeObjectURL(url); });
+  audio.play().catch(() => {});
 }
 function isStandalone() {
   return window.matchMedia('(display-mode: standalone)').matches ||
@@ -1135,7 +1257,7 @@ function render() {
         ...meta(account) })),
     ],
     messages: client.state.messages.map(({ref,from,to,text,reply,createdAt,status,devices,media,readAt,chunkRefs}) =>
-      ({ref,from,to,text,reply,createdAt,status,devices,media,readAt,
+      ({ref,from,to,text,reply,createdAt,status,devices,media: media && voiceMime(media.mime) ? { mime: media.mime } : media,readAt,
         chunkRefs: media && chunkRefs ? chunkRefs.length : undefined})),
     notes: client.state.notes ?? {},
     profile: {
@@ -1297,6 +1419,8 @@ async function openApp() {
         case 'position': ui.positions[data.account] = {offset:Math.max(0,data.offset),bottom:!!data.bottom}; saveUi(); break;
         case 'send': await client.send(data.account, data.text, data.reply || null); break;
         case 'sendMedia': await client.sendMedia(data.account, data.image, data.mime || 'image/jpeg'); break;
+        case 'voice.record': recordVoice(data.account); break;
+        case 'voice.play': playVoice(data.ref); break;
         case 'deleteLocal': await client.deleteLocal(data.ref); break;
         case 'retract': await client.retract(data.ref); break;
         case 'sync': await client.sync(); break;

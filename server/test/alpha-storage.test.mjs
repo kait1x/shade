@@ -261,7 +261,8 @@ test('a full device queue backs off that peer and keeps other sends working', as
   const one = { from: 'alice', to: 'bob', deviceId: 'primary', id: 'one' };
   const two = { ...one, id: 'two' };
   const three = { ...one, id: 'three', to: 'carol' };
-  client.state = { outbox: [one, two, three], messages: [] };
+  client.state = { outbox: [one, two, three],
+    messages: [one, two, three].map(m => ({ ref: `${m.from}:${m.deviceId}:${m.id}` })) };
   client.save = async next => { client.state = next; };
   client.scheduleSync = () => {};
   const attempted = [];

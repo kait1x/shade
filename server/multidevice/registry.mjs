@@ -107,6 +107,31 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     state = next; // ACK/state visible only after durable save.
     return value;
   };
+  async function acceptMessage(next, message, digest) {
+    const receiptKey = messageRef(message);
+    const previous = next.receipts[receiptKey];
+    if (previous) {
+      check(previous === digest, 'Message ID conflict');
+      return { accepted: true, duplicate: true };
+    }
+    const sender = current(next, message.from), recipient = current(next, message.to);
+    check(sender && recipient, 'Both accounts must opt into v2');
+    check(sender.expiresAt > clock() && recipient.expiresAt > clock(), 'Expired directory lease');
+    await verifyMessage(message, sender, recipient, clock());
+    check(Object.keys(next.receipts).length < 10000, 'Receipt capacity reached');
+    const size = JSON.stringify(message).length;
+    for (const e of message.envelopes) {
+      const key = `${e.account}:${e.deviceId}`;
+      const queue = next.queues[key] ||= [];
+      check(queue.length < 200 && JSON.stringify(queue).length + size <= 8 * 1024 * 1024, 'Device queue full');
+      if (!queue.some(q => q.id === message.id)) queue.push(structuredClone(message));
+    }
+    next.receipts[receiptKey] = digest;
+    next.receiptAt[receiptKey] = clock();
+    next.delivery[receiptKey] = { from: message.from, devices: message.envelopes
+      .filter(e => e.account === message.to).map(e => ({ account: e.account, id: e.deviceId, acknowledgedAt: null })) };
+    return { accepted: true, duplicate: false };
+  }
   async function authenticate(auth, operation) {
     check(auth && typeof auth === 'object', 'Device proof required');
     const challenge = challenges.get(auth.nonce);
@@ -222,24 +247,20 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
       // A lost response can be retried after renewal without rewriting the
       // durable receipt. The proof and immutable ciphertext digest still match.
       if (previous) { check(previous === digest, 'Message ID conflict'); return { accepted: true, duplicate: true }; }
+      return transaction(next => acceptMessage(next, message, digest));
+    }),
+    sendBatch: (messages, auth) => serial(async () => {
+      check(Array.isArray(messages) && messages.length >= 2 && messages.length <= 8, 'Invalid send batch');
+      const peer = messages[0]?.to;
+      check(messages.every(m => m && m.to === peer && m.from === auth?.account && m.deviceId === auth?.id),
+        'Wrong sending device or mixed recipients');
+      const digests = await Promise.all(messages.map(m => hash(messageText(m))));
+      await authenticate(auth, await operationDigest('send.batch', digests));
+      if (messages.every((m, i) => state.receipts[messageRef(m)] === digests[i])) {
+        return { accepted: true, duplicate: true };
+      }
       return transaction(async next => {
-        const sender = current(next, message.from), recipient = current(next, message.to);
-        check(sender && recipient, 'Both accounts must opt into v2');
-        check(sender.expiresAt > clock() && recipient.expiresAt > clock(), 'Expired directory lease');
-        await verifyMessage(message, sender, recipient, clock());
-        check(Object.keys(next.receipts).length < 10000, 'Receipt capacity reached');
-        for (const e of message.envelopes) {
-          const key = `${e.account}:${e.deviceId}`;
-          const queue = next.queues[key] ||= [];
-          check(queue.length < 200 && JSON.stringify(queue).length + JSON.stringify(message).length <= 8 * 1024 * 1024, 'Device queue full');
-          // Повторная доставка того же id не плодит копии в очереди (дедуп на
-          // сервере, независимо от окна receipts).
-          if (!queue.some(q => q.id === message.id)) queue.push(structuredClone(message));
-        }
-        next.receipts[receiptKey] = digest;
-        next.receiptAt[receiptKey] = clock();
-        next.delivery[receiptKey] = { from: message.from, devices: message.envelopes
-          .filter(e => e.account === message.to).map(e => ({ account: e.account, id: e.deviceId, acknowledgedAt: null })) };
+        for (let i = 0; i < messages.length; i++) await acceptMessage(next, messages[i], digests[i]);
         return { accepted: true, duplicate: false };
       });
     }),

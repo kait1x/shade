@@ -206,9 +206,9 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
   // every user shares one limiter bucket keyed on the proxy IP.
   app.set('trust proxy', 1);
   app.use((req, res, next) => {
-    res.set({ 'Content-Security-Policy': "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; worker-src 'self' blob:",
+    res.set({ 'Content-Security-Policy': "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; worker-src 'self' blob:",
       'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
-      'Permissions-Policy': 'camera=(), microphone=(), geolocation=()', 'Cache-Control': 'no-store' });
+      'Permissions-Policy': 'camera=(), microphone=(self), geolocation=()', 'Cache-Control': 'no-store' });
     if (origin.protocol === 'https:') res.setHeader('Strict-Transport-Security', 'max-age=31536000');
     next();
   });
@@ -655,12 +655,16 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       return res.json(await registry.install(manifest, body.proofs || [], body.genesis || null));
     }
     let result;
-    if (op === 'send') {
+    if (op === 'send' || op === 'send.batch') {
+      const batch = op === 'send.batch';
+      if (batch) check(Array.isArray(body) && body.length >= 2 && body.length <= 8 && body[0], 'Invalid send batch');
+      const messages = batch ? body : [body];
+      const first = messages[0];
       // Когортная маршрутизация (D1): состояние диалога проверяется ДО приёма.
       // Никакой тихой отправки в несовместимое окружение: pending/transferring →
       // HOLD 'migration_pending' (клиент показывает «Диалог переносится…» и
       // держит ciphertext в outbox); v1_active после rollback → честный отказ.
-      const routing = migration ? migration.dialogRoutingFor(body?.from, body?.to) : null;
+      const routing = migration ? migration.dialogRoutingFor(first?.from, first?.to) : null;
       if (routing && (routing.state === 'migration_pending' || routing.state === 'transferring')) {
         return res.status(409).json({ error: 'migration_pending' });
       }
@@ -668,7 +672,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
         return res.status(409).json({ error: 'migration_rolled_back' });
       }
       try {
-        result = await registry.send(body, auth);
+        result = batch ? await registry.sendBatch(messages, auth) : await registry.send(first, auth);
       } catch (e) {
         if (e?.message === 'Device queue full') {
           return res.status(409).json({ error: 'device_queue_full' });
@@ -677,7 +681,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
         // The client keeps the ciphertext in its signed outbox and shows an
         // explicit notice; delivery resumes after the peer migrates.
         if (e?.message === 'Both accounts must opt into v2' &&
-            !registry.exportSnapshot().accounts[body.to]?.history?.length) {
+            !registry.exportSnapshot().accounts[first.to]?.history?.length) {
           return res.status(409).json({ error: 'peer_upgrade_required' });
         }
         if (DIALOG_ERROR_CODES.has(e?.message)) return res.status(409).json({ error: e.message });
@@ -685,14 +689,20 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       }
       // v2-origine пакет фиксируется в journal диалога для reverse-replay.
       // Вызов идемпотентен и на duplicate-ретрае: потерянный ответ лечит journal.
-      if (migration && routing?.state === 'v2_active') await migration.journalV2Send(body);
-      relations.add(pairKey(body.from, body.to));
-      for (const e of body.envelopes) io.to(room(e.account, e.deviceId)).emit('inbox');
+      if (migration && routing?.state === 'v2_active') {
+        for (const message of messages) await migration.journalV2Send(message);
+      }
+      relations.add(pairKey(first.from, first.to));
+      const devices = new Map();
+      for (const message of messages) for (const device of message.envelopes) {
+        devices.set(room(device.account, device.deviceId), device);
+      }
+      for (const target of devices.keys()) io.to(target).emit('inbox');
       // Delivery is committed. A notification provider must not hold the send acknowledgment.
       res.json(result);
       if (pushEnabled || androidPushSender) {
-        for (const e of body.envelopes) {
-          if (e.account === body.from) continue;
+        for (const e of devices.values()) {
+          if (e.account === first.from) continue;
           const sub = registry.pushSubscription(e.account, e.deviceId);
           if (!sub) continue;
           try {

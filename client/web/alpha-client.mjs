@@ -28,6 +28,10 @@ export const digest = (op, body = null) => hash(JSON.stringify([op, body]));
 // media chunks (contract C4) add {"shade":1,"m":{id,mime,index,total,chunk}}.
 // Old histories without the marker keep rendering as plain text.
 const REPLY_PREVIEW_LIMIT = 2000;
+const SEND_BATCH_LIMIT = 8;
+const SEND_BATCH_BYTES = 1536 * 1024;
+const MEDIA_CHUNK_BYTES = 32768;
+export const voiceMime = mime => /^audio\/(webm|ogg|mp4|aac|wav|mpeg)$/i.test(mime);
 function encodePayload(text, reply) {
   check(typeof reply.ref === 'string' && reply.ref.length <= 200 &&
     typeof reply.from === 'string' && typeof reply.text === 'string' && reply.text.length > 0,
@@ -42,7 +46,8 @@ function decodePayload(payload) {
       if (parsed.m && typeof parsed.m === 'object' &&
         typeof parsed.m.id === 'string' && typeof parsed.m.mime === 'string' &&
         Number.isSafeInteger(parsed.m.index) && Number.isSafeInteger(parsed.m.total) &&
-        typeof parsed.m.chunk === 'string') {
+        parsed.m.index >= 0 && parsed.m.index < parsed.m.total && parsed.m.total <= 64 &&
+        typeof parsed.m.chunk === 'string' && parsed.m.chunk.length <= 43692) {
         return { media: parsed.m };
       }
       if (typeof parsed.t === 'string' &&
@@ -222,7 +227,9 @@ export class AlphaClient extends EventTarget {
   // его вместе с хэшем операции. Сервер убеждается, что запрос идёт от владельца
   // ключа, а повторное использование запроса невозможно.
   async proof(op, body = null) {
-    const operation = await digest(op, op === 'send' ? await hash(messageText(body)) : body);
+    const signedBody = op === 'send' ? await hash(messageText(body)) :
+      op === 'send.batch' ? await Promise.all(body.map(message => hash(messageText(message)))) : body;
+    const operation = await digest(op, signedBody);
     const { account, id } = this.session;
     // Backoff только на квоту challenge (120/мин): это дефицитный ресурс.
     // Глобальный /api-лимит НЕ ретраим здесь — повторы в насыщенный бакет
@@ -644,7 +651,7 @@ export class AlphaClient extends EventTarget {
       check(typeof imageBase64 === 'string' && imageBase64.length > 4, 'Не удалось прочитать изображение');
       check(imageBase64.length <= 2796204, 'Изображение слишком большое');
       const raw = unb64(imageBase64, 2796204);
-      const total = Math.ceil(raw.length / 32768);
+      const total = Math.ceil(raw.length / MEDIA_CHUNK_BYTES);
       check(raw.length >= 128 && raw.length <= 2097152, 'Изображение слишком большое');
       const id = Array.from(crypto.getRandomValues(new Uint8Array(16)),
         b => b.toString(16).padStart(2, '0')).join('');
@@ -659,7 +666,7 @@ export class AlphaClient extends EventTarget {
       const history = account === this.session.account ? this.state.own.history : contact(this.state, account)?.history;
       const trust = this.trust(this.session.account, account);
       for (let index = 0; index < total; index++) {
-        const slice = raw.subarray(index * 32768, Math.min((index + 1) * 32768, raw.length));
+        const slice = raw.subarray(index * MEDIA_CHUNK_BYTES, (index + 1) * MEDIA_CHUNK_BYTES);
         const payload = JSON.stringify({ shade: 1, m: { id, mime, index, total, chunk: b64(slice) } });
         messages.push(await c.sealMessage(payload, this.state.own.history, history, this.session, trust));
       }
@@ -891,26 +898,48 @@ export class AlphaClient extends EventTarget {
     let accepted = 0, next;
     const textRefs = new Set(this.state.messages.filter(item => !item.chunkRefs).map(item => item.ref));
     const pending = [...this.state.outbox].sort((a, b) => Number(textRefs.has(ref(b))) - Number(textRefs.has(ref(a))));
-    for (const message of pending) {
+    for (let i = 0; i < pending.length; i++) {
+      const message = pending[i];
       if (accepted >= limit) break;
       if ((this.queueRetryAt.get(message.to) ?? 0) > Date.now()) continue;
       this.queueRetryAt.delete(message.to);
       try {
-        await this.operation('send', message);
+        let batch = [message];
+        if (!textRefs.has(ref(message))) {
+          let size = JSON.stringify(message).length;
+          for (let j = i + 1; j < pending.length && batch.length < Math.min(SEND_BATCH_LIMIT, limit - accepted); j++) {
+            const candidate = pending[j];
+            if (candidate.to !== message.to || textRefs.has(ref(candidate))) break;
+            size += JSON.stringify(candidate).length + 1;
+            if (size > SEND_BATCH_BYTES) break;
+            batch.push(candidate);
+          }
+        }
+        if (batch.length > 1) {
+          try { await this.operation('send.batch', batch); }
+          catch (error) {
+            // A rejected batch changes nothing. Try the front message alone
+            // so the remaining queue space can still be used.
+            if (![400, 409, 413].includes(error.status)) throw error;
+            batch = [message];
+            await this.operation('send', message);
+          }
+        } else await this.operation('send', message);
         next ??= structuredClone(this.state);
-        accepted++;
-        next.outbox = next.outbox.filter(m => m.id !== message.id);
+        i += batch.length - 1;
+        accepted += batch.length;
+        const acceptedRefs = new Set(batch.map(ref));
+        next.outbox = next.outbox.filter(m => !acceptedRefs.has(ref(m)));
         // Агрегация media-статусов: у собранной записи нет собственного конверта,
         // её 'accepted' выводится из того, что все чанки покинули outbox.
         // Media chunk messages have no text record; the assembled display
         // record aggregates their statuses instead: it turns accepted once
         // every chunk left the outbox (relay acceptance, same as text).
-        const record = next.messages.find(m => m.ref === ref(message));
-        if (record) record.status = 'accepted';
-        else {
-          const display = next.messages.find(m => m.chunkRefs?.includes(ref(message)));
-          if (display && display.chunkRefs.every(r => !next.outbox.some(o => ref(o) === r))) {
-            display.status = 'accepted';
+        const queuedRefs = new Set(next.outbox.map(ref));
+        for (const record of next.messages) {
+          if (acceptedRefs.has(record.ref) ||
+              (record.chunkRefs?.some(r => acceptedRefs.has(r)) && record.chunkRefs.every(r => !queuedRefs.has(r)))) {
+            record.status = 'accepted';
           }
         }
       } catch (error) {
@@ -951,7 +980,7 @@ export class AlphaClient extends EventTarget {
         const inboxFirst = [...this.queueRetryAt.values()].some(at => at > Date.now());
         let sendError;
         if (!inboxFirst) {
-          try { await this.flush(4); } catch (error) { sendError = error; }
+          try { await this.flush(SEND_BATCH_LIMIT); } catch (error) { sendError = error; }
         }
         const bundles = await this.operation('fetch');
         let next = bundles.length ? structuredClone(this.state) : this.state;
@@ -1034,7 +1063,7 @@ export class AlphaClient extends EventTarget {
           committed.pendingAck = committed.pendingAck.filter(ref => !batch.includes(ref)); await this.save(committed);
         }
         if (inboxFirst) {
-          try { await this.flush(4); } catch (error) { sendError = error; }
+          try { await this.flush(SEND_BATCH_LIMIT); } catch (error) { sendError = error; }
         }
         await this.refreshDelivery();
         if (sendError) throw sendError;

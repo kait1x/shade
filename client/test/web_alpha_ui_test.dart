@@ -13,8 +13,8 @@ void main() {
   // PopScope<T> runtime types are invariant in Dart, so find.byType(PopScope)
   // misses the PopScope<Object> that MaterialApp routes infer; the predicate
   // form matches every generic instantiation.
-  PopScope popScope(WidgetTester tester) => tester
-      .widget<PopScope>(find.byWidgetPredicate((w) => w is PopScope));
+  PopScope popScope(WidgetTester tester) =>
+      tester.widget<PopScope>(find.byWidgetPredicate((w) => w is PopScope));
 
   test('Delivery is derived from real per-device ACK, never server acceptance',
       () {
@@ -36,6 +36,42 @@ void main() {
     expect(AlphaController.status(message), 'queued');
     message['status'] = 'blocked';
     expect(AlphaController.status(message), 'blocked');
+  });
+
+  testWidgets('voice messages show play and microphone controls',
+      (tester) async {
+    final actions = <String, Map<String, dynamic>>{};
+    final controller = AlphaController((action, payload) async {
+      actions[action] = payload;
+      return null;
+    })
+      ..apply({
+        'account': 'alice',
+        'selected': 'bob',
+        'connected': true,
+        'peers': [
+          {'account': 'bob', 'pinned': true}
+        ],
+        'messages': [
+          {
+            'ref': 'media:voice',
+            'from': 'bob',
+            'to': 'alice',
+            'createdAt': 1700000000000,
+            'status': 'received',
+            'media': {'mime': 'audio/webm'},
+          }
+        ],
+      });
+    await tester.pumpWidget(ShadeAlphaApp(controller: controller));
+    await tester.pumpAndSettle();
+    expect(find.text('Фото недоступно'), findsNothing);
+    await tester.tap(find.text('Голосовое'));
+    await tester.tap(find.byTooltip('Голосовое сообщение'));
+    expect(actions['voice.play'], {'ref': 'media:voice'});
+    expect(actions['voice.record'], {'account': 'bob'});
+    await tester.pumpWidget(const SizedBox());
+    controller.dispose();
   });
 
   testWidgets('Reload restores the actual scroll offset in a tall lazy history',
@@ -83,7 +119,9 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     c.dispose();
     expect(position?['bottom'], false);
-    final restored = AlphaController((_, __) async { return null; });
+    final restored = AlphaController((_, __) async {
+      return null;
+    });
     restored.apply({
       ...data,
       'positions': {'bob': position}
@@ -150,8 +188,7 @@ void main() {
     await tester.pumpAndSettle();
     // Reply preview bar with the original sender and snapshot text.
     expect(find.byTooltip('Отменить ответ'), findsOneWidget);
-    await tester.enterText(
-        find.byKey(const Key('message-field')), 'Вот ответ');
+    await tester.enterText(find.byKey(const Key('message-field')), 'Вот ответ');
     await tester.pump();
     await tester.tap(find.byKey(const Key('send-message')));
     await tester.pumpAndSettle();
@@ -266,8 +303,7 @@ void main() {
     expect(find.text('1'), findsOneWidget);
     await tester.tap(find.text('Ключ собеседника проверен'));
     await tester.pumpAndSettle();
-    expect(
-        actions.where((entry) => entry['action'] == 'verify').length, 1);
+    expect(actions.where((entry) => entry['action'] == 'verify').length, 1);
     await tester.tap(find.byTooltip('Назад к переписке'));
     await tester.pumpAndSettle();
     expect(find.text('Профиль собеседника'), findsNothing);
@@ -286,7 +322,9 @@ void main() {
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
     });
-    final c = AlphaController((_, __) async { return null; });
+    final c = AlphaController((_, __) async {
+      return null;
+    });
     final data = <String, dynamic>{
       'account': 'alice',
       'selected': 'bob',
@@ -338,8 +376,7 @@ void main() {
       'messages': [...(data['messages'] as List), incoming],
     });
     await settle();
-    expect(
-        find.byTooltip('Новых сообщений: 1. К последним'), findsOneWidget);
+    expect(find.byTooltip('Новых сообщений: 1. К последним'), findsOneWidget);
     await tester.tap(find.byKey(const Key('jump-to-latest')));
     await settle();
     expect(find.byKey(const Key('jump-to-latest')), findsNothing);
@@ -391,8 +428,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('99+'), findsOneWidget);
     // The full count stays available to assistive technology.
-    expect(
-        tester.widget<Text>(find.text('99+')).semanticsLabel,
+    expect(tester.widget<Text>(find.text('99+')).semanticsLabel,
         '120 непрочитанных');
     expect(find.text('Повторить'), findsOneWidget);
     await tester.tap(find.text('Повторить'));
@@ -449,8 +485,8 @@ void main() {
       return null;
     });
     final clipboard = <String, String>{};
-    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
-        SystemChannels.platform, (call) async {
+    tester.binding.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, (call) async {
       if (call.method == 'Clipboard.setData') {
         clipboard['text'] = (call.arguments as Map)['text'] as String;
         return null;
@@ -501,8 +537,7 @@ void main() {
         'Работаем над проектом');
     await tester.tap(find.text('Сохранить'));
     await tester.pumpAndSettle();
-    final note =
-        actions.lastWhere((entry) => entry['action'] == 'note');
+    final note = actions.lastWhere((entry) => entry['action'] == 'note');
     final notePayload = note['payload'] as Map;
     expect(notePayload['account'], 'bob');
     expect(notePayload['text'], 'Работаем над проектом');
@@ -515,7 +550,8 @@ void main() {
     c.apply({...data, 'selected': null});
     await tester.pumpAndSettle();
     final dock = find.byType(ShadeTabDock);
-    Finder tab(String label) => find.descendant(of: dock, matching: find.text(label));
+    Finder tab(String label) =>
+        find.descendant(of: dock, matching: find.text(label));
     await tester.tap(tab('Профиль'));
     await tester.pumpAndSettle();
     expect(tester.widget<ShadeTabDock>(dock).selectedIndex, 2);
@@ -523,23 +559,20 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.widget<ShadeTabDock>(dock).selectedIndex, 1);
     // Logging out still requires confirmation after moving it to Settings.
-    await tester.dragUntilVisible(
-        find.text('Выйти из аккаунта'), find.byType(ListView).first,
-        const Offset(0, -160));
+    await tester.dragUntilVisible(find.text('Выйти из аккаунта'),
+        find.byType(ListView).first, const Offset(0, -160));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Выйти из аккаунта'));
     await tester.pumpAndSettle();
     expect(find.text('Выйти из аккаунта?'), findsOneWidget);
     await tester.tap(find.text('Отмена'));
     await tester.pumpAndSettle();
-    expect(
-        actions.where((entry) => entry['action'] == 'logout').length, 0);
+    expect(actions.where((entry) => entry['action'] == 'logout').length, 0);
     await tester.tap(find.text('Выйти из аккаунта'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Выйти'));
     await tester.pumpAndSettle();
-    expect(
-        actions.where((entry) => entry['action'] == 'logout').length, 1);
+    expect(actions.where((entry) => entry['action'] == 'logout').length, 1);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
     c.dispose();
@@ -589,7 +622,8 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Сохранить'));
     await tester.pumpAndSettle();
-    final save = actions.lastWhere((entry) => entry['action'] == 'profile.save');
+    final save =
+        actions.lastWhere((entry) => entry['action'] == 'profile.save');
     final payload = save['payload'] as Map;
     expect(payload['frame'], 'silver');
     expect(payload.containsKey('avatar'), false);
@@ -638,7 +672,8 @@ void main() {
         'Новое Имя');
     await tester.tap(find.text('Сохранить'));
     await tester.pumpAndSettle();
-    final save = actions.lastWhere((entry) => entry['action'] == 'profile.save');
+    final save =
+        actions.lastWhere((entry) => entry['action'] == 'profile.save');
     expect((save['payload'] as Map)['displayName'], 'Новое Имя');
     expect(find.text('Отображаемое имя'), findsNothing);
     expect(tester.takeException(), isNull);
@@ -768,7 +803,8 @@ void main() {
     await tester.enterText(find.byType(TextField), 'Алиса');
     await tester.tap(find.text('Сохранить'));
     await tester.pumpAndSettle();
-    final save = actions.lastWhere((entry) => entry['action'] == 'profile.save');
+    final save =
+        actions.lastWhere((entry) => entry['action'] == 'profile.save');
     final payload = save['payload'] as Map;
     expect(payload['displayName'], 'Алиса');
     expect(tester.takeException(), isNull);
@@ -809,26 +845,33 @@ void main() {
     await tester.pumpAndSettle();
     expect(avatarRequests, 1);
     // A projection with the same digest must not refetch the bytes.
-    c.apply({...data, 'selected': 'bob', 'messages': [
-      {
-        'ref': '1',
-        'from': 'bob',
-        'to': 'alice',
-        'text': 'Привет',
-        'createdAt': 1700000000000,
-        'status': 'received',
-        'devices': [],
-      }
-    ]});
+    c.apply({
+      ...data,
+      'selected': 'bob',
+      'messages': [
+        {
+          'ref': '1',
+          'from': 'bob',
+          'to': 'alice',
+          'text': 'Привет',
+          'createdAt': 1700000000000,
+          'status': 'received',
+          'devices': [],
+        }
+      ]
+    });
     await tester.pumpAndSettle();
     expect(avatarRequests, 1);
     // Changing the digest refetches.
-    c.apply({...data, 'profile': {
-      'displayName': 'Алиса',
-      'frame': 'minimal',
-      'digest': 'digest-2',
-      'revision': 2
-    }});
+    c.apply({
+      ...data,
+      'profile': {
+        'displayName': 'Алиса',
+        'frame': 'minimal',
+        'digest': 'digest-2',
+        'revision': 2
+      }
+    });
     await tester.pumpAndSettle();
     expect(avatarRequests, 2);
     expect(tester.takeException(), isNull);
@@ -836,7 +879,8 @@ void main() {
     c.dispose();
   });
 
-  testWidgets('Alpha sticker wall loads, saves and stays honest', (tester) async {
+  testWidgets('Alpha sticker wall loads, saves and stays honest',
+      (tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(() {
@@ -848,18 +892,10 @@ void main() {
       actions.add({'action': action, 'payload': payload});
       if (action == 'profile.avatar') return {'image': null};
       if (action == 'stickers.load') {
-        return {
-          'inventory': [],
-          'wall': [],
-          'revision': 3
-        };
+        return {'inventory': [], 'wall': [], 'revision': 3};
       }
       if (action == 'stickers.save') {
-        return {
-          'inventory': [],
-          'wall': payload['wall'],
-          'revision': 4
-        };
+        return {'inventory': [], 'wall': payload['wall'], 'revision': 4};
       }
       return null;
     });
@@ -882,22 +918,23 @@ void main() {
         find.byType(ListView).first, const Offset(0, -300));
     await tester.pumpAndSettle();
     expect(find.byType(ReferenceLid), findsOneWidget);
-    final load = actions.lastWhere((entry) => entry['action'] == 'stickers.load');
+    final load =
+        actions.lastWhere((entry) => entry['action'] == 'stickers.load');
     expect((load['payload'] as Map)['owner'], true);
     // The gift entry point must not exist: the v2 contract is missing.
     expect(find.text('Подарить'), findsNothing);
     // The dev hint is gone in the shipped profile.
     expect(find.textContaining('Обмен подарками появится'), findsNothing);
     // Editing an empty wall saves a real revision through the adapter.
-    await tester.dragUntilVisible(
-        find.text('Оформить'), find.byType(ListView).first,
-        const Offset(0, -200));
+    await tester.dragUntilVisible(find.text('Оформить'),
+        find.byType(ListView).first, const Offset(0, -200));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Оформить'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Готово'));
     await tester.pumpAndSettle();
-    final save = actions.lastWhere((entry) => entry['action'] == 'stickers.save');
+    final save =
+        actions.lastWhere((entry) => entry['action'] == 'stickers.save');
     final payload = save['payload'] as Map;
     expect(payload['revision'], 3);
     expect(payload['wall'], isEmpty);
@@ -1116,7 +1153,9 @@ void main() {
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
     });
-    final c = AlphaController((_, __) async { return null; });
+    final c = AlphaController((_, __) async {
+      return null;
+    });
     final data = <String, dynamic>{
       'account': 'alice',
       'selected': 'bob',
@@ -1171,5 +1210,6 @@ class _StaticPhotoPlatform extends ImagePickerPlatform {
     required ImageSource source,
     ImagePickerOptions options = const ImagePickerOptions(),
   }) =>
-      Future.value(XFile.fromData(bytes, name: 'avatar.png', mimeType: 'image/png'));
+      Future.value(
+          XFile.fromData(bytes, name: 'avatar.png', mimeType: 'image/png'));
 }
