@@ -13,7 +13,6 @@ import 'package:shade/core/theme/shade_theme.dart';
 import 'package:shade/core/widgets/shade_chat_list.dart';
 import 'package:shade/core/widgets/avatar_view.dart';
 import 'package:shade/core/widgets/shade_motion.dart';
-import 'package:shade/features/home/presentation/widgets/home_style.dart';
 import 'package:shade/core/widgets/shade_ui.dart';
 
 import 'v2_social.dart';
