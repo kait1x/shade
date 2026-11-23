@@ -179,7 +179,7 @@ async function send(page, text) {
   await page.getByText(textMarker(text),{exact:false}).last().waitFor({state:'attached',timeout:120000});
 }
 async function unlock(page) {
-  const field = page.getByLabel('Фраза устройства',{exact:true});
+  const field = page.getByLabel('Пароль этого браузера',{exact:true});
   await field.waitFor({timeout:10000}).catch(async () => {
     // boot() can fail once on a throttle window after a reload; a real user
     // simply refreshes. Keys and history are untouched either way.
@@ -199,7 +199,7 @@ async function unlock(page) {
 async function linkingScreen(page) {
   for (let attempt = 0; attempt < 4; attempt++) {
     try {
-      await page.getByRole('heading',{name:'Нужна привязка устройства'}).waitFor({timeout:30000});
+      await page.getByRole('heading',{name:'Вход на новом устройстве'}).waitFor({timeout:30000});
       return;
     } catch {
       const blank = await page.evaluate(() => !document.body || document.body.childElementCount === 0).catch(() => true);
@@ -210,7 +210,7 @@ async function linkingScreen(page) {
       await page.getByRole('link',{name:'Продолжить с Google'}).click();
     }
   }
-  await page.getByRole('heading',{name:'Нужна привязка устройства'}).waitFor({timeout:60000});
+  await page.getByRole('heading',{name:'Вход на новом устройстве'}).waitFor({timeout:60000});
 }
 async function longPress(page, text) {
   const target = page.getByText(text,{exact:false}).last();
@@ -995,7 +995,7 @@ try {
   await linkingScreen(recNew.page);
   assert.equal(await recNew.page.evaluate(async () =>
     (await (await import('/device_crypto.mjs')).listVaults()).length), 0);
-  await recNew.page.getByRole('button',{name:'Восстановить с recovery-пакетом'}).click();
+  await recNew.page.getByRole('button',{name:'Восстановить доступ'}).click();
   await recNew.page.getByText('Восстановление аккаунта',{exact:true}).waitFor({timeout:30000});
   // Честная плашка на форме: старая переписка не восстанавливается.
   await recNew.page.getByText('Старая переписка недоступна: она шифровалась под утраченные ключи',{exact:false}).first().waitFor();

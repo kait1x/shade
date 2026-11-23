@@ -618,7 +618,7 @@ function unlockStep(candidates, status) {
     form.append(select);
   }
   const chosen = () => candidates.find(v => v.id === (select ? select.value : candidates[0].id));
-  const phraseField = input(form, 'Фраза устройства', 'passphrase', 'password', 0, { autocomplete: 'current-password' });
+  const phraseField = input(form, 'Пароль этого браузера', 'passphrase', 'password', 0, { autocomplete: 'current-password' });
   let unlocking = false;
   const pinPad = attachPinPad(phraseField, () => form.requestSubmit());
   const note = node('p', undefined, 'gen-progress');
@@ -627,35 +627,37 @@ function unlockStep(candidates, status) {
   const unlock = submit(form, 'Разблокировать');
   // Точка входа в восстановление: ключи этого браузера могут быть утрачены
   // (PRF-vault без passkey, забытая фраза). Кнопка рабочая всегда, без dead-end.
-  const prfError = node('p', undefined, 'card-error');
-  prfError.hidden = true;
-  prfError.setAttribute('role', 'alert');
-  const recovery = node('button', 'Восстановить с recovery-пакетом', 'btn outline');
+  const unlockError = node('p', undefined, 'card-error');
+  unlockError.hidden = true;
+  unlockError.setAttribute('role', 'alert');
+  const recovery = node('button', 'Восстановить доступ', 'btn outline');
   recovery.type = 'button';
   recovery.onclick = () => recoveryScreen();
-  const recoveryHint = node('p', 'Потеряли ключи этого браузера? Восстановление создаст новые ключи устройства; старая переписка останется недоступной.', 'muted');
+  const hint = node('p', undefined, 'card-sub');
   const box = onboard({
     cardTitle: 'Разблокировать Shade',
-    cardSubtitle: 'Разблокируйте ключи и историю, сохранённые в этом браузере.',
-    children: [form, prfError, recovery, recoveryHint, changeAccountButton()],
+    children: [hint, form, unlockError, recovery, changeAccountButton()],
   });
-  const card = box.querySelector('.onboard-card');
-  const hint = node('p', undefined, 'card-sub');
+  box.classList.add('shade-unlock');
   const refresh = () => {
     const vault = chosen();
-    const byPhrase = vault.binding?.method !== 'prf';
-    phraseField.closest('label').hidden = !byPhrase;
-    phraseField.required = byPhrase;
+    const system = vault.binding?.method === 'prf';
+    const pin = Boolean(vault.pinLength);
+    phraseField.closest('label').hidden = system;
+    phraseField.disabled = system;
+    phraseField.required = !system;
     pinPad.setLength(vault.pinLength);
-    unlock.hidden = Boolean(vault.pinLength);
-    box.classList.toggle('pin-lock', Boolean(vault.pinLength));
+    unlock.hidden = pin;
+    unlock.textContent = system ? 'Подтвердить на устройстве' : 'Разблокировать';
+    box.classList.toggle('pin-lock', pin);
     phraseField.closest('label').querySelector('.field-label').textContent =
-      vault.pinLength ? 'PIN этого браузера' : 'Фраза устройства';
-    hint.textContent = byPhrase ? `Локальные ключи @${vault.account}` : 'Ключи @' + vault.account + ' защищены системной защитой.';
-    prfError.hidden = true;
-    recovery.className = vault.pinLength ? 'btn-text' : 'btn outline';
-    recovery.textContent = vault.pinLength ? 'Забыли PIN?' : 'Восстановить с recovery-пакетом';
-    card.insertBefore(hint, form);
+      pin ? 'PIN этого браузера' : 'Пароль этого браузера';
+    hint.textContent = pin ? `Введите PIN для @${vault.account}`
+      : system ? `Подтвердите вход в @${vault.account} системным способом.`
+        : `Введите пароль или фразу, которую задали в этом браузере для @${vault.account}.`;
+    unlockError.hidden = true;
+    recovery.className = pin ? 'btn-text' : 'btn outline';
+    recovery.textContent = pin ? 'Забыли PIN?' : 'Восстановить доступ';
   };
   if (select) select.addEventListener('change', refresh);
   refresh();
@@ -665,6 +667,7 @@ function unlockStep(candidates, status) {
     unlocking = true;
     const vault = chosen();
     if (select) select.disabled = true;
+    unlockError.hidden = true;
     if (vault.pinLength) {
       pinPad.setBusy(true);
       showProgress(note, 'Разблокируем Shade…');
@@ -676,13 +679,12 @@ function unlockStep(candidates, status) {
         try { passphrase = await unlockDeviceBinding(vault.binding); }
         catch (error) {
           note.hidden = true;
-          // Честный постоянный текст вместо временного notice: PRF-vault без
-          // passkey не открыть фразой, рабочий путь — recovery-пакет.
-          const text = error.message === 'prf_unavailable'
-            ? 'Аутентификатор этого устройства не поддерживает вывод ключа (PRF), а у PRF-vault нет отдельной фразы. Разблокировка — биометрией на исходном устройстве или восстановление через recovery-пакет.'
-            : (bindingErrorText(error) || error.message);
-          prfError.textContent = text; prfError.hidden = false;
-          recovery.className = 'btn primary';
+          const canceled = error.name === 'NotAllowedError';
+          unlockError.textContent = canceled
+            ? 'Подтверждение не завершено. Попробуйте ещё раз.'
+            : 'Системный ключ недоступен в этом браузере. Откройте Shade на исходном устройстве или восстановите доступ.';
+          unlockError.hidden = false;
+          if (!canceled) recovery.className = 'btn primary';
           return;
         }
       } else passphrase = phraseField.value;
@@ -691,11 +693,18 @@ function unlockStep(candidates, status) {
       let result;
       try { result = await client.loadForPairing(vault, passphrase); }
       catch (error) {
-        if (vault.pinLength && error.name === 'OperationError') {
+        if (error.name !== 'OperationError') throw error;
+        if (vault.binding?.method === 'prf') {
+          unlockError.textContent = 'Системный ключ не открыл хранилище. Попробуйте снова или восстановите доступ.';
+          unlockError.hidden = false;
+          recovery.className = 'btn primary';
+        } else if (vault.pinLength) {
           pinPad.showError('Неверный PIN. Попробуйте ещё раз.');
-          return;
+        } else {
+          unlockError.textContent = 'Пароль не подошёл. Попробуйте ещё раз.';
+          unlockError.hidden = false;
         }
-        throw error;
+        return;
       }
       phraseField.value = '';
       if (result.pending) { pairingOfferStage(); return; }
@@ -716,14 +725,14 @@ function linkStep(account) {
   pair.onclick = () => pairingOnboarding(account);
   // Все устройства потеряны: recovery-пакет — единственный оставшийся актив,
   // поэтому вход в восстановление рабочий уже здесь, а не «появится позже».
-  const recovery = node('button', 'Восстановить с recovery-пакетом', 'btn outline');
+  const recovery = node('button', 'Восстановить доступ', 'btn outline');
   recovery.type = 'button';
   recovery.onclick = () => recoveryScreen();
   onboard({
-    cardTitle: 'Нужна привязка устройства',
-    cardSubtitle: 'Этот Google-аккаунт уже зарегистрирован, но в этом браузере нет его ключей. Ключи создаются здесь и входят в аккаунт только после подтверждения на доверенном устройстве.',
-    children: [pair, recovery, node('p', 'Все устройства потеряны? Recovery-пакет вернёт личность и доступ к новым сообщениям; старая переписка останется недоступной.', 'muted'), changeAccountButton()],
-  });
+    cardTitle: 'Вход на новом устройстве',
+    cardSubtitle: `Чтобы открыть @${account} в этом браузере, подтвердите подключение там, где Shade уже открыт.`,
+    children: [pair, recovery, node('p', 'Если доступа к старым устройствам нет, используйте пароль восстановления. Он вернёт доступ к новым сообщениям.', 'muted'), changeAccountButton()],
+  }).classList.add('shade-link');
 }
 function errorStep(message) {
   const retry = node('button', 'Обновить', 'btn outline');

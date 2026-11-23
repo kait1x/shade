@@ -62,7 +62,7 @@ try {
     return null;
   });
   console.log('SHIM PRECACHE', precache);
-  await step('link-step', () => page.getByRole('button', { name: 'Восстановить с recovery-пакетом' }).click());
+  await step('link-step', () => page.getByRole('button', { name: 'Восстановить доступ' }).click());
   await step('form', () => page.getByText('Восстановление аккаунта', { exact: true }).waitFor({ timeout: 30000 }));
   // Flutter entrance animation: webkit stability wait требует оседания макета.
   await page.waitForTimeout(2500);

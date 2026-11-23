@@ -81,7 +81,7 @@ const main = await browser('main');
 await register(main.page, 'shot_alice', 'synthetic-shot-alice');
 // Returning user: unlock card adapts to the vault binding method.
 await main.page.reload();
-await main.page.getByLabel('Фраза устройства',{exact:true}).waitFor({timeout:30000});
+await main.page.getByLabel('Пароль этого браузера',{exact:true}).waitFor({timeout:30000});
 await shot(main.page, 'unlock');
 // Nickname validation error state.
 {

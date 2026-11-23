@@ -125,9 +125,9 @@ try {
     const marks = { shell: 0, flutter: 0 };
     const navStart = Date.now();
     await page.goto(f.origin);
-    await page.getByLabel('Фраза устройства').waitFor();
+    await page.getByLabel('Пароль этого браузера', { exact: true }).waitFor();
     marks.shell = Date.now() - navStart;
-    await page.getByLabel('Фраза устройства').fill(phrase);
+    await page.getByLabel('Пароль этого браузера', { exact: true }).fill(phrase);
     const [unlockMs] = await t(async () => {
       await page.getByRole('button', { name: 'Разблокировать' }).click();
       await page.locator('.flutter-loading').waitFor({ state: 'detached', timeout: 120000 });
