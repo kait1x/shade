@@ -6,7 +6,8 @@ import { beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';
-import { createVault, unlockVault, saveVault, loadVault, listVaults } from '../../client/web/device_crypto.mjs';
+import { createVault, unlockVault, saveVault, loadVault, listVaults, unlockRecoveryBackup } from '../../client/web/device_crypto.mjs';
+import { createDeviceRegistry } from '../multidevice/registry.mjs';
 import { readReadMarks, readState, saveReadMarks, writeState } from '../../client/web/alpha-storage.mjs';
 
 const phrase = 'synthetic storage reliability passphrase';
@@ -184,6 +185,45 @@ test('v1 databases upgrade additively to v2 without losing vaults', async () => 
   await saveVault(await createVault('upgrade_second', phrase));
   assert.equal((await listVaults()).length, 2);
 });
+test('web registration resumes on the server clock without replacing local keys', async t => {
+  globalThis.window = new EventTarget();
+  t.after(() => { delete globalThis.window; });
+  Object.defineProperty(navigator, 'onLine', { value: true, configurable: true });
+  t.after(() => { delete navigator.onLine; });
+  const { AlphaClient } = await import('../../client/web/alpha-client.mjs');
+  const recoveryPassword = 'synthetic recovery password';
+  let serverTime = Date.now() + 10 * 60_000;
+  const registry = await createDeviceRegistry({
+    users: new Map(), persist: async () => {},
+    verifyGoogle: async () => ({ googleSub: 'synthetic-registration' }),
+    clock: () => serverTime,
+  });
+  t.mock.method(globalThis, 'fetch', async (route, request) => {
+    if (route === '/api/session') {
+      return Response.json({ authenticated: true, account: null, serverTime });
+    }
+    assert.equal(route, '/api/v2/register');
+    await registry.register(JSON.parse(request.body));
+    return Response.json({ ok: true });
+  });
+  const client = new AlphaClient();
+  await client.prepare('resume_test', phrase, recoveryPassword);
+  const original = client.state.own.genesis;
+  assert.equal(original.createdAt, serverTime);
+
+  serverTime += 6 * 60_000;
+  await assert.rejects(client.register(), /stale_registration/);
+  await client.renewPending(recoveryPassword);
+  await client.register();
+
+  const registered = registry.directory('resume_test');
+  assert.equal(registered.genesis.createdAt, serverTime);
+  assert.deepEqual(registered.genesis.firstDevice, original.firstDevice);
+  assert.equal(registered.history[0].issuedAt, serverTime);
+  assert.ok(await unlockRecoveryBackup(client.state.backup, recoveryPassword, registered.genesis));
+  assert.equal((await readState(client.session)).value.registered, true);
+});
+
 test('web status refresh retains confirmed reads after reopening the vault', async t => {
   globalThis.window = new EventTarget();
   t.after(() => { delete globalThis.window; });

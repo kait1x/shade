@@ -156,7 +156,7 @@ export class AlphaClient extends EventTarget {
   }
   // Создание нового устройства: vault, genesis аккаунта и recovery-backup
   // (шифруется recovery-фразой). Identity сохраняется локально до каких-либо
-  // HTTP-запросов — регистрация на сервере отдельный шаг register().
+  // отправки заявки — регистрация на сервере отдельный шаг register().
   async prepare(account, passphrase, recoveryPhrase, binding, { pinLength } = {}) {
     check(!(await c.listVaults()).some(v => v.account === account), 'На этом устройстве уже есть ключи аккаунта. Разблокируйте их.');
     check(pinLength === undefined || !binding, 'Choose a single device protection method');
@@ -166,9 +166,11 @@ export class AlphaClient extends EventTarget {
     if (binding) vault.binding = binding;
     const session = await c.unlockVault(vault, passphrase);
     let backup = await c.createRecoveryBackup(account, vault.signingKey, recoveryPhrase);
-    const genesis = await c.createGenesis(vault, session, backup.publicKey);
+    const { serverTime } = await api('/api/session');
+    const now = serverTime ?? Date.now();
+    const genesis = await c.createGenesis(vault, session, backup.publicKey, now);
     backup = await c.finalizeRecoveryBackup(backup, recoveryPhrase, genesis);
-    const manifest = await c.approveDevices(genesis, [], [c.descriptor(vault)], session);
+    const manifest = await c.approveDevices(genesis, [], [c.descriptor(vault)], session, null, now);
     this.vault = vault; this.session = session; this.revision = 0;
     // Identity and pending registration survive even if HTTP fails afterwards.
     await c.saveVault(vault);
@@ -183,13 +185,15 @@ export class AlphaClient extends EventTarget {
       check(this.state && !this.state.registered, 'Регистрация уже завершена');
       const status = await api('/api/session');
       if (status.account === this.session.account) { await this.refreshOwn(); return; }
+      check(status.authenticated, 'google_login_required');
       check(!status.account, 'Google уже привязан к другому аккаунту');
-      check(this.state.own.genesis.createdAt >= Date.now() - 240000,
-        'Срок регистрации истёк. Обновите recovery-пакет ниже; ключи устройства сохранятся.');
-      const manifest = await c.approveDevices(this.state.own.genesis, [], [c.descriptor(this.vault)], this.session);
+      const now = status.serverTime ?? Date.now();
+      const createdAt = this.state.own.genesis.createdAt;
+      check(createdAt >= now - 240000 && createdAt <= now + 30000, 'stale_registration');
+      const manifest = await c.approveDevices(this.state.own.genesis, [], [c.descriptor(this.vault)], this.session, null, now);
       const pending = structuredClone(this.state); pending.own.history = [manifest]; await this.save(pending);
       await api('/api/v2/register', { genesis: this.state.own.genesis, manifest,
-        proofs: [await c.pairingProof(this.vault, this.session)], recoveryBackup: this.state.backup });
+        proofs: [await c.pairingProof(this.vault, this.session, now)], recoveryBackup: this.state.backup }, { timeoutMs: 60000 });
       const next = structuredClone(this.state); next.own.history = [manifest]; next.registered = true;
       await this.save(next);
     });
@@ -198,10 +202,13 @@ export class AlphaClient extends EventTarget {
   // окна регистрации) с перепривязкой backup к той же recovery-фразе.
   async renewPending(recoveryPhrase) {
     return this.exclusive(async () => {
-      check(!this.state.registered && !(await api('/api/session')).account, 'Аккаунт уже существует; genesis неизменяем');
-      const genesis = await c.createGenesis(this.vault,this.session,this.state.own.genesis.recoveryKey);
-      const backup = await c.rebindPendingBackup(this.state.backup,recoveryPhrase,this.state.own.genesis,genesis);
-      const manifest = await c.approveDevices(genesis,[],[c.descriptor(this.vault)],this.session);
+      const status = await api('/api/session');
+      check(status.authenticated, 'google_login_required');
+      check(!this.state.registered && !status.account, 'Аккаунт уже существует; genesis неизменяем');
+      const now = status.serverTime ?? Date.now();
+      const genesis = await c.createGenesis(this.vault, this.session, this.state.own.genesis.recoveryKey, now);
+      const backup = await c.rebindPendingBackup(this.state.backup, recoveryPhrase, this.state.own.genesis, genesis);
+      const manifest = await c.approveDevices(genesis, [], [c.descriptor(this.vault)], this.session, null, now);
       const next = structuredClone(this.state); next.own = {root:this.vault.signingKey,genesis,history:[manifest]};
       next.backup = backup; await this.save(next);
     });

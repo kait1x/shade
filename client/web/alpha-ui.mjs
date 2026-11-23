@@ -46,6 +46,7 @@ function announceIncoming() {
 const errors = { google_login_required: 'Сессия Google истекла. Войдите снова; ключи сохранены.',
   login_required: 'Сессия истекла. Войдите снова; ключи сохранены.',
   rate_limited: 'Слишком много запросов. Подождите немного и повторите.',
+  stale_registration: 'Обновите заявку с помощью пароля Shade. Ключи устройства сохранятся.',
   operation_rejected: 'Операция отклонена. Проверьте сеть, срок каталога и доступ устройства. Сообщение не отмечено доставленным.',
   account_requires_linking: 'Аккаунт уже существует. Нужна привязка доверенным устройством; новые ключи не назначены.',
   // D1: честные HOLD-тексты когортной миграции. Сообщение остаётся в outbox
@@ -554,13 +555,16 @@ async function finishRegistration(note, { newAccount = false } = {}) {
   showProgress(note, 'Подключаемся к Shade…');
   try { await client.register(); }
   catch (error) {
-    if (newAccount) resumeRegistrationStep();
+    if (newAccount) resumeRegistrationStep({ expired: error.message === 'stale_registration' });
+    if (error.message === 'operation_rejected') {
+      throw Error('Сервер отклонил регистрацию. Ключи сохранены. Попробуйте обновить заявку.');
+    }
     throw error;
   }
   await openApp();
 }
 
-function resumeRegistrationStep() {
+function resumeRegistrationStep({ expired = false } = {}) {
   const form = node('form');
   submit(form, 'Продолжить регистрацию');
   const note = node('p', undefined, 'gen-progress');
@@ -574,6 +578,7 @@ function resumeRegistrationStep() {
   download.onclick = downloadBackup;
   const renew = expander('Если срок регистрации истёк',
     [node('p', 'Введите пароль восстановления. Shade сохранит ключи этого устройства.', 'expain-body'), renewForm]);
+  renew.open = expired;
   onboard({
     cardTitle: 'Продолжите регистрацию',
     cardSubtitle: 'Ключи уже сохранены в этом браузере.',
@@ -584,6 +589,10 @@ function resumeRegistrationStep() {
     action(async () => {
       if (!form.isConnected) return;
       try { await finishRegistration(note); }
+      catch (error) {
+        if (error.message === 'stale_registration') renew.open = true;
+        throw error;
+      }
       finally { note.hidden = true; }
     });
   };

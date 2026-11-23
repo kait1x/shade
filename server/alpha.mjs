@@ -271,8 +271,9 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     // PushSubscription (applicationServerKey). The private key never leaves
     // the server configuration; null when push is not configured.
     const vapidPublicKey = pushEnabled ? vapidKeys.publicKey : null;
+    const serverTime = Date.now();
     const s = sessions.get(req.cookies[sidName]);
-    if (!s || s.expiresAt <= Date.now()) return res.json({ authenticated: false, googleConfigured: provider.configured, vapidPublicKey });
+    if (!s || s.expiresAt <= serverTime) return res.json({ authenticated: false, googleConfigured: provider.configured, vapidPublicKey, serverTime });
     const account = sessionAccount(s);
     // Recovery-сессия: каталог выдаётся только через op directory, здесь не раскрываем.
     if (s.kind === 'recovery') return res.json({ authenticated: true, googleConfigured: provider.configured,
@@ -280,7 +281,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     // Verified Google email from the server-side session profile; the web
     // bridge forwards it into the shadeReceive presentation snapshot. Legacy
     // (nickname-only) sessions carry no profile — email stays null for them.
-    res.json({ authenticated: true, googleConfigured: provider.configured, account, vapidPublicKey,
+    res.json({ authenticated: true, googleConfigured: provider.configured, account, vapidPublicKey, serverTime,
       email: typeof s.profile?.email === 'string' ? s.profile.email : null,
       cloudRecoverySaved: Boolean(account && registry.hasRecoveryBackup(account)),
       directory: account ? registry.directory(account) : null });
@@ -944,6 +945,7 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
     res.status(code).json({ error: /Google OAuth is not configured/.test(message) ? 'google_not_configured' :
       /Push is not configured/.test(message) ? 'push_not_configured' :
       /already registered/.test(message) ? 'account_requires_linking' :
+      message === 'Stale registration' ? 'stale_registration' :
       /Stale directory update/.test(message) ? 'stale_directory' : 'operation_rejected' });
   });
   return { app, server, io, registry, migration,
