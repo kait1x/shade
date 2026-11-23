@@ -542,6 +542,9 @@ void main() {
     var conv = await sync.conversation(_account);
     expect(conv.single.text, 'заметка offline');
     expect(conv.single.status, 'queued');
+    final queuedPreview = (await sync.chats()).first;
+    expect(queuedPreview.lastText, 'заметка offline');
+    expect(queuedPreview.lastStatus, 'queued');
 
     // 2) Сеть появилась: retry ТОГО ЖЕ ciphertext/ID, без дублей.
     final sealedOffline =
@@ -618,6 +621,16 @@ void main() {
     conv = await sync.conversation(_peerAccount);
     expect(conv.single.status, 'delivered');
     expect((await store.messagesByPeer(_peerAccount)).length, 1);
+    final previews = await sync.chats();
+    expect(previews.first.peer, _account);
+    expect(previews[1].lastText, 'peer offline заметка');
+    expect(previews[1].lastStatus, 'delivered');
+    await store.upsertDelivery(conv.single.ref, 'primary', 1, readAt: 2);
+    expect((await sync.chats())[1].lastStatus, 'read');
+    await store.markRetracted(conv.single.ref);
+    final retractedPreview = (await sync.chats())[1];
+    expect(retractedPreview.lastStatus, 'retracted');
+    expect(retractedPreview.lastText, 'Сообщение отозвано');
 
     // 5) Legacy-мост primary работает (auth 'primary'), lease продлевается
     //    primary-якорем; sessionId остаётся 'primary'.

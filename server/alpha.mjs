@@ -709,22 +709,19 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       return;
     } else if (op === 'fetch') result = await registry.fetch(auth);
     else if (op === 'ack') {
-      const pending = registry.exportSnapshot().queues[room(auth.account, auth.id)] || [];
-      result = await registry.acknowledge(body, auth);
+      const { acknowledged, senders = [] } = await registry.acknowledge(body, auth, true);
+      result = { acknowledged };
       // Ack отмечается и в per-dialog journal (D1, аддитивно).
       if (migration) await migration.ackDialogRefs(auth.account, body);
-      for (const m of pending) if (body.includes(`${m.from}:${m.deviceId}:${m.id}`)) {
-        const dir = registry.directory(m.from).history.at(-1);
-        for (const d of dir.devices) io.to(room(m.from, d.id)).emit('receipts');
+      for (const from of senders) {
+        for (const id of registry.deviceIds(from)) io.to(room(from, id)).emit('receipts');
       }
     } else if (op === 'status') result = await registry.status(body, auth);
     else if (op === 'read') {
-      result = await registry.read(body, auth);
-      const snap = registry.exportSnapshot();
-      for (const ref of body) {
-        const from = snap.delivery[ref]?.from;
-        const dir = from ? snap.accounts[from]?.history.at(-1) : null;
-        if (dir) for (const d of dir.devices) io.to(room(from, d.id)).emit('receipts');
+      const { read, senders = [] } = await registry.read(body, auth, true);
+      result = { read };
+      for (const from of senders) {
+        for (const id of registry.deviceIds(from)) io.to(room(from, id)).emit('receipts');
       }
     } else if (op === 'history.transfer') {
       result = await registry.historyTransfer(body, auth);
@@ -734,14 +731,14 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       result = await registry.historyAck(body, auth);
     } else if (op === 'retract') {
       result = await registry.retract(body, auth);
-      const snap = registry.exportSnapshot();
+      const rooms = new Set();
       for (const ref of body) {
-        const delivery = snap.delivery[ref];
+        const delivery = registry.deliveryFor(ref);
         if (!delivery) continue;
-        for (const d of delivery.devices) io.to(room(d.account, d.id)).emit('retracted');
-        const senderDir = snap.accounts[delivery.from]?.history.at(-1);
-        if (senderDir) for (const d of senderDir.devices) io.to(room(delivery.from, d.id)).emit('retracted');
+        for (const d of delivery.devices) rooms.add(room(d.account, d.id));
+        for (const id of registry.deviceIds(delivery.from)) rooms.add(room(delivery.from, id));
       }
+      for (const target of rooms) io.to(target).emit('retracted');
     } else if (op === 'retractions') result = await registry.retractions(body, auth);
     else if (op === 'recovery.backup') result = await registry.saveRecoveryBackup(body, auth);
     else if (op === 'legacy.inbox' || op === 'legacy.ack') {
@@ -783,10 +780,9 @@ export async function createAlphaServer({ dataDir, storageSecret, publicOrigin,
       // Guard несёт per-dialog routing-флаг через мост (аддитивная секция).
       await exportGuard();
       // Wake-подсказка обоим участникам; авторитет — подписанный status-fetch.
-      const routingSnap = registry.exportSnapshot();
       for (const account of [auth.account, peer]) {
-        for (const d of routingSnap.accounts[account]?.history.at(-1)?.devices || []) {
-          io.to(room(account, d.id)).emit('dialogRouting', {
+        for (const id of registry.deviceIds(account)) {
+          io.to(room(account, id)).emit('dialogRouting', {
             peer: account === auth.account ? peer : auth.account,
             state: result.state, revision: result.revision });
         }

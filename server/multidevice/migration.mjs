@@ -733,24 +733,11 @@ export function createMigration({ registry, source, clock = Date.now }) {
     // Ack v2-сообщений отмечается в journal диалога (аддитивно к registry.acknowledge).
     async ackDialogRefs(account, refs) {
       if (!Array.isArray(refs) || !refs.length) return { acked: 0 };
-      const keys = Object.keys(registry.exportSnapshot().dialogRouting?.dialogs || {})
-        .filter(key => key.split('|').includes(account));
-      if (!keys.length) return { acked: 0 };
-      const wanted = new Set(refs.map(r => { const p = String(r).split(':'); return `${p[0]}:${p[2]}`; }));
-      let outcome;
-      await registry.updateState(async next => {
-        sections(next);
-        let acked = 0;
-        for (const key of keys) {
-          const record = next.dialogRouting.dialogs[key];
-          if (!record) continue;
-          for (const e of record.journal) {
-            if (!e.acked && wanted.has(`${e.from}:${e.id}`)) { e.acked = true; acked++; }
-          }
-        }
-        outcome = { acked };
-      });
-      return outcome;
+      const wanted = new Set(refs.map(ref => {
+        const [from, , id] = String(ref).split(':');
+        return `${from}:${id}`;
+      }));
+      return registry.ackDialogJournal(account, wanted);
     },
 
     // Additive reverse-replay export для v1-моста (по образцу guard/bridgeAck):

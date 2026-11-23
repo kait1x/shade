@@ -195,17 +195,37 @@ test('web status refresh retains confirmed reads after reopening the vault', asy
     { ref: 'text', from: session.account, status: 'accepted', devices: [device] },
     { ref: 'photo', from: session.account, status: 'accepted', chunkRefs: ['chunk'], devices: [device] },
   ];
-  await writeState(session, { messages }, 0);
+  await writeState(session, { messages, pendingAck: [], registered: true }, 0);
   const client = new AlphaClient();
   await client.load(vault, phrase);
   client.operation = async (op, refs) => {
     assert.equal(op, 'status');
-    assert.deepEqual(refs, ['text', 'chunk']);
-    return { text: [], chunk: [{ account: device.account, id: device.id, acknowledgedAt: 150 }] };
+    assert.deepEqual(refs, ['chunk']);
+    return { chunk: [{ account: device.account, id: device.id, acknowledgedAt: 150 }] };
   };
   await client.refreshDelivery();
 
   const reopened = await readState(session);
   assert.deepEqual(reopened.value.messages[0].devices, [device]);
   assert.deepEqual(reopened.value.messages[1].devices, [{ ...device, acknowledgedAt: 150 }]);
+  await client.refreshDelivery();
+  assert.equal((await readState(session)).revision, reopened.revision);
+  assert.equal(client.revision, reopened.revision);
+
+  const online = Object.getOwnPropertyDescriptor(navigator, 'onLine');
+  Object.defineProperty(navigator, 'onLine', { value: true, configurable: true });
+  t.after(() => {
+    if (online) Object.defineProperty(navigator, 'onLine', online);
+    else delete navigator.onLine;
+  });
+  client.refreshOwn = async () => {};
+  client.flush = async () => {};
+  const status = client.operation;
+  client.operation = async (op, body) => {
+    if (op === 'fetch') return [];
+    if (op === 'retractions') return { retractions: [] };
+    return status(op, body);
+  };
+  await client.sync();
+  assert.equal(client.revision, reopened.revision);
 });

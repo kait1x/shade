@@ -122,3 +122,20 @@ test('legacy snapshot without receiptAt loads conservatively and prunes after TT
   f2.advance(8 * DAY);
   assert.equal(await r2.pruneReceipts(), 1);
 });
+test('dialog journal only persists a new acknowledgment', async () => {
+  let writes = 0;
+  const registry = await createDeviceRegistry({
+    users: new Map(),
+    persist: async () => { writes++; },
+  });
+  await registry.updateState(state => {
+    state.dialogRouting.dialogs['pr_alice|pr_bob'] = {
+      journal: [{ from: 'pr_alice', id: 'first', acked: false }],
+    };
+  });
+  const refs = new Set(['pr_alice:first']);
+  assert.deepEqual(await registry.ackDialogJournal('pr_bob', refs), { acked: 1 });
+  assert.deepEqual(await registry.ackDialogJournal('pr_bob', refs), { acked: 0 });
+  assert.deepEqual(await registry.ackDialogJournal('pr_charlie', refs), { acked: 0 });
+  assert.equal(writes, 2);
+});

@@ -277,8 +277,10 @@ export class AlphaClient extends EventTarget {
         directory.history.push(manifest2);
       }
     }
-    const next = structuredClone(this.state); next.own = await this.verifyDirectory(directory, pinned); next.registered = true;
-    await this.save(next);
+    const own = await this.verifyDirectory(directory, pinned);
+    if (!this.state.registered || JSON.stringify(own) !== JSON.stringify(this.state.own)) {
+      await this.save({ ...this.state, own, registered: true });
+    }
   }
   async users() { return this.operation('users'); }
   // history.transfer (SYNC_PLAN §5.2): записи истории шифруются ключом ЦЕЛЕВОГО
@@ -927,9 +929,9 @@ export class AlphaClient extends EventTarget {
         let sendError;
         try { await this.flush(); } catch (error) { sendError = error; }
         const bundles = await this.operation('fetch');
-        const next = structuredClone(this.state);
+        let next = bundles.length ? structuredClone(this.state) : this.state;
         this.unverified = [];
-        next.parts ??= {};
+        if (bundles.length) next.parts ??= {};
         for (const bundle of bundles) {
           const m = bundle.message, peer = m.from === this.session.account ? m.to : m.from;
           if (!contact(next, peer) && m.from !== m.to) {
@@ -992,6 +994,7 @@ export class AlphaClient extends EventTarget {
         const retractionCursor = next.retractionSince ?? 0;
         const tombstones = await this.operation('retractions', { since: retractionCursor });
         if (tombstones.retractions?.length) {
+          if (next === this.state) next = structuredClone(this.state);
           for (const tombstone of tombstones.retractions) {
             next.messages = next.messages.filter(item => item.ref !== tombstone.ref);
             next.outbox = next.outbox.filter(out => ref(out) !== tombstone.ref);
@@ -1000,7 +1003,7 @@ export class AlphaClient extends EventTarget {
             ...tombstones.retractions.map(item => item.deletedAt));
         }
         // Local ciphertext/history + replay IDs + checkpoints committed BEFORE ACK.
-        await this.save(next);
+        if (next !== this.state) await this.save(next);
         while (this.state.pendingAck.length) {
           const batch = this.state.pendingAck.slice(0, 200);
           await this.operation('ack', batch);
@@ -1015,7 +1018,8 @@ export class AlphaClient extends EventTarget {
   }
   async refreshDelivery() {
     const sent = this.state.messages.filter(item => item.from === this.session.account);
-    const text = sent.filter(item => !item.chunkRefs && item.status !== 'queued');
+    const text = sent.filter(item => !item.chunkRefs && item.status !== 'queued' &&
+      !(item.devices?.length && item.devices.every(device => device.readAt)));
     const media = sent.filter(item => item.chunkRefs?.length);
     // One signed request per batch of refs, including refs from different photos.
     const refs = [...new Set([...text.map(item => item.ref), ...media.flatMap(item => item.chunkRefs)])];
@@ -1025,16 +1029,20 @@ export class AlphaClient extends EventTarget {
       const batch = await this.operation('status', refs.slice(index, index + 200));
       for (const [ref, devices] of Object.entries(batch)) statuses.set(ref, devices);
     }
-    const next = structuredClone(this.state);
-    const records = new Map(next.messages.map(item => [item.ref, item]));
+    const changed = new Map();
     for (const item of [...text, ...media]) {
-      const record = records.get(item.ref);
       const updates = (item.chunkRefs || [item.ref]).flatMap(ref => statuses.get(ref) || []);
       // Expired relay receipts or a partial status response cannot undo
       // confirmed progress already stored in this vault.
-      record.devices = mergeDeviceProgress(record.devices || [], updates);
+      const previous = item.devices || [];
+      const devices = mergeDeviceProgress(previous, updates);
+      if (JSON.stringify(devices) !== JSON.stringify(previous)) changed.set(item.ref, devices);
     }
-    await this.save(next);
+    if (changed.size) {
+      const messages = this.state.messages.map(item => changed.has(item.ref)
+        ? { ...item, devices: changed.get(item.ref) } : item);
+      await this.save({ ...this.state, messages });
+    }
   }
 
   // Peer profile metadata (display name + avatar digest) fetched lazily and

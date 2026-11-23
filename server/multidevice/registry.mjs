@@ -121,6 +121,22 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
   }
   return {
     exportSnapshot: () => structuredClone(state),
+    deviceIds: account => current(state, account)?.devices.map(device => device.id) || [],
+    deliveryFor: ref => state.delivery[ref] ? structuredClone(state.delivery[ref]) : null,
+    ackDialogJournal: (account, wanted) => serial(() => {
+      const pending = [];
+      for (const [key, record] of Object.entries(state.dialogRouting.dialogs)) {
+        if (!key.split('|').includes(account)) continue;
+        for (const [index, entry] of record.journal.entries()) {
+          if (!entry.acked && wanted.has(`${entry.from}:${entry.id}`)) pending.push([key, index]);
+        }
+      }
+      if (!pending.length) return { acked: 0 };
+      return transaction(next => {
+        for (const [key, index] of pending) next.dialogRouting.dialogs[key].journal[index].acked = true;
+        return { acked: pending.length };
+      });
+    }),
     adminSummary: () => ({
       accounts: Object.entries(state.accounts)
         .filter(([, record]) => record.history.length)
@@ -298,7 +314,7 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
           senderHistory: structuredClone(state.accounts[message.from].history),
           recipientHistory: structuredClone(state.accounts[message.to].history) }));
     }),
-    acknowledge: (refs, auth) => serial(async () => {
+    acknowledge: (refs, auth, includeSenders = false) => serial(async () => {
       check(Array.isArray(refs) && refs.length <= 200 && refs.every(ref => typeof ref === 'string' &&
         /^[a-z0-9_]{3,32}:(primary|[a-f0-9]{64}):[a-f0-9]{64}$/.test(ref)));
       await authenticate(auth, await operationDigest('ack', refs));
@@ -314,7 +330,7 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
           if (delivered) delivered.acknowledgedAt ||= clock();
         }
         next.queues[key] = next.queues[key].filter(m => !requested.has(messageRef(m)));
-        return { acknowledged: pending.length };
+        return { acknowledged: pending.length, ...(includeSenders && { senders: [...new Set(pending.map(m => m.from))] }) };
       });
     }),
     status: (refs, auth) => serial(async () => {
@@ -325,7 +341,7 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     }),
     // Read-ACK (contract C5): recipient-device-only, idempotent, projected to
     // the sender through status. Never reveals whether an unknown ref exists.
-    read: (refs, auth) => serial(async () => {
+    read: (refs, auth, includeSenders = false) => serial(async () => {
       check(Array.isArray(refs) && refs.length <= 200 && refs.every(ref => typeof ref === 'string' &&
         /^[a-z0-9_]{3,32}:(primary|[a-f0-9]{64}):[a-f0-9]{64}$/.test(ref)), 'Invalid read refs');
       await authenticate(auth, await operationDigest('read', refs));
@@ -333,11 +349,16 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
         d.account === auth.account && d.id === auth.id && !d.readAt))) return { read: 0 };
       return transaction(next => {
         let read = 0;
+        const senders = new Set();
         for (const ref of refs) {
-          const device = next.delivery[ref]?.devices?.find(d => d.account === auth.account && d.id === auth.id);
-          if (device && !device.readAt) { device.readAt = clock(); read++; }
+          const delivery = next.delivery[ref];
+          const device = delivery?.devices?.find(d => d.account === auth.account && d.id === auth.id);
+          if (device && !device.readAt) {
+            device.readAt = clock(); read++;
+            if (includeSenders) senders.add(delivery.from);
+          }
         }
-        return { read };
+        return { read, ...(includeSenders && { senders: [...senders] }) };
       });
     }),
     // Delete-for-all (contract C3): sender-only, idempotent, purges offline
@@ -347,8 +368,13 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
         /^[a-z0-9_]{3,32}:(primary|[a-f0-9]{64}):[a-f0-9]{64}$/.test(ref)), 'Invalid retraction refs');
       await authenticate(auth, await operationDigest('retract', refs));
       check(refs.every(ref => ref.split(':')[0] === auth.account), 'Only the sender can retract');
+      const now = clock();
+      const refSet = new Set(refs);
+      const hasNew = refs.some(ref => state.receipts[ref] && !state.retractions[ref]);
+      const hasExpired = Object.values(state.retractions).some(t => t.deletedAt <= now - 7 * 24 * 60 * 60 * 1000);
+      const hasQueued = !hasNew && Object.values(state.queues).some(queue => queue.some(m => refSet.has(messageRef(m))));
+      if (!hasNew && !hasExpired && !hasQueued) return { retracted: 0 };
       return transaction(next => {
-        const now = clock();
         for (const [ref, t] of Object.entries(next.retractions)) {
           if (t.deletedAt <= now - 7 * 24 * 60 * 60 * 1000) delete next.retractions[ref];
         }
@@ -366,7 +392,6 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
           ownTombstones++;
           retracted++;
         }
-        const refSet = new Set(refs);
         for (const [key, queue] of Object.entries(next.queues)) {
           next.queues[key] = queue.filter(m => !refSet.has(messageRef(m)));
         }
@@ -392,10 +417,9 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
     pushSubscribe: (auth, subscription) => serial(() => {
       const key = `${auth.account}:${auth.id}`;
       const existing = state.pushSubscriptions[key];
-      if (subscription.format === 'fcm' && existing?.format === 'fcm' &&
-          existing.token === subscription.token) {
-        // A retry after a lost response can reuse the already durable subscription.
-        return { subscribed: true };
+      if (existing) {
+        const { createdAt, ...stored } = existing;
+        if (isDeepStrictEqual(stored, subscription)) return { subscribed: true };
       }
       return transaction(next => {
         check(Object.hasOwn(next.pushSubscriptions, key) ||
@@ -404,10 +428,14 @@ export async function createDeviceRegistry({ users, persist, snapshot, clock = D
         return { subscribed: true };
       });
     }),
-    pushUnsubscribe: auth => serial(() => transaction(next => {
-      delete next.pushSubscriptions[`${auth.account}:${auth.id}`];
-      return { subscribed: false };
-    })),
+    pushUnsubscribe: auth => serial(async () => {
+      const key = `${auth.account}:${auth.id}`;
+      if (!Object.hasOwn(state.pushSubscriptions, key)) return { subscribed: false };
+      return transaction(next => {
+        delete next.pushSubscriptions[key];
+        return { subscribed: false };
+      });
+    }),
     pushSubscription: (account, id) => state.pushSubscriptions[`${account}:${id}`]
       ? structuredClone(state.pushSubscriptions[`${account}:${id}`]) : null,
     dropPushSubscription: (account, id, expired) => serial(async () => {

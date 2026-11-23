@@ -228,6 +228,8 @@ class _V2SyncService implements V2SyncService {
   bool _disposed = false;
   String? _lastError;
   int _retractionCursor = 0;
+  final _previews = <String,
+      ({String ref, String key, String payload, String text, bool isImage})>{};
 
   /// Сериализация отправок: before/after-снимок outbox однозначно определяет,
   /// успел ли repository закоммитить конверт до сетевого сбоя.
@@ -365,14 +367,37 @@ class _V2SyncService implements V2SyncService {
       ? (_repository.legacyPrivateKey ?? _repository.privateKey)
       : _session.encryptionPrivateKey;
 
-  /// Статус исходящего по подписанной проекции сервера (refreshDelivery
-  /// запрашивает её auth-ом текущего устройства). Агрегация как в web:
-  /// read любого устройства получателя → read, ACK любого → delivered.
   Future<String> _deliveryStatus(String ref) async {
     final devices = await _store.deliveryFor(ref);
     if (devices.any((d) => d['readAt'] != null)) return 'read';
     if (devices.any((d) => d['acknowledgedAt'] != null)) return 'delivered';
     return 'sent';
+  }
+
+  Future<({String text, bool isImage})> _messagePreview(
+      String peer, Map<String, Object?> row) async {
+    final ref = row['ref'] as String;
+    final key = _rowKey(ref);
+    final payload = row['payload'] as String;
+    final cached = _previews[peer];
+    if (cached != null &&
+        cached.ref == ref &&
+        cached.key == key &&
+        cached.payload == payload) {
+      return (text: cached.text, isImage: cached.isImage);
+    }
+    final plain = await _repository.crypto.decryptData(payload, key);
+    final decoded = decodePayload(plain);
+    final isImage = decoded['media'] != null;
+    final text = isImage ? 'Фото' : decoded['text'] as String? ?? '';
+    if (!_disposed) {
+      if (_previews.length >= 256 && !_previews.containsKey(peer)) {
+        _previews.remove(_previews.keys.first);
+      }
+      _previews[peer] =
+          (ref: ref, key: key, payload: payload, text: text, isImage: isImage);
+    }
+    return (text: text, isImage: isImage);
   }
 
   @override
@@ -382,21 +407,36 @@ class _V2SyncService implements V2SyncService {
         c['account'] as String: c['confirmed'] == true
     };
     final db = await _store.chatDatabase;
-    final peerRows =
-        await db.rawQuery('SELECT peer FROM v2_messages GROUP BY peer');
-    final outbox = await _store.outboxAll();
+    final rows = await db.rawQuery('''
+      SELECT m.peer, m.ref, m.created_at, m.direction, m.payload, m.status,
+        CASE
+          WHEN m.direction != 'out' THEN 'received'
+          WHEN EXISTS (SELECT 1 FROM v2_delivery d WHERE d.ref = m.ref AND d.read_at IS NOT NULL) THEN 'read'
+          WHEN EXISTS (SELECT 1 FROM v2_delivery d WHERE d.ref = m.ref AND d.acknowledged_at IS NOT NULL) THEN 'delivered'
+          ELSE 'sent'
+        END AS delivery_status
+      FROM (SELECT DISTINCT peer FROM v2_messages) AS peers
+      JOIN v2_messages AS m ON m.ref = (
+        SELECT ref FROM v2_messages WHERE peer = peers.peer
+        ORDER BY created_at DESC, ref DESC LIMIT 1
+      )
+    ''');
+    final latest = {for (final row in rows) row['peer'] as String: row};
+    final pendingByPeer = <String, List<Map<String, dynamic>>>{};
+    for (final entry in await _store.outboxAll()) {
+      (pendingByPeer[entry['peer'] as String] ??= []).add(entry);
+    }
     final peers = <String>{
       account, // «Избранное» доступно всегда, без подтверждения контакта
       ...contacts.keys,
-      for (final row in peerRows) row['peer'] as String,
-      for (final entry in outbox) entry['peer'] as String,
+      ...latest.keys,
+      ...pendingByPeer.keys,
     };
 
     final unread = await _store.unreadCounts();
     final summaries = <V2ChatSummary>[];
     for (final peer in peers) {
-      final pending =
-          outbox.where((e) => e['peer'] == peer).toList(growable: false);
+      final pending = pendingByPeer[peer] ?? const [];
       int? lastAt;
       String? lastText;
       var lastMine = false;
@@ -417,28 +457,19 @@ class _V2SyncService implements V2SyncService {
             ? 'blocked'
             : 'queued';
       } else {
-        final rows = await db.query('v2_messages',
-            where: 'peer=?',
-            whereArgs: [peer],
-            orderBy: 'created_at DESC, ref DESC',
-            limit: 1);
-        if (rows.isNotEmpty) {
-          final row = rows.first;
-          final ref = row['ref'] as String;
+        final row = latest[peer];
+        if (row != null) {
           lastAt = row['created_at'] as int;
           lastMine = row['direction'] == 'out';
-          final plain = await _repository.crypto
-              .decryptData(row['payload'] as String, _rowKey(ref));
-          final decoded = decodePayload(plain);
-          lastIsImage = decoded['media'] != null;
-          lastText = lastIsImage ? 'Фото' : decoded['text'] as String? ?? '';
           if (row['status'] == 'retracted') {
+            _previews.remove(peer);
             lastStatus = 'retracted';
             lastText = 'Сообщение отозвано';
-          } else if (lastMine) {
-            lastStatus = await _deliveryStatus(ref);
           } else {
-            lastStatus = 'received';
+            final preview = await _messagePreview(peer, row);
+            lastIsImage = preview.isImage;
+            lastText = preview.text;
+            lastStatus = row['delivery_status'] as String;
           }
         }
       }
@@ -737,6 +768,7 @@ class _V2SyncService implements V2SyncService {
   @override
   void dispose() {
     _disposed = true;
+    _previews.clear();
     _wakeDebounce?.cancel();
     if (_started) {
       _transport.onWake = null;
