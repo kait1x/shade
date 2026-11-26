@@ -38,7 +38,7 @@ New-Item -ItemType Directory -Force -Path $dstServer | Out-Null
 Get-ChildItem $server -File | Where-Object {
   $_.Name -match '\.(mjs|js|json)$' -and $_.Name -notmatch '\.env'
 } | ForEach-Object { Copy-Item $_.FullName $dstServer }
-foreach ($sub in 'multidevice', 'tools', 'test') {
+foreach ($sub in 'multidevice', 'tools', 'test', 'admin') {
   $src = Join-Path $server $sub
   if (Test-Path $src) {
     Copy-Item $src (Join-Path $dstServer $sub) -Recurse
