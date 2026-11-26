@@ -141,6 +141,10 @@ dialog .btn { margin-top:12px; }
 dialog [hidden] { display:none; }
 dialog audio { width:100%; margin:12px 0 0; }
 .voice-meter { display:flex; align-items:center; gap:9px; margin:12px 0; font-variant-numeric:tabular-nums; }
+.location-picker { position:relative; width:100%; aspect-ratio:2; overflow:hidden; padding:0; background:var(--surface) url('/flutter-ui/assets/assets/maps/world.png') center / 100% 100% no-repeat; }
+.location-marker { pointer-events:none; position:absolute; transform:translate(-50%,-50%); width:14px; height:14px; background:#e65348; border:2px solid white; border-radius:50%; box-shadow:0 0 0 4px #e6534840; }
+.location-coordinates { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.location-coordinates label { margin-block:10px 0; }
 .voice-dot { width:9px; height:9px; border-radius:50%; background:var(--error); animation:voice-pulse 1.2s ease-in-out infinite alternate; }
 @keyframes voice-pulse { to { opacity:.45; } }
 @media (prefers-reduced-motion: reduce) { .voice-dot { animation:none; } }

@@ -66,7 +66,7 @@ void main() {
     await tester.pumpWidget(ShadeAlphaApp(controller: controller));
     await tester.pumpAndSettle();
     expect(find.text('Фото недоступно'), findsNothing);
-    await tester.tap(find.text('Голосовое'));
+    await tester.tap(find.byTooltip('Голосовое'));
     await tester.tap(find.byTooltip('Голосовое сообщение'));
     expect(actions['voice.play'], {'ref': 'media:voice'});
     expect(actions['voice.record'], {'account': 'bob'});

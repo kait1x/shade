@@ -21,6 +21,102 @@ import 'recovery_screen.dart';
 bool _isVoiceMedia(Object? media) =>
     media is Map && (media['mime'] as String?)?.startsWith('audio/') == true;
 
+class _VoicePlayer extends StatefulWidget {
+  const _VoicePlayer(this.controller, this.messageRef, {required this.mine});
+  final AlphaController controller;
+  final String messageRef;
+  final bool mine;
+
+  @override
+  State<_VoicePlayer> createState() => _VoicePlayerState();
+}
+
+class _VoicePlayerState extends State<_VoicePlayer> {
+  Timer? _timer;
+  bool _playing = false;
+  bool _busy = false;
+  double _position = 0;
+  double _duration = 0;
+
+  Future<void> _update(String action, [double? position]) async {
+    if (_busy) return;
+    _busy = true;
+    try {
+      final status = await widget.controller.dispatch(action, {
+        'ref': widget.messageRef,
+        if (position != null) 'position': position,
+      });
+      if (!mounted || status is! Map) return;
+      setState(() {
+        _playing = status['playing'] == true;
+        _position = (status['position'] as num?)?.toDouble() ?? 0;
+        _duration = (status['duration'] as num?)?.toDouble() ?? 0;
+      });
+      if (_playing) {
+        _timer ??= Timer.periodic(
+            const Duration(milliseconds: 250), (_) => _update('voice.status'));
+      } else {
+        _timer?.cancel();
+        _timer = null;
+      }
+    } catch (_) {
+      // The web bridge already displays playback errors.
+    } finally {
+      _busy = false;
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  String _clock(double seconds) {
+    final whole = seconds.floor();
+    return '${whole ~/ 60}:${(whole % 60).toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color =
+        widget.mine ? Colors.black : Theme.of(context).colorScheme.onSurface;
+    return SizedBox(
+      width: 226,
+      child: Row(children: [
+        IconButton.filled(
+          tooltip: _playing ? 'Пауза' : 'Голосовое',
+          onPressed: () => _update('voice.play'),
+          icon: Icon(_playing ? Icons.pause_rounded : Icons.play_arrow_rounded),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child:
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Голосовое',
+                style: TextStyle(color: color, fontWeight: FontWeight.w600)),
+            if (_duration > 0)
+              Slider(
+                value: _position.clamp(0, _duration).toDouble(),
+                max: _duration,
+                onChanged: (value) => _update('voice.seek', value),
+                semanticFormatterCallback: _clock,
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: LinearProgressIndicator(value: 0, color: color),
+              ),
+            if (_duration > 0)
+              Text('${_clock(_position)} / ${_clock(_duration)}',
+                  style: TextStyle(color: color, fontSize: 11)),
+          ]),
+        ),
+      ]),
+    );
+  }
+}
+
 class ShadeAlphaApp extends StatelessWidget {
   const ShadeAlphaApp({super.key, required this.controller});
   final AlphaController controller;
@@ -879,21 +975,21 @@ class _ConversationState extends State<_Conversation>
                                                   imageData: mediaBytes,
                                                   onOpenLocation: m['text']
                                                               is String &&
-                                                          (m['text'] as String).startsWith(
-                                                              '📍 Геопозиция\n')
+                                                          (m['text'] as String)
+                                                              .startsWith(
+                                                                  '📍 Геопозиция\n')
                                                       ? () => c.act(
                                                           'location.open',
                                                           {'ref': m['ref']})
                                                       : null,
-                                                  onPlayVoice: voice
-                                                      ? () => c.act(
-                                                          'voice.play',
-                                                          {'ref': m['ref']})
+                                                  voicePlayer: voice
+                                                      ? _VoicePlayer(
+                                                          c, m['ref'] as String,
+                                                          mine:
+                                                              m['from'] == c.account)
                                                       : null,
-                                                  status:
-                                                      AlphaController.status(m),
-                                                  deliveryLabel:
-                                                      AlphaController.delivery(m),
+                                                  status: AlphaController.status(m),
+                                                  deliveryLabel: AlphaController.delivery(m),
                                                   groupedWithPrevious: grouped(items.length - 2 - i),
                                                   groupedWithNext: grouped(items.length - i),
                                                   onLongPress: () => _showMessageMenu(m),

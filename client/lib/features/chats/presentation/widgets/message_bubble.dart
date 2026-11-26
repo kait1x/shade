@@ -18,7 +18,7 @@ class MessageBubble extends StatefulWidget {
   final String? deliveryLabel;
   final String status; // 'sent', 'delivered', 'read'
   final VoidCallback? onLongPress;
-  final VoidCallback? onPlayVoice;
+  final Widget? voicePlayer;
   final VoidCallback? onOpenLocation;
   final bool groupedWithPrevious;
   final bool groupedWithNext;
@@ -36,7 +36,7 @@ class MessageBubble extends StatefulWidget {
     this.status = 'sent',
     this.deliveryLabel,
     this.onLongPress,
-    this.onPlayVoice,
+    this.voicePlayer,
     this.onOpenLocation,
     this.groupedWithPrevious = false,
     this.groupedWithNext = false,
@@ -217,18 +217,7 @@ class _MessageBubbleState extends State<MessageBubble> {
                             const Padding(
                                 padding: EdgeInsets.all(20),
                                 child: Text('Фото недоступно')),
-                          if (widget.onPlayVoice != null)
-                            TextButton.icon(
-                              onPressed: widget.onPlayVoice,
-                              style: TextButton.styleFrom(
-                                foregroundColor: isMine
-                                    ? Colors.black
-                                    : context
-                                        .shadeColor(ShadeColors.textPrimary),
-                              ),
-                              icon: const Icon(Icons.play_arrow_rounded),
-                              label: const Text('Голосовое'),
-                            ),
+                          if (widget.voicePlayer != null) widget.voicePlayer!,
                           if (widget.onOpenLocation != null) ...[
                             _LocationPreview(text: text),
                             TextButton.icon(
@@ -243,7 +232,9 @@ class _MessageBubbleState extends State<MessageBubble> {
                               label: const Text('Открыть карту'),
                             ),
                           ],
-                          if (!isImage && widget.onPlayVoice == null) ...[
+                          if (!isImage &&
+                              widget.voicePlayer == null &&
+                              widget.onOpenLocation == null) ...[
                             Text(
                               isEncrypted
                                   ? text

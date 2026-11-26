@@ -264,30 +264,68 @@ function recordVoice(account) {
 }
 
 function shareLocation(account) {
-  check(navigator.geolocation, 'Этот браузер не может определить геопозицию.');
-  const status = node('p', 'Координаты появятся перед отправкой.');
+  const status = node('p', 'Выберите точку или определите своё местоположение.');
   status.setAttribute('role', 'status');
-  const locate = node('button', 'Определить геопозицию', 'btn primary');
-  const send = node('button', 'Отправить геопозицию', 'btn primary');
+  const locate = node('button', 'Моё местоположение', 'btn');
+  const send = node('button', 'Отправить точку', 'btn primary');
+  locate.disabled = !navigator.geolocation;
+  const map = node('button', undefined, 'location-picker');
+  map.setAttribute('aria-label', 'Выбрать точку на обзорной карте');
+  const marker = node('span', undefined, 'location-marker');
+  marker.hidden = true;
+  map.append(marker);
+  const form = node('div', undefined, 'location-coordinates');
+  const latitude = input(form, 'Широта', 'latitude', 'text');
+  const longitude = input(form, 'Долгота', 'longitude', 'text');
+  latitude.inputMode = longitude.inputMode = 'decimal';
   send.hidden = true;
   let coordinates;
-  const panel = openVoicePanel('Геопозиция', [status, locate, send], () => {});
+  const panel = openVoicePanel('Геопозиция', [status, map, locate, form, send], () => {});
+  let choiceRevision = 0;
+  function selectPoint(lat, lon, label) {
+    choiceRevision++;
+    const valid = Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
+    coordinates = valid ? lat.toFixed(5) + ', ' + lon.toFixed(5) : undefined;
+    marker.hidden = send.hidden = !valid;
+    if (valid) {
+      marker.style.left = (lon + 180) / 3.6 + '%';
+      marker.style.top = (90 - lat) / 1.8 + '%';
+    }
+    status.textContent = valid ? label : 'Введите широту от −90 до 90 и долготу от −180 до 180.';
+  }
+  const setFields = (lat, lon, label) => {
+    latitude.value = lat.toFixed(5);
+    longitude.value = lon.toFixed(5);
+    selectPoint(lat, lon, label);
+  };
+  const number = field => field.value.trim() ? Number(field.value.trim().replace(',', '.')) : NaN;
+  for (const field of [latitude, longitude]) {
+    field.addEventListener('input', () => selectPoint(number(latitude), number(longitude), 'Выбранная точка'));
+  }
+  map.onclick = event => {
+    if (!event.detail) { latitude.focus(); return; }
+    const bounds = map.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+    const y = Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height));
+    setFields(90 - y * 180, x * 360, 'Точка с обзорной карты. При необходимости уточните координаты.');
+  };
   locate.onclick = () => {
+    const requestRevision = ++choiceRevision;
     locate.disabled = true;
     status.textContent = 'Определяем геопозицию…';
     navigator.geolocation.getCurrentPosition(({ coords }) => {
       if (!panel.open) return;
-      coordinates = [coords.latitude.toFixed(5), coords.longitude.toFixed(5)].join(', ');
-      status.textContent = coordinates;
-      locate.hidden = true;
-      send.hidden = false;
+      locate.disabled = false;
+      if (requestRevision !== choiceRevision) return;
+      setFields(coords.latitude, coords.longitude, 'Моё местоположение · точность около ' + Math.round(coords.accuracy) + ' м');
     }, error => {
       if (!panel.open) return;
+      locate.disabled = false;
+      if (requestRevision !== choiceRevision) return;
       status.textContent = error.code === 1
         ? 'Разрешите доступ к геопозиции в настройках браузера.'
         : 'Не удалось определить геопозицию. Попробуйте снова.';
-      locate.disabled = false;
-    }, { timeout: 15000, maximumAge: 0 });
+    }, { timeout: 15000, maximumAge: 0, enableHighAccuracy: true });
   };
   send.onclick = async () => {
     send.disabled = true;
@@ -301,18 +339,42 @@ function shareLocation(account) {
   };
 }
 
-function playVoice(ref) {
+let playingVoice;
+function releaseVoice() {
+  if (!playingVoice) return;
+  playingVoice.audio.pause();
+  URL.revokeObjectURL(playingVoice.url);
+  playingVoice = null;
+}
+window.addEventListener('pagehide', releaseVoice);
+
+function voiceProgress(ref) {
+  const audio = playingVoice?.ref === ref ? playingVoice.audio : null;
+  return { playing: !!audio && !audio.paused && !audio.ended,
+    position: audio?.currentTime ?? 0, duration: Number.isFinite(audio?.duration) ? audio.duration : 0 };
+}
+
+async function playVoice(ref) {
+  if (playingVoice?.ref === ref) {
+    const { audio } = playingVoice;
+    if (!audio.paused && !audio.ended) audio.pause();
+    else await audio.play();
+    return voiceProgress(ref);
+  }
   const media = client.state.messages.find(message => message.ref === ref)?.media;
   check(media && voiceMime(media.mime), 'Голосовое недоступно.');
   const bytes = unb64(media.data, 2796204);
-  const audio = node('audio');
-  audio.controls = true;
+  releaseVoice();
+  const audio = new Audio();
   const url = URL.createObjectURL(new Blob([bytes], { type: media.mime }));
   audio.src = url;
-  const hint = node('p');
-  audio.addEventListener('error', () => { hint.textContent = 'Браузер не смог воспроизвести эту запись.'; });
-  openVoicePanel('Голосовое сообщение', [audio, hint], () => { audio.pause(); URL.revokeObjectURL(url); });
-  audio.play().catch(() => {});
+  playingVoice = { ref, audio, url };
+  try { await audio.play(); }
+  catch {
+    if (playingVoice?.audio === audio) releaseVoice();
+    throw Error('Браузер не смог воспроизвести эту запись.');
+  }
+  return voiceProgress(ref);
 }
 function isStandalone() {
   return window.matchMedia('(display-mode: standalone)').matches ||
@@ -1483,7 +1545,15 @@ async function openApp() {
           openVoicePanel('Геопозиция', [node('p', match[1] + ', ' + match[2]), link], () => {});
           break;
         }
-        case 'voice.play': playVoice(data.ref); break;
+        case 'voice.play': return JSON.stringify({ ok: true, data: await playVoice(data.ref) });
+        case 'voice.status': return JSON.stringify({ ok: true, data: voiceProgress(data.ref) });
+        case 'voice.seek': {
+          const audio = playingVoice?.ref === data.ref ? playingVoice.audio : null;
+          if (audio && Number.isFinite(data.position) && Number.isFinite(audio.duration)) {
+            audio.currentTime = Math.max(0, Math.min(data.position, audio.duration));
+          }
+          return JSON.stringify({ ok: true, data: voiceProgress(data.ref) });
+        }
         case 'deleteLocal': await client.deleteLocal(data.ref); break;
         case 'retract': await client.retract(data.ref); break;
         case 'sync': await client.sync(); break;
@@ -1552,7 +1622,7 @@ async function openApp() {
           notice('Зашифрованная копия сохранена на сервере Shade');
           break;
         case 'install': installGuide(); break;
-        case 'logout': await client.disablePush().catch(() => {}); client.stop(); await api('/api/logout', {}); location.reload(); break;
+        case 'logout': releaseVoice(); await client.disablePush().catch(() => {}); client.stop(); await api('/api/logout', {}); location.reload(); break;
         default: throw Error('Неизвестное действие интерфейса');
       }
       return JSON.stringify({ok:true});
